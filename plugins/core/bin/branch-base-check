@@ -1,0 +1,85 @@
+#!/usr/bin/env sh
+# branch-base-check — is the local base branch in sync with its remote?
+#
+# A pull request diffs against the REMOTE base. If local main is ahead, every
+# unpushed commit rides along in the PR and gets swallowed by the squash under
+# your one-line title. Run this before cutting a branch, and again before
+# opening or merging one.
+#
+# Read-only: fetches refs, then counts. Nothing is checked out, reset, or pushed.
+#
+# Usage: branch-base-check [-C <repo>] [-b <base-branch>] [-r <remote>] [-n]
+#        -n  skip the fetch (use already-fetched refs)
+#
+# Exit: 0 = in sync. 1 = ahead and/or behind. 2 = usage/setup error.
+
+set -eu
+
+REPO="."
+BASE=""
+REMOTE="origin"
+FETCH=1
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -C) REPO="${2:?-C needs a path}"; shift 2 ;;
+    -b) BASE="${2:?-b needs a branch}"; shift 2 ;;
+    -r) REMOTE="${2:?-r needs a remote}"; shift 2 ;;
+    -n) FETCH=0; shift ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v git >/dev/null 2>&1 || { echo "git not found" >&2; exit 2; }
+git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || {
+  echo "not a git repository: $REPO" >&2; exit 2; }
+
+git -C "$REPO" remote get-url "$REMOTE" >/dev/null 2>&1 || {
+  echo "no remote named '$REMOTE' — nothing to be out of sync with"; exit 0; }
+
+# Default base = the remote's HEAD, falling back to main then master.
+if [ -z "$BASE" ]; then
+  BASE=$(git -C "$REPO" symbolic-ref --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null | sed "s|^$REMOTE/||" || true)
+  [ -n "$BASE" ] || for c in main master; do
+    git -C "$REPO" show-ref --verify --quiet "refs/heads/$c" && { BASE="$c"; break; }
+  done
+fi
+[ -n "$BASE" ] || { echo "could not determine a base branch; pass -b" >&2; exit 2; }
+
+git -C "$REPO" show-ref --verify --quiet "refs/heads/$BASE" || {
+  echo "no local branch '$BASE'" >&2; exit 2; }
+
+[ "$FETCH" -eq 1 ] && git -C "$REPO" fetch --quiet "$REMOTE" 2>/dev/null || true
+
+git -C "$REPO" show-ref --verify --quiet "refs/remotes/$REMOTE/$BASE" || {
+  echo "no remote branch '$REMOTE/$BASE' — it has never been pushed"; exit 1; }
+
+AHEAD=$(git -C "$REPO" rev-list --count "$REMOTE/$BASE..$BASE")
+BEHIND=$(git -C "$REPO" rev-list --count "$BASE..$REMOTE/$BASE")
+
+echo "base: $BASE   remote: $REMOTE/$BASE"
+echo "ahead:  $AHEAD  (local commits not on the remote)"
+echo "behind: $BEHIND  (remote commits not local)"
+echo
+
+if [ "$AHEAD" -eq 0 ] && [ "$BEHIND" -eq 0 ]; then
+  echo "IN SYNC — safe to branch."
+  exit 0
+fi
+
+if [ "$AHEAD" -gt 0 ]; then
+  echo "STOP: '$BASE' is ahead by $AHEAD. A PR cut from here diffs against"
+  echo "$REMOTE/$BASE, so those $AHEAD commits would ride along and be squashed"
+  echo "under your change's title. Unpushed commits, most recent first:"
+  git -C "$REPO" log --oneline "$REMOTE/$BASE..$BASE" | head -10 | sed 's/^/    /'
+  echo
+  echo "  push $BASE first, or:  git rebase --onto $REMOTE/$BASE <your-base>"
+fi
+
+if [ "$BEHIND" -gt 0 ]; then
+  echo "'$BASE' is behind by $BEHIND — pull or reset before branching, or the"
+  echo "branch starts from a stale tree."
+fi
+
+exit 1

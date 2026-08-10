@@ -1,0 +1,9 @@
+{
+  "name": "windows",
+  "description": "Windows-specific fixes and reference: terminal keybindings and other host quirks that only apply on Windows.",
+  "version": "0.1.0",
+  "author": {
+    "name": "polston"
+  },
+  "keywords": ["windows", "terminal", "platform"]
+}

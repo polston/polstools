@@ -427,3 +427,9 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Plugin bin/ directories are part of the plugin format (executables added to
+# PATH while a plugin is enabled), not build output. The generic **/[Bb]in/*
+# rule above would swallow them.
+!plugins/*/bin/
+!plugins/*/bin/*

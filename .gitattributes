@@ -1,0 +1,8 @@
+# Plugin bin/ scripts must keep LF endings. A CRLF checkout breaks the shebang
+# on Unix ("bad interpreter: /usr/bin/env sh^M"), and these are meant to run on
+# any host that enables the plugin.
+plugins/*/bin/* text eol=lf
+
+# Skills and manifests are read by tooling on every platform; keep them stable.
+*.md text eol=lf
+*.json text eol=lf
