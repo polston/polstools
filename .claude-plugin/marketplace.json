@@ -1,0 +1,17 @@
+{
+  "name": "polstools",
+  "description": "Personal tooling: skills, commands, and scripts shared across AI coding harnesses from one repository.",
+  "owner": {
+    "name": "polston"
+  },
+  "plugins": [
+    {
+      "name": "core",
+      "source": "./plugins/core",
+      "description": "Cross-harness working skills: design-fork judgment, goal conditions, and doc-drift detection after a change lands.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "keywords": ["skills", "workflow", "cross-runtime"]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "core",
+  "description": "Cross-harness working skills: design-fork judgment, goal conditions, and doc-drift detection after a change lands.",
+  "version": "0.1.0",
+  "author": {
+    "name": "polston"
+  },
+  "keywords": ["skills", "workflow", "cross-runtime"]
+}
