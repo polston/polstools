@@ -433,3 +433,6 @@ FodyWeavers.xsd
 # rule above would swallow them.
 !plugins/*/bin/
 !plugins/*/bin/*
+
+# Claude Code local state and worktrees — never commit
+.claude/
