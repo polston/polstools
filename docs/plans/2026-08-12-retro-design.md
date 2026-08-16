@@ -60,10 +60,9 @@ One JSON object per transcript:
 
 ```
 transcript, is_subagent, session_id, project, git_branch, cc_version, date,
-turns, duration_s, tokens_in, tokens_out, cache_read, skills_used[], abandoned,
-user_prompts, tool_calls, tool_errors, tool_retries, correction_turns,
-interrupts, permission_mode_changes, queue_operations, sidechain_turns,
-skill_invocations
+duration_s, tokens_in, tokens_out, cache_read, skills_used[],
+turns, user_prompts, tool_calls, tool_errors, tool_retries, correction_turns,
+interrupts, permission_mode_changes, queued_prompts, skill_runs
 ```
 
 Rows are keyed by transcript path, not session id. Subagent transcripts live
@@ -78,19 +77,50 @@ Every signal was confirmed present in real transcripts.
 
 | Signal | Source | Reads as |
 |---|---|---|
-| `permission_mode_changes` | `permission-mode` records | the permission config does not match the work |
-| `queue_operations` | `queue-operation` records | waiting, or overriding mid-turn |
-| `tool_errors` | `toolUseResult` error shape | a loop that had to be sat through |
-| `tool_retries` | same tool + normalized input signature ≥2× | something rediscovered every session |
 | `correction_turns` | short user prompt after a long assistant turn | a standing instruction is missing or ignored |
 | `interrupts` | interrupt marker in user records | the turn went wrong early |
-| `skill_invocations`, `skills_used` | `attributionSkill` | which skills actually fire |
-| `sidechain_turns` | `isSidechain` | subagent spend |
+| `tool_retries` | same tool + normalized input signature ≥2× | something rediscovered every session |
+| `tool_errors` | `is_error` on a tool_result block, or an error-prefixed string result | a tool called wrong, repeatedly |
+| `queued_prompts` | `queue-operation` records of subtype `enqueue` | typing ahead because a turn ran long |
+| `permission_mode_changes` | transitions between consecutive `permission-mode` records | the permission config did not match the work |
+| `skill_runs`, `skills_used` | contiguous runs of `attributionSkill` | which skills actually fire |
 | `tokens_*` | `message.usage` | what the friction cost |
-| `abandoned` | ends on an assistant turn, quiet ≥15 min | ended without resolution |
 
 The retry signature normalizes whitespace and numeric literals before hashing,
 so a retried command with a tweaked number still matches its predecessor.
+
+### Metric definitions that a first pass gets wrong
+
+Each of these was measured against the corpus, not reasoned about. They are
+recorded because the wrong version of each is the obvious one.
+
+- **`permission-mode` records are a repeated snapshot of the current mode, not a
+  change event.** 5,645 records across the corpus contain 68 actual transitions —
+  an 83× overcount if records are counted directly. One session holds 313 records
+  and zero changes.
+- **`isSidechain` is never true inside a session transcript.** Subagent turns
+  live in separate files under `subagents/`, where it is true 68,470 times.
+  Reading the field inside a session file measures nothing, so no
+  `sidechain_turns` metric is emitted; the `is_subagent` tag carries fan-out.
+- **Tool failures are marked on the `tool_result` content block, not on
+  `toolUseResult`.** `is_error` on the block appears 519 times in a 373-session
+  sample; a `toolUseResult.error` key appears once in the entire corpus.
+- **`attributionSkill` is stamped on every assistant record while a skill is
+  active**, so counting records counts turns. 4,736 records collapse to 2,476
+  contiguous runs. The field is also absent from every record written by CLI
+  version 2.1.170, giving the metric a version floor.
+- **`queue-operation` kinds are paired** — enqueue 2,087, dequeue 1,275, remove
+  777, popAll 28. A single total counts one queued prompt up to three times.
+- **No abandonment metric is emitted.** The obvious definition, a transcript
+  ending on an assistant turn, matches 0.3% of session files literally and 59%
+  once trailing bookkeeping records are ignored — the latter being just the shape
+  of a session that ended after a reply. Neither separates abandoned from
+  finished.
+- **The prompt-history file is not a usable second source.** It holds no
+  assistant-side data, so corrections and interrupts are not computable from it;
+  it covers 58 of 352 sessions (interactive entrypoints only); and for sessions
+  present in both, its prompt count disagrees with the transcript's in 83% of
+  cases. All metrics derive from transcripts alone.
 
 ## Redaction
 
@@ -109,16 +139,25 @@ corpus, no auto-apply.
 
 ## Verification
 
-Measured on the live corpus, 2026-08-16:
+Measured on the live corpus, 2026-08-16, after the metric corrections above:
 
 | Check | Result |
 |---|---|
-| Full rebuild over 1,737 transcripts | 29.6 s, 1,715 rows, 22 unreadable |
-| Immediate incremental re-run | 0.17 s, 3 changed, 1,735 unchanged |
-| 7-day pack | built; 81 sessions vs 78 prior |
+| Full rebuild over 1,771 transcripts | 8.1 s, 1,749 rows, 22 unreadable |
+| Immediate incremental re-run | 0.17 s |
+| Row split | 374 session rows, 1,375 subagent rows |
+| Ledger totals vs an independent probe | `permission_mode_changes` 68/68, `queued_prompts` 2,088, `tool_errors` 521 — agree |
+| 7-day pack | built; 99 sessions vs 78 prior |
 | Redactor over the produced pack | username, home path, email, IPv4 all absent |
 | `skills --days 30` | 25 fired, 61 of 86 installed never fired |
 | Manifests | `marketplace.json` and all three `plugin.json` parse |
 | Privacy scan over the worktree | 0 hits |
 
-Open: the 22 unreadable transcripts are counted but not characterized.
+Open:
+
+- The 22 unreadable transcripts are counted but not characterized.
+- `tool_retries` and `correction_turns` are heuristics with tunable thresholds
+  and have not been validated against a hand-labelled sample. Their absolute
+  values should not be trusted; their movement over time is the usable part.
+- Transcripts begin 2026-06-20, so "all history" is roughly two months, not the
+  four months the prompt-history file reaches back.

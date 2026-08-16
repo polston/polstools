@@ -60,12 +60,20 @@ permission rule from inside this skill. Propose; wait to be asked.
 
 | Signal rising | Usually means |
 |---|---|
-| `permission_mode_changes` | the permission config does not match the actual work; rules are missing, not prompts |
 | `tool_retries` | something is being rediscovered every session — a candidate for a skill or a note |
 | `correction_turns` | a standing instruction is missing, or an existing one is not being followed |
 | `interrupts` | turns are going wrong early — usually scope or approach, not detail |
-| `abandoned` | sessions are ending without resolution; look at what they had in common |
-| `sidechain_turns` with flat output | subagent fan-out that is not paying for itself |
+| `queued_prompts` | you were typing ahead because a turn was taking too long |
+| `tool_errors` | a tool is being called wrong, repeatedly — usually a missing note about its interface |
+| `subagent_transcripts` with flat output | fan-out that is not paying for itself |
+| `permission_mode_changes` | rare by nature — 68 across the entire corpus. Any nonzero week is worth a look; do not expect a trend line |
+
+Two of these carry a known measurement caveat. `skill_runs` counts contiguous
+stretches of the same skill being active, which is not the same as the number of
+times it was deliberately invoked, and the field it derives from is absent
+entirely from transcripts written by CLI version 2.1.170. `tool_errors` counts
+records that carry a failure marker, which includes failures that were expected
+and handled.
 
 ## Common mistakes
 

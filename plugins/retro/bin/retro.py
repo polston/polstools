@@ -41,9 +41,13 @@ CORRECTION_MAX_CHARS = 120
 # ...and the assistant turn it follows has to have been substantial, or every
 # short back-and-forth in a fast exchange scores as a correction.
 CORRECTION_MIN_PRIOR_CHARS = 400
-# A session with no user turn for this long at the end, terminating on an
-# assistant turn, is treated as abandoned rather than completed.
-ABANDONED_AFTER_S = 900
+
+# Deliberately absent: an "abandoned session" metric. The obvious definition —
+# the transcript ends on an assistant turn — matches 0.3% of session files
+# literally, and 59% if you ignore the trailing bookkeeping records, which is
+# just the shape of a session that ended after a reply. Neither number
+# separates abandoned from finished, so no metric is emitted rather than one
+# that would be read as meaningful.
 
 
 # --- Redaction -------------------------------------------------------------
@@ -132,6 +136,29 @@ def signature(tool_input):
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def is_error_record(rec):
+    """Did this record carry a failed tool result?
+
+    Measured across the corpus: `is_error` on the tool_result content block is
+    the dominant marker (519 in a 373-session sample), a string-valued
+    `toolUseResult` beginning with an error word is next (489), and a
+    `toolUseResult.error` key appears once. Both of the first two can be present
+    for the same failure, so this returns a boolean and the caller counts once.
+    """
+    result = rec.get("toolUseResult")
+    if isinstance(result, dict) and result.get("error"):
+        return True
+    if isinstance(result, str) and result.lower().startswith("error"):
+        return True
+    message = rec.get("message")
+    if isinstance(message, dict) and isinstance(message.get("content"), list):
+        for block in message["content"]:
+            if isinstance(block, dict) and block.get("type") == "tool_result" \
+                    and block.get("is_error"):
+                return True
+    return False
+
+
 def parse_ts(value):
     if not value:
         return None
@@ -164,12 +191,12 @@ def measure(path):
     m = Counter()
     session_id = project = branch = version = None
     first_ts = last_ts = None
-    last_user_ts = None
-    last_type = None
     seen_sigs = set()
     skills = set()
     prior_assistant_chars = 0
     tokens_in = tokens_out = cache_read = 0
+    prev_mode = None
+    prev_skill = None
 
     for rec in read_records(path):
         if not isinstance(rec, dict):
@@ -185,16 +212,29 @@ def measure(path):
         branch = branch or rec.get("gitBranch")
         version = version or rec.get("version")
 
-        if rec.get("isSidechain"):
-            m["sidechain_turns"] += 1
-        if rec.get("attributionSkill"):
-            m["skill_invocations"] += 1
-            skills.add(str(rec["attributionSkill"]))
+        # attributionSkill is stamped on EVERY assistant record produced while a
+        # skill is active, so counting records counts turns, not invocations.
+        # A run is one contiguous stretch of the same skill.
+        skill = rec.get("attributionSkill")
+        if skill:
+            skills.add(str(skill))
+            if skill != prev_skill:
+                m["skill_runs"] += 1
+        prev_skill = skill
 
         if rtype == "permission-mode":
-            m["permission_mode_changes"] += 1
+            # These records are a repeated snapshot of the current mode, not a
+            # change event: 5,645 records across the corpus hold 68 actual
+            # transitions. Count transitions.
+            mode = rec.get("mode") or rec.get("permissionMode")
+            if prev_mode is not None and mode != prev_mode:
+                m["permission_mode_changes"] += 1
+            prev_mode = mode
         elif rtype == "queue-operation":
-            m["queue_operations"] += 1
+            # enqueue/dequeue/remove/popAll are paired; a single total would
+            # count one queued prompt up to three times.
+            if (rec.get("subtype") or rec.get("operation")) == "enqueue":
+                m["queued_prompts"] += 1
         elif rtype == "assistant":
             m["turns"] += 1
             msg = rec.get("message") or {}
@@ -217,28 +257,16 @@ def measure(path):
                 m["interrupts"] += 1
             elif rec.get("toolUseResult") is None and body.strip():
                 m["user_prompts"] += 1
-                last_user_ts = ts
                 if (len(body) <= CORRECTION_MAX_CHARS
                         and prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS):
                     m["correction_turns"] += 1
                 prior_assistant_chars = 0
 
-        result = rec.get("toolUseResult")
-        if isinstance(result, dict) and (result.get("is_error") or result.get("error")):
+        if is_error_record(rec):
             m["tool_errors"] += 1
-        elif isinstance(result, str) and result.startswith("Error"):
-            m["tool_errors"] += 1
-
-        if rtype in ("user", "assistant"):
-            last_type = rtype
 
     if session_id is None and not m:
         return None
-
-    trailing = 0
-    if last_ts and last_user_ts:
-        trailing = (last_ts - last_user_ts).total_seconds()
-    abandoned = bool(last_type == "assistant" and trailing >= ABANDONED_AFTER_S)
 
     # Subagent transcripts live under <session>/subagents/ and carry the PARENT
     # session's id. Keying rows by session id would let them overwrite the
@@ -261,11 +289,8 @@ def measure(path):
         "tokens_out": tokens_out,
         "cache_read": cache_read,
         "skills_used": sorted(skills),
-        "abandoned": abandoned,
     }
-    for key in ("turns", "user_prompts", "tool_calls", "tool_errors", "tool_retries",
-                "correction_turns", "interrupts", "permission_mode_changes",
-                "queue_operations", "sidechain_turns", "skill_invocations"):
+    for key in COUNTERS:
         row[key] = m[key]
     return row
 
@@ -329,7 +354,7 @@ def cmd_extract(args):
 
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "tool_retries",
             "correction_turns", "interrupts", "permission_mode_changes",
-            "queue_operations", "sidechain_turns", "skill_invocations"]
+            "queued_prompts", "skill_runs"]
 
 
 def load_rows():
@@ -356,7 +381,6 @@ def totals(rows):
             agg["subagent_transcripts"] += 1
         else:
             agg["sessions"] += 1
-            agg["abandoned"] += 1 if row.get("abandoned") else 0
     return agg
 
 
@@ -365,10 +389,9 @@ def friction_score(row):
     that mean a human had to intervene, over ones that just mean a long session."""
     return (int(row.get("correction_turns") or 0) * 4
             + int(row.get("interrupts") or 0) * 4
-            + int(row.get("permission_mode_changes") or 0) * 2
+            + int(row.get("permission_mode_changes") or 0) * 3
             + int(row.get("tool_retries") or 0) * 2
-            + int(row.get("tool_errors") or 0)
-            + (3 if row.get("abandoned") else 0))
+            + int(row.get("tool_errors") or 0))
 
 
 def moments(row, limit=3):
@@ -419,7 +442,7 @@ def cmd_pack(args):
              f"(prior window: {prev_t['sessions']}).", "",
              "## Trends", "",
              "| signal | this window | prior | delta |", "|---|---|---|---|"]
-    for key in ["sessions", "subagent_transcripts", "abandoned"] + COUNTERS:
+    for key in ["sessions", "subagent_transcripts"] + COUNTERS:
         a, b = now_t[key], prev_t[key]
         delta = "n/a" if not b else f"{(a - b) / b * 100:+.0f}%"
         lines.append(f"| {key} | {a} | {b} | {delta} |")
@@ -445,7 +468,7 @@ def cmd_pack(args):
                      f"permission-mode changes {row.get('permission_mode_changes')}, "
                      f"tool retries {row.get('tool_retries')}, "
                      f"tool errors {row.get('tool_errors')}, "
-                     f"abandoned {row.get('abandoned')}")
+                     f"queued prompts {row.get('queued_prompts')}")
         for moment in moments(row):
             lines.append("")
             lines.append(f"- **{moment['kind']}** at {moment['at']}")
