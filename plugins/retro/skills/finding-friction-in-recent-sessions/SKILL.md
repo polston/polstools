@@ -18,8 +18,8 @@ most turns. What you remember and what the numbers say are routinely different.
 
 ## The procedure
 
-**1. Measure.** Incremental — a full corpus rebuild is about thirty seconds, a
-re-run over unchanged history is under a second.
+**1. Measure.** Incremental: only transcripts whose size or mtime moved are
+re-read, so a routine run costs a fraction of a first build.
 
 ```bash
 python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
@@ -38,9 +38,11 @@ happened. A signal that rose while sessions stayed flat is real; a signal that
 fell 20% in a week when turns also fell 20% is nothing. The pack prints
 per-session rates under the table for this reason.
 
-**4. Rank by consequence.** The metric to rank on is turns burned, not
-occurrences. One friction that appears twice but costs fifteen turns each time
-outranks a papercut that appears forty times.
+**4. Rank by consequence, not by count.** The pack orders sessions by a friction
+score that weights the signals meaning a human had to intervene — corrections and
+interrupts heaviest, then permission-mode changes and retries, then errors. Read
+in that order, and within it prefer the friction that cost the most turns over
+the one that occurred most often.
 
 **5. Write at most three proposals.** Each one has four parts:
 
@@ -66,14 +68,16 @@ permission rule from inside this skill. Propose; wait to be asked.
 | `queued_prompts` | you were typing ahead because a turn was taking too long |
 | `tool_errors` | a tool is being called wrong, repeatedly — usually a missing note about its interface |
 | `subagent_transcripts` with flat output | fan-out that is not paying for itself |
-| `permission_mode_changes` | rare by nature — 68 across the entire corpus. Any nonzero week is worth a look; do not expect a trend line |
+| `permission_mode_changes` | rare by nature — expect long stretches of zero. Any nonzero week is worth a look; do not expect a trend line |
 
 Two of these carry a known measurement caveat. `skill_runs` counts contiguous
 stretches of the same skill being active, which is not the same as the number of
-times it was deliberately invoked, and the field it derives from is absent
-entirely from transcripts written by CLI version 2.1.170. `tool_errors` counts
-records that carry a failure marker, which includes failures that were expected
-and handled.
+times it was deliberately invoked, and the field it derives from is absent from
+transcripts written by older CLI versions. `tool_errors` counts records carrying
+a failure marker, which includes failures that were expected and handled.
+
+Every metric's precise definition, and the measurement that settled it, lives in
+`docs/plans/2026-08-12-retro-design.md`. Read it before arguing with a number.
 
 ## Common mistakes
 
@@ -100,3 +104,5 @@ See step 3.
 - "This one is hard to make concrete" — then it is not ready to propose
 - "I'll just fix this one while I'm here" — this skill proposes; it does not apply
 - Opening a transcript directly
+
+All of these mean: go back to the pack and let the counts pick the finding.

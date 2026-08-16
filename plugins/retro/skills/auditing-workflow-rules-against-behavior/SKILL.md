@@ -93,3 +93,6 @@ violated and stale ones.
 - "None of these skills seem useful" — firing data is about descriptions, not worth
 - A finding that names no clause and no file
 - An audit that proposes zero deletions — instruction files do not shrink by accident
+
+All of these mean: name the clause, run the check that settles it, and write the
+replacement text.

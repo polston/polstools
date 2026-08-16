@@ -92,3 +92,6 @@ adopted.
 - A candidate with no named seam
 - A kill criterion phrased as a feeling rather than an observation
 - Any recommendation where the docs were never opened
+
+All of these mean: go back to the friction list and start from a named seam, or
+report that there is nothing to scout.

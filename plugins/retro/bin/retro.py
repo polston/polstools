@@ -11,7 +11,14 @@ Counts only. Message text leaves this script in exactly one place — the
 
 Stdlib only. Every field access is guarded: transcript shape varies by CLI
 version, and a KeyError partway through a 900MB corpus loses the whole run.
+
+Exit codes match the sibling scripts in plugins/core/bin:
+    0  ran clean, nothing flagged
+    1  ran clean, something was flagged (friction in the window, dormant skills)
+    2  could not run (no session directory, no ledger)
 """
+
+EXIT_CLEAN, EXIT_FLAGGED, EXIT_CANNOT_RUN = 0, 1, 2
 
 import argparse
 import hashlib
@@ -20,13 +27,14 @@ import os
 import re
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
-HISTORY_FILE = CLAUDE_DIR / "history.jsonl"
 WORK_DIR = Path(os.environ.get("RETRO_HOME", HOME / ".retro"))
 METRICS_FILE = WORK_DIR / "metrics.jsonl"
 STATE_FILE = WORK_DIR / "state.json"
@@ -42,18 +50,24 @@ CORRECTION_MAX_CHARS = 120
 # short back-and-forth in a fast exchange scores as a correction.
 CORRECTION_MIN_PRIOR_CHARS = 400
 
-# Deliberately absent: an "abandoned session" metric. The obvious definition —
-# the transcript ends on an assistant turn — matches 0.3% of session files
-# literally, and 59% if you ignore the trailing bookkeeping records, which is
-# just the shape of a session that ended after a reply. Neither number
-# separates abandoned from finished, so no metric is emitted rather than one
-# that would be read as meaningful.
+# Row schema. Also the ledger contract: every counter here is a column, and
+# adding one means an extract --rebuild before trends over it mean anything.
+COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "tool_retries",
+            "correction_turns", "interrupts", "permission_mode_changes",
+            "queued_prompts", "skill_runs"]
+
+# No "abandoned session" counter, deliberately. See the metric-definitions
+# section of docs/plans/2026-08-12-retro-design.md for the measurement that
+# ruled it out.
 
 
 # --- Redaction -------------------------------------------------------------
 
+@lru_cache(maxsize=1)
 def _redaction_patterns():
-    """Built at call time so the home path never becomes a module constant."""
+    """Compile once. Categories mirror plugins/core/bin/repo-privacy-audit --
+    keep the two lists in step when either gains a category.
+    """
     home = str(HOME)
     user = HOME.name
     pats = [
@@ -61,14 +75,12 @@ def _redaction_patterns():
         (re.compile(re.escape(home.replace("\\", "/")), re.I), "~"),
         (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b"), "<email>"),
         (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
+        (re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), "<mac>"),
         (re.compile(r"\b[A-Za-z0-9_-]{32,}\b"), "<long-token>"),
     ]
     if len(user) > 2:
         pats.insert(0, (re.compile(r"\b" + re.escape(user) + r"\b", re.I), "<user>"))
     return pats
-
-
-_PATTERNS = None
 
 
 def redact(text):
@@ -77,12 +89,9 @@ def redact(text):
     Runs before anything is written to a pack. A pack file on disk must already
     be safe to read aloud — redacting at read time would be too late.
     """
-    global _PATTERNS
-    if _PATTERNS is None:
-        _PATTERNS = _redaction_patterns()
     if not text:
         return ""
-    for pattern, replacement in _PATTERNS:
+    for pattern, replacement in _redaction_patterns():
         text = pattern.sub(replacement, text)
     return text
 
@@ -125,15 +134,40 @@ def tool_calls_of(message):
             yield block.get("name") or "?", signature(block.get("input"))
 
 
+_DIGITS = re.compile(r"\d+")
+_SPACES = re.compile(r"\s+")
+_INTERRUPT = re.compile(r"\[request interrupted", re.I)
+
+# A tool input can carry a whole file body. The leading bytes discriminate one
+# call from another just as well as the whole thing, and hashing the rest is
+# most of this function's cost.
+SIGNATURE_MAX_CHARS = 2048
+
+
 def signature(tool_input):
     """A hash that survives trivial edits, so a retried command with a tweaked
     number or reflowed whitespace still matches its predecessor."""
     if tool_input is None:
         return ""
-    raw = json.dumps(tool_input, sort_keys=True, default=str)
-    raw = re.sub(r"\d+", "#", raw)
-    raw = re.sub(r"\s+", " ", raw).strip().lower()
+    raw = json.dumps(tool_input, sort_keys=True, default=str)[:SIGNATURE_MAX_CHARS]
+    raw = _DIGITS.sub("#", raw)
+    raw = _SPACES.sub(" ", raw).strip().lower()
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def classify_user_turn(body, prior_assistant_chars):
+    """The pack's central definition, in one place: what a user turn means.
+
+    Returns "interrupt", "correction", or "" — `measure` counts the result and
+    `moments` quotes it, so both read the same rule rather than two copies that
+    drift.
+    """
+    if _INTERRUPT.search(body):
+        return "interrupt"
+    if (0 < len(body.strip()) <= CORRECTION_MAX_CHARS
+            and prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS):
+        return "correction"
+    return ""
 
 
 def is_error_record(rec):
@@ -175,8 +209,9 @@ def read_records(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                line = line.strip()
-                if not line:
+                # json.loads tolerates surrounding whitespace, so testing for
+                # blankness beats copying every line of a gigabyte corpus.
+                if not line or line.isspace():
                     continue
                 try:
                     yield json.loads(line)
@@ -252,17 +287,18 @@ def measure(path):
                 seen_sigs.add(key)
         elif rtype == "user":
             body = text_of(rec.get("message") or {})
-            low = body.lower()
-            if "[request interrupted" in low:
+            kind = classify_user_turn(body, prior_assistant_chars)
+            if kind == "interrupt":
                 m["interrupts"] += 1
             elif rec.get("toolUseResult") is None and body.strip():
                 m["user_prompts"] += 1
-                if (len(body) <= CORRECTION_MAX_CHARS
-                        and prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS):
+                if kind == "correction":
                     m["correction_turns"] += 1
                 prior_assistant_chars = 0
 
-        if is_error_record(rec):
+        # Only user records carry tool results; checking the rest re-walks
+        # message content for nothing.
+        if rtype == "user" and is_error_record(rec):
             m["tool_errors"] += 1
 
     if session_id is None and not m:
@@ -307,20 +343,18 @@ def load_state():
 def cmd_extract(args):
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     if not PROJECTS_DIR.is_dir():
-        sys.exit(f"no session directory at {PROJECTS_DIR}")
+        print(f"no session directory at {PROJECTS_DIR}", file=sys.stderr)
+        sys.exit(EXIT_CANNOT_RUN)
 
     state = {} if args.rebuild else load_state()
     rows = {}
-    if not args.rebuild and METRICS_FILE.exists():
-        for line in METRICS_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                row = json.loads(line)
-                rows[row["transcript"]] = row
-            except (ValueError, KeyError):
-                continue
+    if not args.rebuild:
+        rows = {r["transcript"]: r for r in load_rows(required=False)
+                if "transcript" in r}
 
     transcripts = sorted(PROJECTS_DIR.rglob("*.jsonl"))
-    processed = skipped = failed = 0
+    stale = []
+    skipped = 0
     for path in transcripts:
         try:
             stat = path.stat()
@@ -331,13 +365,23 @@ def cmd_extract(args):
         if state.get(str(path)) == fingerprint:
             skipped += 1
             continue
-        row = measure(path)
-        if row is None:
-            failed += 1
-        else:
-            rows[row["transcript"]] = row
-            processed += 1
-        state[str(path)] = fingerprint
+        stale.append((path, fingerprint))
+
+    # measure() shares no state, and the work is dominated by reading a
+    # gigabyte off disk, so a thread pool converts most of the wall clock into
+    # concurrent I/O. Warm the redaction patterns first so the cache is not
+    # raced by the workers.
+    _redaction_patterns()
+    processed = failed = 0
+    with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
+        for (path, fingerprint), row in zip(
+                stale, pool.map(lambda item: measure(item[0]), stale)):
+            if row is None:
+                failed += 1
+            else:
+                rows[row["transcript"]] = row
+                processed += 1
+            state[str(path)] = fingerprint
 
     with open(METRICS_FILE, "w", encoding="utf-8") as fh:
         for row in sorted(rows.values(), key=lambda r: (r.get("date", ""), r["transcript"])):
@@ -352,14 +396,15 @@ def cmd_extract(args):
 
 # --- pack ------------------------------------------------------------------
 
-COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "tool_retries",
-            "correction_turns", "interrupts", "permission_mode_changes",
-            "queued_prompts", "skill_runs"]
-
-
-def load_rows():
+def load_rows(required=True):
+    """Read the ledger. `required` is False for extract, which is allowed to
+    start from an empty ledger and build one."""
     if not METRICS_FILE.exists():
-        sys.exit(f"no metrics ledger at {METRICS_FILE} - run `extract` first")
+        if not required:
+            return []
+        print(f"no metrics ledger at {METRICS_FILE} - run `extract` first",
+              file=sys.stderr)
+        sys.exit(EXIT_CANNOT_RUN)
     out = []
     for line in METRICS_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
@@ -394,7 +439,10 @@ def friction_score(row):
             + int(row.get("tool_errors") or 0))
 
 
-def moments(row, limit=3):
+MOMENTS_PER_SESSION = 3
+
+
+def moments(row):
     """Pull the user turns that scored this session as frictional, with the
     assistant text immediately before each. Redacted."""
     path = PROJECTS_DIR / row.get("transcript", "")
@@ -409,19 +457,16 @@ def moments(row, limit=3):
             prior = text_of(rec.get("message") or {})
         elif rec.get("type") == "user" and rec.get("toolUseResult") is None:
             body = text_of(rec.get("message") or {})
-            low = body.lower()
-            interrupted = "[request interrupted" in low
-            corrected = (0 < len(body) <= CORRECTION_MAX_CHARS
-                         and len(prior) >= CORRECTION_MIN_PRIOR_CHARS)
-            if interrupted or corrected:
+            kind = classify_user_turn(body, len(prior))
+            if kind:
                 out.append({
                     "at": rec.get("timestamp") or "",
-                    "kind": "interrupt" if interrupted else "correction",
+                    "kind": kind,
                     "said": redact(body.strip())[:400],
                     "after": redact(prior.strip()[-300:]),
                 })
             prior = ""
-        if len(out) >= limit:
+        if len(out) >= MOMENTS_PER_SESSION:
             break
     return out
 
@@ -442,16 +487,16 @@ def cmd_pack(args):
              f"(prior window: {prev_t['sessions']}).", "",
              "## Trends", "",
              "| signal | this window | prior | delta |", "|---|---|---|---|"]
-    for key in ["sessions", "subagent_transcripts"] + COUNTERS:
+    for key in ["sessions", "subagent_transcripts", "tokens_out"] + COUNTERS:
         a, b = now_t[key], prev_t[key]
         delta = "n/a" if not b else f"{(a - b) / b * 100:+.0f}%"
         lines.append(f"| {key} | {a} | {b} | {delta} |")
 
-    per_session = []
-    for key in COUNTERS:
-        if now_t["sessions"]:
-            per_session.append(f"{key} {now_t[key] / now_t['sessions']:.1f}/session")
-    lines += ["", "Per session: " + ", ".join(per_session), "", "## Moments", ""]
+    lines.append("")
+    if now_t["sessions"]:
+        lines.append("Per session: " + ", ".join(
+            f"{key} {now_t[key] / now_t['sessions']:.1f}" for key in COUNTERS))
+    lines += ["", "## Moments", ""]
 
     ranked = sorted([r for r in window if not r.get("is_subagent")],
                     key=friction_score, reverse=True)[:args.sessions]
@@ -480,23 +525,19 @@ def cmd_pack(args):
     out_path = WORK_DIR / f"pack-{now.isoformat()}-{args.days}d.md"
     out_path.write_text("\n".join(lines), encoding="utf-8")
     print(out_path)
+    return EXIT_FLAGGED if any(friction_score(r) for r in ranked) else EXIT_CLEAN
 
 
 # --- skills ----------------------------------------------------------------
 
 def installed_skills():
-    """Every skill available to this machine, by directory name."""
-    roots = [CLAUDE_DIR / "skills"]
-    plugins = CLAUDE_DIR / "plugins" / "cache"
-    if plugins.is_dir():
-        roots += [p.parent for p in plugins.rglob("skills/*/SKILL.md")]
-    found = set()
-    for root in roots:
-        if root.name == "skills" and root.is_dir():
-            found |= {d.name for d in root.iterdir() if (d / "SKILL.md").is_file()}
-        elif root.is_dir():
-            found.add(root.name)
-    return found
+    """Every skill available to this machine, by directory name. Two homes:
+    loose skills under the user's skills directory, and skills vendored inside
+    installed plugins. glob on a missing directory yields nothing, so neither
+    needs an existence guard."""
+    loose = (CLAUDE_DIR / "skills").glob("*/SKILL.md")
+    vendored = (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")
+    return {p.parent.name for p in loose} | {p.parent.name for p in vendored}
 
 
 def cmd_skills(args):
@@ -522,11 +563,12 @@ def cmd_skills(args):
     print(f"\n## Never fired ({len(dormant)} of {len(installed)} installed)")
     for name in dormant:
         print(f"         {name}")
+    return EXIT_FLAGGED if dormant else EXIT_CLEAN
 
 
 def main():
     parser = argparse.ArgumentParser(prog="retro", description=__doc__)
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(required=True)
 
     p_extract = sub.add_parser("extract", help="measure transcripts into the ledger")
     p_extract.add_argument("--rebuild", action="store_true",
@@ -545,7 +587,7 @@ def main():
     p_skills.set_defaults(func=cmd_skills)
 
     args = parser.parse_args()
-    args.func(args)
+    sys.exit(args.func(args) or EXIT_CLEAN)
 
 
 if __name__ == "__main__":

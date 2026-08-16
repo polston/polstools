@@ -44,6 +44,16 @@ Three subcommands:
 Every field access is guarded. Transcript shape varies by CLI version, and a
 `KeyError` partway through a 900 MB corpus loses the whole run.
 
+`extract` fans the per-transcript work across a thread pool. Measuring a
+transcript shares no state and is dominated by reading it off disk, so the pool
+turns most of the wall clock into concurrent I/O — a full rebuild went from
+29.6 s to 5.9 s.
+
+Exit codes match the sibling scripts in `plugins/core/bin`: `0` ran clean and
+flagged nothing, `1` ran clean and flagged something (friction in the window,
+dormant skills), `2` could not run. Without this the subcommands cannot gate
+anything without parsing their stdout.
+
 ### Three skills
 
 | Skill | Lens |
@@ -143,13 +153,15 @@ Measured on the live corpus, 2026-08-16, after the metric corrections above:
 
 | Check | Result |
 |---|---|
-| Full rebuild over 1,771 transcripts | 8.1 s, 1,749 rows, 22 unreadable |
-| Immediate incremental re-run | 0.17 s |
-| Row split | 374 session rows, 1,375 subagent rows |
-| Ledger totals vs an independent probe | `permission_mode_changes` 68/68, `queued_prompts` 2,088, `tool_errors` 521 — agree |
-| 7-day pack | built; 99 sessions vs 78 prior |
-| Redactor over the produced pack | username, home path, email, IPv4 all absent |
+| Full rebuild over 1,800 transcripts | 5.9 s, 1,778 rows, 22 unreadable |
+| Immediate incremental re-run | 0.16 s |
+| Row split | 386 session rows, 1,392 subagent rows |
+| Ledger totals vs an independent probe | `permission_mode_changes` 68/68 — agree |
+| Metrics after the cleanup refactor | unchanged: permission-mode still exactly 68, other counters moved only by newly added sessions |
+| 7-day pack | built |
+| Redactor over the produced pack | username, home path, email, IPv4, MAC all absent |
 | `skills --days 30` | 25 fired, 61 of 86 installed never fired |
+| Exit codes | `pack` and `skills` return 1 when they flag something, 0 when clean |
 | Manifests | `marketplace.json` and all three `plugin.json` parse |
 | Privacy scan over the worktree | 0 hits |
 
