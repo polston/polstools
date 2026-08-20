@@ -16,6 +16,12 @@ import os
 import sys
 import time
 
+# The harness reads hook stdout as UTF-8, but on Windows a piped stdout
+# defaults to the ANSI code page, which mangles any non-ASCII payload byte.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 # Outside ~/.claude on purpose: that directory is often a git repo, and state
 # files must not show up as untracked noise in it.
 FLAG_DIR = os.path.join(

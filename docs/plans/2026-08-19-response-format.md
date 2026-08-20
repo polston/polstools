@@ -84,7 +84,14 @@ relied on above.
   `bin/format-ctl gate`, which prints its payload unless the session is
   toggled off. A missing payload still surfaces as a failed hook.
 - `plugins/format/bin/format-ctl` — the gate plus the `off`/`on`/`status`
-  toggle (stdlib Python 3).
+  toggle (stdlib Python 3). Reconfigures stdio to UTF-8 first: piped stdout
+  on Windows defaults to the ANSI code page and mangles non-ASCII payload
+  bytes (caught by running the gate, invisible in file reads).
+- `plugins/format/bin/format-e2e` — 19-check end-to-end verifier: wiring,
+  gates byte-exact, UTF-8 validity, toggle lifecycle, exit-code contract,
+  catalog sync.
+- `plugins/format/skills/maintaining-the-format-plugin/` — health check,
+  repair direction, deliberate-choices table, and full-removal checklist.
 - `plugins/format/commands/` — `/format:off` and `/format:on`.
 - `plugins/format/style/` — the payloads; editing the format means editing
   these two files only.
