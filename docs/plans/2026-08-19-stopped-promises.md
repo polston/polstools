@@ -265,6 +265,33 @@ B, C and D are file-disjoint from A and from each other and can be written
 concurrently by separate agents. The live-corpus run in "Done when" is the only
 step needing A finished.
 
+## Open lead: reply latency may be worth more than it looks
+
+Measured against the first hand-labelled set — 58 candidates, 15 real:
+
+| Signal | Result |
+|---|---|
+| Human replied within 21 seconds | 4 of 6 were real — **67% precision against 25.9% for the list** |
+| Best accuracy any threshold reaches | 77.6%, against 74.1% for always guessing "not real" |
+| Permutation test on the median gap | p = 0.67 — not distinguishable from chance |
+
+So it is a lead, not a finding. The enriched slice holds six examples, which is
+two coin flips from nothing, and no threshold works as a filter.
+
+The story that would explain it: a promise dropped while someone is watching
+gets a fast "go" or "?", whereas a promise conditional on a decision takes as
+long as the decision does. If that holds, latency would rank the reading list
+rather than filter it — putting the likely-real ones first.
+
+What settles it is a second labelled set from another corpus, which is now
+cheap: the tool produces the list, and labelling 58 took one pass. Deliberately
+not implemented until there is data, because a ranking rule fitted to six
+examples is the kind of thing this design already threw out once.
+
+Things measured and found NOT to separate the two classes: length of the human's
+next message, whether the following turn opens with a tool call, and position in
+the session.
+
 ## Non-goals
 
 No scheduler, no database, no dashboard, no ledger, no auto-apply, no editing of
