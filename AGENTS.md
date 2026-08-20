@@ -45,6 +45,8 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/<name>/skills/<skill>/SKILL.md` — one directory per skill.
 - `plugins/<name>/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
   dependencies, no compiled artifacts.
+- `plugins/<name>/tests/` — stdlib `unittest`, no runner or dependency. Run
+  with `python -m unittest discover -s plugins/<name>/tests -t plugins/<name>/tests`.
 - `docs/plans/` — design documents, filename dated.
 
 Scripts in any `bin/` share one exit-code convention: `0` ran clean and flagged
