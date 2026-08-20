@@ -51,11 +51,27 @@ CORRECTION_MAX_CHARS = 120
 # short back-and-forth in a fast exchange scores as a correction.
 CORRECTION_MIN_PRIOR_CHARS = 400
 
+# A short reply that only agrees is the process working, not friction. The whole
+# reply has to be one of these, ignoring case and trailing punctuation: "yes" is
+# an approval, "yes, but drop the cache" is a correction.
+#
+# A seed list of unambiguous whole-reply affirmatives, deliberately short. The
+# `label` subcommand exists to settle this list from marked turns rather than
+# from a guess - add a phrase when the marks show it is being missed.
+APPROVAL_PHRASES = (
+    "yes", "yep", "yeah", "yup", "ok", "okay", "sure", "correct", "agreed",
+    "go ahead", "go for it", "do it", "sounds good", "looks good", "lgtm",
+    "perfect", "exactly", "approved", "please do", "ship it",
+)
+_APPROVAL_TAIL = re.compile(r"[\s.!,]+$")
+_APPROVAL = re.compile(
+    r"^(?:%s)$" % "|".join(re.escape(p) for p in APPROVAL_PHRASES), re.I)
+
 # Row schema. Also the ledger contract: every counter here is a column, and
 # adding one means an extract --rebuild before trends over it mean anything.
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "tool_retries",
-            "correction_turns", "interrupts", "permission_mode_changes",
-            "queued_prompts", "skill_runs"]
+            "correction_turns", "approval_turns", "interrupts",
+            "permission_mode_changes", "queued_prompts", "skill_runs"]
 
 # No "abandoned session" counter, deliberately. See the metric-definitions
 # section of docs/plans/2026-08-12-retro-design.md for the measurement that
@@ -156,19 +172,39 @@ def signature(tool_input):
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def is_approval(reply):
+    """Is this whole reply nothing but agreement? `reply` is already stripped.
+
+    Shared with the label report's threshold sweep, so the sweep cannot drift
+    from the rule the ledger was built with.
+    """
+    if not APPROVAL_PHRASES:
+        return False
+    return bool(_APPROVAL.match(_APPROVAL_TAIL.sub("", reply)))
+
+
 def classify_user_turn(body, prior_assistant_chars):
     """The pack's central definition, in one place: what a user turn means.
 
-    Returns "interrupt", "correction", or "" — `measure` counts the result and
-    `moments` quotes it, so both read the same rule rather than two copies that
-    drift.
+    Returns "interrupt", "question", "approval", "correction" or "". Precedence
+    is fixed in that order, so a turn that could read as two things is always
+    the earlier one. `measure` counts the result and `moments` quotes it, so
+    both read the same rule rather than two copies that drift.
+
+    Only a short reply to a substantial assistant turn is classified at all.
+    Anything longer is a new request, and returns "" as it always has.
     """
     if _INTERRUPT.search(body):
         return "interrupt"
-    if (0 < len(body.strip()) <= CORRECTION_MAX_CHARS
+    reply = body.strip()
+    if not (0 < len(reply) <= CORRECTION_MAX_CHARS
             and prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS):
-        return "correction"
-    return ""
+        return ""
+    if reply.endswith("?"):
+        return "question"
+    if is_approval(reply):
+        return "approval"
+    return "correction"
 
 
 def is_error_record(rec):
@@ -325,6 +361,8 @@ def measure(path):
                 m["user_prompts"] += 1
                 if kind == "correction":
                     m["correction_turns"] += 1
+                elif kind == "approval":
+                    m["approval_turns"] += 1
                 prior_assistant_chars = 0
 
         # Only user records carry tool results; checking the rest re-walks
@@ -469,18 +507,28 @@ def load_rows(required=True):
 
 
 def totals(rows):
+    """Aggregate the rows handed in, and nothing else.
+
+    The caller chooses the population. Deciding it here is what made the
+    printed rates wrong: every counter was summed over all transcripts and then
+    divided by a session count that excluded subagent transcripts.
+    """
     agg = Counter()
     for row in rows:
         for key in COUNTERS:
             agg[key] += int(row.get(key) or 0)
         agg["tokens_out"] += int(row.get("tokens_out") or 0)
-        # Subagent transcripts are spend, not sessions — counting them as
-        # sessions would deflate every per-session rate.
-        if row.get("is_subagent"):
-            agg["subagent_transcripts"] += 1
-        else:
-            agg["sessions"] += 1
+        agg["transcripts"] += 1
     return agg
+
+
+def split_population(rows):
+    """Main-session rows, then subagent rows. One row per transcript either
+    way — subagent transcripts are spend, not sessions, and counting them as
+    sessions deflates every per-session rate."""
+    main = [row for row in rows if not row.get("is_subagent")]
+    sub = [row for row in rows if row.get("is_subagent")]
+    return main, sub
 
 
 def friction_score(row):
@@ -522,7 +570,7 @@ def _moments(row):
         elif rec.get("type") == "user" and rec.get("toolUseResult") is None:
             body = text_of(rec.get("message") or {})
             kind = classify_user_turn(body, len(prior))
-            if kind:
+            if kind in ("interrupt", "correction"):
                 out.append({
                     "at": rec.get("timestamp") or "",
                     "kind": kind,
@@ -545,25 +593,37 @@ def cmd_pack(args):
     prior = [r for r in rows if r.get("date")
              and prior_start.isoformat() <= r["date"] < start.isoformat()]
 
-    now_t, prev_t = totals(window), totals(prior)
+    main, sub = split_population(window)
+    prior_main, prior_sub = split_population(prior)
+    now_t, prev_t = totals(main), totals(prior_main)
+    now_s = totals(sub)
+
     lines = [f"# Evidence pack — last {args.days} days",
-             f"Window: {start} to {now}. Sessions: {now_t['sessions']} "
-             f"(prior window: {prev_t['sessions']}).", "",
+             f"Window: {start} to {now}. Sessions: {len(main)} "
+             f"(prior window: {len(prior_main)}).", "",
              "## Trends", "",
+             "Main sessions only. Subagent transcripts are spend and are "
+             "reported under the table — every rate here divides one "
+             "population by itself.", "",
              "| signal | this window | prior | delta |", "|---|---|---|---|"]
-    for key in ["sessions", "subagent_transcripts", "tokens_out"] + COUNTERS:
-        a, b = now_t[key], prev_t[key]
+    table = [("sessions", len(main), len(prior_main))]
+    table += [(key, now_t[key], prev_t[key]) for key in ["tokens_out"] + COUNTERS]
+    for key, a, b in table:
         delta = "n/a" if not b else f"{(a - b) / b * 100:+.0f}%"
         lines.append(f"| {key} | {a} | {b} | {delta} |")
 
     lines.append("")
-    if now_t["sessions"]:
+    if main:
         lines.append("Per session: " + ", ".join(
-            f"{key} {now_t[key] / now_t['sessions']:.1f}" for key in COUNTERS))
+            f"{key} {now_t[key] / len(main):.1f}" for key in COUNTERS))
+    lines.append("")
+    lines.append(f"Subagent spend — {len(sub)} transcripts "
+                 f"(prior window: {len(prior_sub)}), no per-session rate: "
+                 + ", ".join(f"{key} {now_s[key]}"
+                             for key in ["tokens_out"] + COUNTERS))
     lines += ["", "## Moments", ""]
 
-    ranked = sorted([r for r in window if not r.get("is_subagent")],
-                    key=friction_score, reverse=True)[:args.sessions]
+    ranked = sorted(main, key=friction_score, reverse=True)[:args.sessions]
     if not ranked:
         lines.append("_No sessions in window._")
     for row in ranked:
