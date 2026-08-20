@@ -1,0 +1,25 @@
+{
+  "description": "Injects the response-format spec at session start and a one-line reminder every turn (per-turn reinjection counters within-session drift).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/inject-spec.sh\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/inject-reminder.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

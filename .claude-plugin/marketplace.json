@@ -28,6 +28,14 @@
       "version": "0.1.0",
       "category": "productivity",
       "keywords": ["retrospective", "workflow", "session-history", "metrics"]
+    },
+    {
+      "name": "format",
+      "source": "./plugins/format",
+      "description": "Fixed reply structure — findings, problems, asks, then everything else below a rule — injected at session start and reinforced every turn.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "keywords": ["format", "output-style", "hooks", "response-structure"]
     }
   ]
 }
