@@ -252,6 +252,23 @@ def is_error_record(rec):
     return False
 
 
+def is_tool_generated(rec):
+    """Was this user-role record written by a tool rather than typed?
+
+    `sourceToolAssistantUUID` names the assistant turn whose tool call produced
+    the text. Measured over the corpus 2026-08-19: the key is on 49,516 records,
+    every one of them a user record, never with an empty value. The older
+    `toolUseResult` guard misses 6,787 of them, all in subagent transcripts.
+
+    A precision instrument, not a complete one: unmarked records carrying
+    machine wrapper tags exist and this does not find them. On older transcripts
+    the marker coincides exactly with `toolUseResult`, so this is a no-op there
+    and the ledger will show that as a step in the trend rather than a change in
+    behaviour.
+    """
+    return "sourceToolAssistantUUID" in rec
+
+
 def parse_ts(value):
     if not value:
         return None
@@ -348,8 +365,10 @@ def measure(path):
             body = text_of(rec.get("message") or {})
             kind = classify_user_turn(body, prior_assistant_chars)
             if kind == "interrupt":
-                m["interrupts"] += 1
-            elif rec.get("toolUseResult") is None and body.strip():
+                if not is_tool_generated(rec):
+                    m["interrupts"] += 1
+            elif (rec.get("toolUseResult") is None and not is_tool_generated(rec)
+                    and body.strip()):
                 m["user_prompts"] += 1
                 if kind == "correction":
                     m["correction_turns"] += 1
@@ -526,7 +545,8 @@ def moments(row):
             continue
         if rec.get("type") == "assistant":
             prior = text_of(rec.get("message") or {})
-        elif rec.get("type") == "user" and rec.get("toolUseResult") is None:
+        elif (rec.get("type") == "user" and rec.get("toolUseResult") is None
+                and not is_tool_generated(rec)):
             body = text_of(rec.get("message") or {})
             kind = classify_user_turn(body, len(prior))
             if kind in ("interrupt", "correction"):
