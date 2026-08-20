@@ -154,8 +154,29 @@ class TestChains(unittest.TestCase):
             requests, _ = cache_ttl.collect(root)
             main = cache_ttl.chains(requests, main_only=True)
             subs = cache_ttl.chains(requests, main_only=False)
-            self.assertEqual(sum(len(c) for c in main.values()), 1)
-            self.assertEqual(sum(len(c) for c in subs.values()), 1)
+            main_ids = [r["rid"] for c in main.values() for r in c]
+            sub_ids = [r["rid"] for c in subs.values() for r in c]
+            # Identity, not just counts: an inverted selector would still
+            # leave both sides holding exactly one record each.
+            self.assertEqual(main_ids, ["m"])
+            self.assertEqual(sub_ids, ["s1"])
+
+    def test_chains_groups_one_entry_per_transcript(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s1", "rows": [
+                    fixtures.usage_row("a", "claude-opus-5", 1, 1, 0, 1, T0)]},
+                {"project": "p", "session": "s2", "rows": [
+                    fixtures.usage_row("b", "claude-opus-5", 1, 1, 0, 1, T0)]},
+            ])
+            requests, _ = cache_ttl.collect(root)
+            grouped = cache_ttl.chains(requests)
+            # A grouping key collapsed to a constant would merge both
+            # transcripts into a single chain.
+            self.assertEqual(len(grouped), 2)
+            ids = sorted(r["rid"] for c in grouped.values() for r in c)
+            self.assertEqual(ids, ["a", "b"])
 
     def test_band_table_puts_each_gap_in_the_right_bucket(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,6 +192,30 @@ class TestChains(unittest.TestCase):
             self.assertEqual(table["10-15m"]["n"], 1)
             self.assertEqual(table["15-60m"]["n"], 1)
             self.assertEqual(table[">60m"]["n"], 1)
+
+    def test_band_table_accumulates_read_write_and_zero_read(self):
+        """One band, two records: a cache hit and a zero-read miss, so the
+        band's read/write/zero_read fields must each add up rather than stay
+        at their zeroed defaults or count only the opener's n."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("open", "claude-opus-5", 100, 5, 0, 1,
+                                       T0),
+                    fixtures.usage_row("hit", "claude-opus-5", 500, 20, 0, 1,
+                                       T0 + timedelta(seconds=10)),
+                    fixtures.usage_row("miss", "claude-opus-5", 0, 0, 15, 1,
+                                       T0 + timedelta(seconds=20)),
+                ]}])
+            requests, _ = cache_ttl.collect(root)
+            chain = list(cache_ttl.chains(requests).values())[0]
+            table = cache_ttl.band_table(cache_ttl.gap_seconds(chain))
+            band = table["0-1m"]
+            self.assertEqual(band["n"], 2)
+            self.assertEqual(band["read"], 500)
+            self.assertEqual(band["write"], 35)
+            self.assertEqual(band["zero_read"], 1)
 
 
 class TestCostModel(unittest.TestCase):
