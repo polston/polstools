@@ -5,11 +5,5 @@
   "author": {
     "name": "polston"
   },
-  "keywords": [
-    "retrospective",
-    "workflow",
-    "session-history",
-    "metrics",
-    "follow-through"
-  ]
+  "keywords": ["retrospective", "workflow", "session-history", "metrics", "follow-through"]
 }

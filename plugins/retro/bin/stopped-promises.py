@@ -411,9 +411,12 @@ def turn_ends(records):
 
 # --- Classifier (versioned data) -------------------------------------------
 
-# Bump on ANY change to the token lists below. Two runs are comparable only if
-# they carry the same version.
-CLASSIFIER_VERSION = "2"
+# The label is human; the digest is derived. A hand-bumped constant let a
+# pattern edit ship without a bump, producing two incomparable runs both
+# labelled comparable and undetectably so. _classifier_version() below hashes
+# the actual pattern sources plus the region constants, and is what reports and
+# candidate files carry.
+CLASSIFIER_LABEL = "2"
 
 # The closing region is bounded by length as well as by structure. Without this
 # a single-line message is entirely its own "final line", so a commitment
@@ -441,6 +444,19 @@ DEFERRED_RE = re.compile(r"\b(when|once|as soon as)\b|\breport back\b|\bback (to
                          r"|\bnext (session|turn|time)\b|\bin the meantime\b|\bmeanwhile\b"
                          r"|\blater\b|\bpending\b|\bfinish(es|ed)?\b|\bcompletes?\b"
                          r"|\blands?\b|\bstill (running|going)\b", re.I)
+
+
+@lru_cache(maxsize=1)
+def _classifier_version():
+    """Label plus a digest over everything that changes what gets classified."""
+    material = "\x00".join([
+        CLASSIFIER_LABEL, str(REGION_MAX_CHARS), str(TAIL_CHARS),
+        OPENER_RE.pattern, BARE_RE.pattern,
+        NOT_A_PROMISE_RE.pattern, DEFERRED_RE.pattern,
+        "|".join(sorted(HUMAN_PROMPT_SOURCES)), "|".join(sorted(KNOWN_PROMPT_SOURCES)),
+    ])
+    digest = hashlib.sha1(material.encode("utf-8", "replace")).hexdigest()[:8]
+    return f"{CLASSIFIER_LABEL}-{digest}"
 
 
 def closing_region(text):
@@ -659,6 +675,11 @@ def _session_in_window(records, since, until):
     return True, first, last
 
 
+# The walk is serial on purpose, and this is measured rather than assumed:
+# a thread pool over this script took the same corpus from 3.99 s to 5.35 s,
+# 34% SLOWER. json.loads is 93% of the run and holds the GIL, so workers only
+# add contention. The sibling's pool is a net loss on the same corpus for the
+# same reason (4.54 s serial against 5.74 s pooled).
 def collect(roots, since, until):
     census = {"roots": len(roots), "files_seen": 0, "files_unreadable": 0,
               "files_empty": 0, "files_outside_window": 0, "files_measured": 0,
@@ -724,14 +745,14 @@ def main(argv=None):
     path = Path(args.candidates) if args.candidates else default_candidates_path()
     refuse_if_in_repo(path)
     try:
-        write_candidates(path, candidates, {"classifier": CLASSIFIER_VERSION,
+        write_candidates(path, candidates, {"classifier": _classifier_version(),
                                             "window": window})
     except OSError as exc:
         print(f"cannot write candidates file: {type(exc).__name__}", file=sys.stderr)
         return EXIT_CANNOT_RUN
     print(f"candidates written to {redact(str(path))}", file=sys.stderr)
 
-    payload = {"classifier": CLASSIFIER_VERSION, "window": window,
+    payload = {"classifier": _classifier_version(), "window": window,
                "census": report["census"], "counts": report["counts"],
                "candidates": len(candidates)}
 
@@ -751,7 +772,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
-        print(f"classifier {CLASSIFIER_VERSION}   window {window}")
+        print(f"classifier {_classifier_version()}   window {window}")
         print("  -- census (structural, quotable) --")
         for key, value in report["census"].items():
             print(f"    {key:22s} {value}")
@@ -1060,8 +1081,22 @@ def test_single_line_message_does_not_become_its_own_closing_region(tmp):
 
 
 @selftest_case
-def test_classifier_version_is_stamped_and_non_empty(tmp):
-    assert isinstance(CLASSIFIER_VERSION, str) and CLASSIFIER_VERSION
+def test_classifier_version_tracks_the_patterns_it_names(tmp):
+    """The point of the digest: an edit to a pattern must change the version
+    even if nobody remembers to bump the label. Asserting only that the string
+    is non-empty proved nothing."""
+    global NOT_A_PROMISE_RE
+    before = _classifier_version()
+    assert before.startswith(CLASSIFIER_LABEL + "-"), before
+    original = NOT_A_PROMISE_RE
+    try:
+        NOT_A_PROMISE_RE = re.compile(original.pattern + r"|\bnever going to\b", re.I)
+        _classifier_version.cache_clear()
+        assert _classifier_version() != before, "pattern edit did not change the version"
+    finally:
+        NOT_A_PROMISE_RE = original
+        _classifier_version.cache_clear()
+    assert _classifier_version() == before, "version did not return to its prior value"
 
 
 @selftest_case
@@ -1131,7 +1166,7 @@ def test_candidate_file_is_one_record_per_line(tmp):
     assert found, "fixture should produce a candidate"
     assert "\n" not in found[0].tail, "tail spans lines"
     path = Path(tmp) / "cand.txt"
-    write_candidates(path, found, {"classifier": CLASSIFIER_VERSION, "window": "all"})
+    write_candidates(path, found, {"classifier": _classifier_version(), "window": "all"})
     body = [l for l in path.read_text(encoding="utf-8").split("\n")
             if l and not l.startswith("#")]
     assert len(body) == len(found), f"{len(body)} lines for {len(found)} candidates"
@@ -1199,10 +1234,10 @@ def test_candidates_file_refuses_to_land_in_a_repository(tmp):
 def test_candidates_file_says_it_is_unverified(tmp):
     path = Path(tmp) / "cand.txt"
     write_candidates(path, [Candidate("abc123", "I'll run it now.", "t", "s")],
-                     {"classifier": CLASSIFIER_VERSION, "window": "all"})
+                     {"classifier": _classifier_version(), "window": "all"})
     body = path.read_text(encoding="utf-8")
     assert "UNVERIFIED" in body, "candidates file must label itself"
-    assert "abc123" in body and CLASSIFIER_VERSION in body
+    assert "abc123" in body and _classifier_version() in body
 
 
 @selftest_case

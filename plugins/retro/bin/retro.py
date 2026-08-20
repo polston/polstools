@@ -65,8 +65,16 @@ COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "tool_retries"
 
 @lru_cache(maxsize=1)
 def _redaction_patterns():
-    """Compile once. Categories mirror plugins/core/bin/repo-privacy-audit --
-    keep the two lists in step when either gains a category.
+    """Compile once.
+
+    THREE lists now hold redaction categories and none is a superset:
+      - this one,
+      - plugins/core/bin/repo-privacy-audit (generic home-path forms this lacks,
+        private-range addresses only),
+      - plugins/retro/bin/stopped-promises.py (adds absolute paths belonging to
+        anywhere else, which neither of the other two catch).
+    Keep them in step deliberately rather than assuming they agree; the previous
+    wording said "the two lists" and was already stale.
     """
     home = str(HOME)
     user = HOME.name
@@ -210,7 +218,16 @@ def parse_ts(value):
 def read_records(path):
     """Yield parsed records, skipping malformed lines. A live session is being
     appended to while we read it; a truncated final line is normal, not an
-    error."""
+    error.
+
+    DUPLICATED, on purpose: plugins/retro/bin/stopped-promises.py carries its own
+    copy of this reader rather than importing it, so a measurement tool's parser
+    cannot shift underneath it while this file is being rewritten. A fix to the
+    parsing rules here needs applying there too. That script also resolves its
+    transcript root differently -- it honours the harness config-directory
+    variable and this does not -- so on a machine that sets it the two read
+    different corpora and will report different session counts for "the corpus".
+    """
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
