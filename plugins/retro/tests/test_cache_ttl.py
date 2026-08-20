@@ -110,6 +110,33 @@ class TestCollect(unittest.TestCase):
             self.assertEqual(len(requests), 0)
             self.assertEqual(skipped["no_timestamp"], 1)
 
+    def test_sidechain_flag_disagreeing_with_position_is_tallied(self):
+        """is_main_thread's split is positional; isSidechain is expected to
+        corroborate it (false on main-thread rows, true on subagent-path
+        rows). A row claiming the opposite of its own position is a signal
+        a future CLI layout change broke the assumption, not something to
+        absorb silently."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = fixtures.usage_row("r", "claude-opus-5", 1, 1, 0, 1, T0)
+            row["isSidechain"] = True  # main-thread path, flag says otherwise
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [row]}])
+            requests, skipped = cache_ttl.collect(root)
+            self.assertEqual(skipped["sidechain_path_mismatch"], 1)
+            # The mismatch is tallied, not treated as a reason to drop the row.
+            self.assertIn("r", requests)
+
+    def test_sidechain_flag_agreeing_with_position_is_not_tallied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = fixtures.usage_row("r", "claude-opus-5", 1, 1, 0, 1, T0)
+            row["isSidechain"] = False  # main-thread path, flag agrees
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [row]}])
+            _, skipped = cache_ttl.collect(root)
+            self.assertEqual(skipped["sidechain_path_mismatch"], 0)
+
 
 class TestChains(unittest.TestCase):
     def _corpus(self, root, offsets):
@@ -615,6 +642,25 @@ class TestPrivacyAndCli(unittest.TestCase):
             body = json.loads(stream.getvalue())
             self.assertEqual(body["session_openers"], 2)
             self.assertEqual(body["session_openers_window_truncated"], 1)
+
+    def test_no_pinned_models_when_the_window_has_no_1h_writes_at_all(self):
+        """A window can contain no one-hour writes at all -- the skill
+        documents this as possible during a usage-credit fallback. Without a
+        guard, every model would then be absent from wrote_1h and get called
+        pinned, which is the opposite of the truth and collapses the
+        reported governed share exactly when an accurate number matters
+        most."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("a", "claude-opus-5", 100, 0, 50, 1, T0),
+                    fixtures.usage_row("b", "claude-opus-5", 100, 0, 50, 1,
+                                       T0 + timedelta(seconds=30))]}])
+            stream = io.StringIO()
+            cache_ttl.report(root, None, None, True, stream)
+            body = json.loads(stream.getvalue())
+            self.assertEqual(body["pinned_to_5m_models"], [])
 
     def test_verdict_flags_when_the_counterfactual_is_cheaper(self):
         """All gaps under five minutes: nothing is ever rewritten, so the

@@ -44,80 +44,104 @@ def is_main_thread(path, projects_dir):
     """Main-thread transcripts sit at <projects>/<project>/<session>.jsonl.
 
     Subagent transcripts sit deeper, under <session>/subagents/. The split is
-    positional; isSidechain confirms it but never contradicts it, because the
-    flag is absent from every top-level file.
+    positional. Measured against the corpus, isSidechain corroborates the
+    split rather than being absent from one side of it: top-level rows carry
+    the flag set to false and subagent-path rows carry it set to true, with
+    no rows disagreeing with the position they were found at. `_rows()`
+    tallies any future disagreement instead of absorbing it silently.
     """
     return path.parent.parent == projects_dir
 
 
 def _rows(path, main, skipped):
-    """Yield one record per assistant row carrying a usage block."""
+    """Yield one record per assistant row carrying a usage block.
+
+    A read failure is tallied and the file's remaining rows are given up on,
+    the same as a file that never opened -- a resumed or actively-written
+    transcript can fail partway through, and that must not abort the whole
+    corpus.
+    """
     try:
         handle = open(path, encoding="utf-8", errors="replace")
     except OSError:
         skipped["unreadable_file"] += 1
         return
-    with handle:
-        for line in handle:
-            if '"usage"' not in line:
-                continue
-            try:
-                raw = json.loads(line)
-            except ValueError:
-                skipped["bad_json"] += 1
-                continue
-            if not isinstance(raw, dict) or raw.get("type") != "assistant":
-                continue
-            message = raw.get("message")
-            if not isinstance(message, dict):
-                continue
-            usage = message.get("usage")
-            if not isinstance(usage, dict):
-                continue
-            rid = raw.get("requestId")
-            if not rid:
-                # Some rows carry only message.id. Tallied, because if a future
-                # CLI writes some rows of one request with a requestId and some
-                # without, the id-less rows become a phantom second request.
-                rid = message.get("id")
-                if rid:
-                    skipped["request_id_fallback"] += 1
-            if not rid:
-                skipped["no_request_id"] += 1
-                continue
-            start = retro.parse_ts(raw.get("timestamp"))
-            if start is None:
-                skipped["no_timestamp"] += 1
-                continue
-            if start.tzinfo is None:
-                # A timestamp without Z or an offset compares as naive and
-                # raises against every aware one, aborting the whole run.
-                skipped["naive_timestamp"] += 1
-                continue
-            creation = usage.get("cache_creation")
-            if not isinstance(creation, dict):
-                creation = {}
-            read = usage.get("cache_read_input_tokens") or 0
-            w1 = creation.get("ephemeral_1h_input_tokens") or 0
-            w5 = creation.get("ephemeral_5m_input_tokens") or 0
-            out = usage.get("output_tokens") or 0
-            model = message.get("model")
-            if not isinstance(model, str):
-                # A non-string model makes sorted() on the unpriced bucket
-                # raise at the very end of an otherwise complete run.
-                model = "<unknown>"
-            yield {
-                "rid": rid,
-                "model": model,
-                "read": read,
-                "w1": w1,
-                "w5": w5,
-                "out": out,
-                "tokens": read + w1 + w5 + out,
-                "start": start,
-                "source": path,
-                "main": main,
-            }
+    try:
+        with handle:
+            for line in handle:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    raw = json.loads(line)
+                except ValueError:
+                    skipped["bad_json"] += 1
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                is_sidechain = raw.get("isSidechain")
+                if isinstance(is_sidechain, bool) and is_sidechain == main:
+                    # A future CLI layout change (main-thread files moving
+                    # depth, or vice versa) would otherwise be absorbed
+                    # silently by the purely positional split in
+                    # is_main_thread().
+                    skipped["sidechain_path_mismatch"] += 1
+                if raw.get("type") != "assistant":
+                    continue
+                message = raw.get("message")
+                if not isinstance(message, dict):
+                    continue
+                usage = message.get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                rid = raw.get("requestId")
+                if not rid:
+                    # Some rows carry only message.id. Tallied, because if a
+                    # future CLI writes some rows of one request with a
+                    # requestId and some without, the id-less rows become a
+                    # phantom second request.
+                    rid = message.get("id")
+                    if rid:
+                        skipped["request_id_fallback"] += 1
+                if not rid:
+                    skipped["no_request_id"] += 1
+                    continue
+                start = retro.parse_ts(raw.get("timestamp"))
+                if start is None:
+                    skipped["no_timestamp"] += 1
+                    continue
+                if start.tzinfo is None:
+                    # A timestamp without Z or an offset compares as naive
+                    # and raises against every aware one, aborting the whole
+                    # run.
+                    skipped["naive_timestamp"] += 1
+                    continue
+                creation = usage.get("cache_creation")
+                if not isinstance(creation, dict):
+                    creation = {}
+                read = usage.get("cache_read_input_tokens") or 0
+                w1 = creation.get("ephemeral_1h_input_tokens") or 0
+                w5 = creation.get("ephemeral_5m_input_tokens") or 0
+                out = usage.get("output_tokens") or 0
+                model = message.get("model")
+                if not isinstance(model, str):
+                    # A non-string model makes sorted() on the unpriced
+                    # bucket raise at the very end of an otherwise complete
+                    # run.
+                    model = "<unknown>"
+                yield {
+                    "rid": rid,
+                    "model": model,
+                    "read": read,
+                    "w1": w1,
+                    "w5": w5,
+                    "out": out,
+                    "tokens": read + w1 + w5 + out,
+                    "start": start,
+                    "source": path,
+                    "main": main,
+                }
+    except OSError:
+        skipped["unreadable_file"] += 1
 
 
 def collect(projects_dir):
@@ -163,6 +187,23 @@ BANDS = (
 )
 
 
+def _sorted_groups(grouped):
+    """Sort each group's records by start time, in place. Returns `grouped`."""
+    for rows in grouped.values():
+        rows.sort(key=lambda item: item["start"])
+    return grouped
+
+
+def group_and_sort(records, key_fn):
+    """Group `records` by `key_fn(record)`, then sort each group by start
+    time. The shared implementation behind `chains()` and any other grouping
+    that differs only in which key it groups by."""
+    grouped = {}
+    for record in records:
+        grouped.setdefault(key_fn(record), []).append(record)
+    return _sorted_groups(grouped)
+
+
 def chains(requests, main_only=True):
     """Group requests into per-transcript chains ordered by start time.
 
@@ -171,14 +212,22 @@ def chains(requests, main_only=True):
     magnitude, so the choice is explicit: the conversation history dominates
     the cached prefix and is specific to one session.
     """
-    grouped = {}
+    records = (r for r in requests.values() if bool(r["main"]) == bool(main_only))
+    return group_and_sort(records, key_fn=lambda r: r["source"])
+
+
+def split_chains(requests):
+    """Split `requests` into main-thread and subagent chains in one pass.
+
+    Equivalent to `chains(requests, main_only=True)` paired with
+    `chains(requests, main_only=False)`, but walks `requests` once instead
+    of twice and discarding half the work each time.
+    """
+    main_grouped, sub_grouped = {}, {}
     for record in requests.values():
-        if bool(record["main"]) != bool(main_only):
-            continue
-        grouped.setdefault(record["source"], []).append(record)
-    for rows in grouped.values():
-        rows.sort(key=lambda item: item["start"])
-    return grouped
+        target = main_grouped if record["main"] else sub_grouped
+        target.setdefault(record["source"], []).append(record)
+    return _sorted_groups(main_grouped), _sorted_groups(sub_grouped)
 
 
 def gap_seconds(chain):
@@ -325,6 +374,10 @@ def _project_dir_key(path, projects_dir):
         return "unknown"
 
 
+def _label_for_key(key):
+    return "project-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+
+
 def project_label(path, projects_dir):
     """A stable, non-reversible label for a project directory.
 
@@ -335,8 +388,7 @@ def project_label(path, projects_dir):
     own, because it rewrites the home path and username but passes other
     path segments through verbatim.
     """
-    raw = _project_dir_key(path, projects_dir)
-    return "project-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    return _label_for_key(_project_dir_key(path, projects_dir))
 
 
 def within_window(requests, days, now=None):
@@ -429,8 +481,7 @@ def report(projects_dir, days, project, as_json, stream, now=None):
     unwindowed_requests = requests
     requests = within_window(requests, days, now)
 
-    main_chains = chains(requests, main_only=True)
-    sub_chains = chains(requests, main_only=False)
+    main_chains, sub_chains = split_chains(requests)
     result = evaluate(main_chains)
 
     main_records = [r for c in main_chains.values() for r in c]
@@ -456,7 +507,11 @@ def report(projects_dir, days, project, as_json, stream, now=None):
             wrote_1h.add(record["model"])
         if record["w5"]:
             wrote_5m.add(record["model"])
-    pinned = wrote_5m - wrote_1h
+    # A window with no one-hour writes anywhere -- the skill documents this
+    # as possible during a usage-credit fallback -- carries no per-model
+    # pinning signal at all: every model would be missing from wrote_1h and
+    # every model would read as pinned, which is the opposite of the truth.
+    pinned = (wrote_5m - wrote_1h) if wrote_1h else set()
     pinned_read = sum(r["read"] for r in main_records if r["model"] in pinned)
     governed = main_read - pinned_read
     all_read = main_read + sub_read
@@ -495,24 +550,20 @@ def report(projects_dir, days, project, as_json, stream, now=None):
             unpriced_all[record["model"]] += 1
             unpriced_tokens[record["model"]] += record["tokens"]
 
-    by_project = Counter()
-    for record in main_records:
-        by_project[project_label(record["source"], projects_dir)] += 1
-
     # Sensitivity 1: group gaps by project directory instead of by transcript.
-    dir_chains = {}
-    for record in main_records:
-        key = _project_dir_key(record["source"], projects_dir)
-        dir_chains.setdefault(key, []).append(record)
-    for rows in dir_chains.values():
-        rows.sort(key=lambda item: item["start"])
+    # group_and_sort computes the project-dir key once per record; by_project
+    # is then read off the same grouping rather than recomputing the key.
+    dir_chains = group_and_sort(
+        main_records, key_fn=lambda r: _project_dir_key(r["source"], projects_dir))
     dir_result = evaluate(dir_chains)
+
+    by_project = Counter()
+    for key, rows in dir_chains.items():
+        by_project[_label_for_key(key)] += len(rows)
 
     # Sensitivity 2: force every session opener to miss.
     openers_forced = 0.0
     for chain in main_chains.values():
-        if not chain:
-            continue
         first = chain[0]
         price = PRICES.get(first["model"])
         if price is None:
