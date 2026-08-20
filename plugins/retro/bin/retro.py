@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """retro — derive workflow-friction metrics from Claude Code session history.
 
-Six subcommands:
+Seven subcommands:
 
     extract    walk session transcripts, append one metrics row per session
     pack       build an evidence pack (trends + redacted moments) for a window
@@ -11,6 +11,8 @@ Six subcommands:
                precision, recall and a threshold sweep from the marked file
     effect     metrics before and after a date, to check whether an edit moved
                the thing it was aimed at
+    rules      whether the standing instructions are versioned at all, and
+               whether their edits are being committed as they are made
 
 Message text leaves this script in exactly two places: the `moments` section of
 a pack, and the labelling file written by `label`. Both pass through redact()
@@ -1640,6 +1642,96 @@ EFFECT_MIN_SESSIONS = 12
 # The files that change how a session behaves. Their git history is a list of
 # dates on which something was deliberately changed, which is exactly what
 # `effect` needs and what nobody remembers unaided.
+# Where the standing instructions live. Each is a thing whose edits should carry
+# a date, because `effect` can only compare either side of a date that exists.
+RULE_SOURCES = (
+    ("standing instructions", CLAUDE_DIR / "CLAUDE.md"),
+    ("memory store", CLAUDE_DIR / "memory"),
+    ("skills", CLAUDE_DIR / "skills"),
+)
+# Past this many days of uncommitted edits, the trail is broken badly enough to
+# say so: a fortnight of changes squashed into one commit is one date for many
+# different decisions, which is no better than none.
+RULES_STALE_DAYS = 7
+
+
+def _git(repo, *args):
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def cmd_rules(args):
+    """Is every source of standing instruction under version control, and are its
+    edits actually being committed?
+
+    This exists because `effect` was built, run, and found exactly one date to
+    offer -- not because nothing had changed, but because eleven days of changes
+    were sitting uncommitted. A comparison tool is worth nothing if the thing it
+    compares against is never recorded.
+    """
+    print("# Rule sources\n")
+    print("| source | in a repo | uncommitted | last change |")
+    print("|---|---|---|---|")
+    problems = []
+    for name, path in RULE_SOURCES:
+        if not path.exists():
+            print(f"| {name} | absent | - | - |")
+            continue
+        repo = _git(path if path.is_dir() else path.parent, "rev-parse", "--show-toplevel")
+        if not repo:
+            print(f"| {name} | **no** | - | - |")
+            problems.append((name, path, "not under version control"))
+            continue
+        dirty = _git(repo, "status", "--short", "--", str(path)) or ""
+        n_dirty = len([x for x in dirty.splitlines() if x.strip()])
+        last = _git(repo, "log", "-1", "--format=%ad", "--date=short", "--", str(path)) or "never"
+        stale = ""
+        if last != "never":
+            try:
+                age = (datetime.now(timezone.utc).date()
+                       - datetime.fromisoformat(last).date()).days
+                stale = f" ({age}d ago)"
+                if n_dirty and age >= RULES_STALE_DAYS:
+                    problems.append((name, path,
+                                     f"{n_dirty} uncommitted change(s), nothing "
+                                     f"committed for {age} days"))
+                elif n_dirty:
+                    problems.append((name, path, f"{n_dirty} uncommitted change(s)"))
+            except ValueError:
+                pass
+        print(f"| {name} | yes | {n_dirty or '-'} | {last}{stale} |")
+
+    if not problems:
+        print("\nEvery rule source is versioned and current. `effect` has dates to "
+              "work with.")
+        return EXIT_CLEAN
+
+    print("\n## What is wrong with this\n")
+    for name, path, why in problems:
+        print(f"- **{name}** - {why}")
+    print(f"""
+An edit with no commit has no date, and `effect` compares metrics either side of
+a date. Uncommitted changes are not merely untidy here: they are the reason a
+rule change cannot be checked afterwards, and the reason nobody can tell a rule
+that worked from one that was ignored.
+
+Two ways to fix it, and the second is the one that lasts:
+
+1. Commit what is outstanding now. Each rule change wants its own commit -- a
+   fortnight of edits in one commit is a single date for many decisions.
+2. Have the edits commit themselves. `plugins/retro/bin/commit-rule-change`
+   takes an edited path and commits it to whichever repository owns it, honours
+   that repository's ignore rules so an excluded credentials file stays
+   excluded, touches only the path it was given, and never fails its caller.
+   Wire it to a PostToolUse hook on Edit and Write.""")
+    return EXIT_FLAGGED
+
+
 RULE_PATHS = ("CLAUDE.md", "skills", "memory", "settings.json")
 
 
@@ -1824,6 +1916,11 @@ def main():
     p_effect.add_argument("--days", type=int, default=0,
                           help="limit to this many days either side; 0 means all")
     p_effect.set_defaults(func=cmd_effect)
+
+    p_rules = sub.add_parser("rules",
+                             help="are the standing instructions versioned, and "
+                                  "are their edits being committed")
+    p_rules.set_defaults(func=cmd_rules)
 
     args = parser.parse_args()
     sys.exit(args.func(args) or EXIT_CLEAN)
