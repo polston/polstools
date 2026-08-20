@@ -278,6 +278,33 @@ class TestCostModel(unittest.TestCase):
             self.assertAlmostEqual(w1, w5 * 1.6, places=12, msg=model)
             self.assertAlmostEqual(read, w5 * 0.08, places=12, msg=model)
 
+    def test_unpriced_record_keeps_its_place_in_the_chain_for_the_next_gap(self):
+        """The brief requires an unpriced request to stay in the chain
+        rather than being dropped, because dropping it would invent a
+        longer gap for the request after it. A chain where every record is
+        unpriced cannot exercise this -- there is no priced successor whose
+        gap could be corrupted. This chain interleaves priced, unpriced,
+        priced records so the third request's true gap (60s, measured from
+        the unpriced second request) lands in the 0-5m band, while the gap
+        a chain that dropped the unpriced record would compute (350s,
+        measured from the first request) would cross into the 5-60m band."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [
+                fixtures.usage_row("r0", "claude-opus-5", 1000, 100, 0, 1, T0),
+                fixtures.usage_row("r1", "claude-unknown-9", 1000, 100, 0, 1,
+                                   T0 + timedelta(seconds=290)),
+                fixtures.usage_row("r2", "claude-opus-5", 1000, 100, 0, 1,
+                                   T0 + timedelta(seconds=350)),
+            ]
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": rows}])
+            requests, _ = cache_ttl.collect(root)
+            result = cache_ttl.evaluate(cache_ttl.chains(requests))
+        self.assertEqual(result["unpriced"]["claude-unknown-9"], 1)
+        self.assertEqual(result["bands"]["0-5m"], 1)
+        self.assertEqual(result["bands"]["5-60m"], 0)
+
 
 import io  # noqa: E402
 
