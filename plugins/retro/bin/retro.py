@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """retro — derive workflow-friction metrics from Claude Code session history.
 
-Two subcommands:
+Four subcommands:
 
-    extract   walk session transcripts, append one metrics row per session
-    pack      build an evidence pack (trends + redacted moments) for a window
+    extract    walk session transcripts, append one metrics row per session
+    pack       build an evidence pack (trends + redacted moments) for a window
+    skills     which installed skills actually fire
+    subagents  mechanical failures in subagent transcripts, over a window
 
 Counts only. Message text leaves this script in exactly one place — the
 `moments` section of a pack — and only after passing through redact().
@@ -72,10 +74,50 @@ _APPROVAL = re.compile(
 # definitions at once is worse than no ledger: it reports a number belonging to
 # neither, and nothing in the output says so. `extract` rebuilds on a mismatch
 # rather than trusting prose to prevent it.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_turns", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
+
+# The subagent lens. Same ledger contract as COUNTERS - each name is a column,
+# and adding one means an extract --rebuild - but a separate list, so the pack's
+# trend table and per-session line, which iterate COUNTERS, are untouched.
+#
+# Every one of these was re-earned by counting the corpus, not carried over from
+# an earlier attempt whose categories a recount disproved. The measurement and
+# the checks each category had to pass are in
+# docs/plans/2026-08-20-plan-subagent-lens-rebuild.md.
+SUBAGENT_COUNTERS = ["schema_rejected", "unread_before_write",
+                     "missing_path_target", "invalid_tool_input",
+                     "search_pattern_rejected", "workspace_target_outside",
+                     "workspace_shape_unverifiable"]
+
+# How a run answered, in precedence order. One value per row, in the `ending`
+# column. The first two are a result delivered; only the last two are the agent
+# failing to answer, and `interrupted` is the caller's doing, not the agent's.
+ENDINGS = ("structured", "text", "interrupted", "unanswered", "silent")
+
+# The population each signal could have occurred in. A share divides by THIS,
+# never by every row. A workspace-guard refusal cannot arise in a run that had
+# no isolated workspace, and a schema rejection cannot arise in a run that never
+# made a structured-result call. Measured on the corpus: the workspace signals
+# were possible in 465 of 1,492 subagent rows, so dividing them by 1,492 states
+# them at a third of their real rate. Dividing every signal by every row is the
+# same defect this lens was rebuilt to remove, with the sign flipped.
+#
+# ISOLATED_WORKSPACE means the run worked inside an isolated workspace. Any
+# other value is the set of tools that emit the refusal; an empty set means the
+# run only had to call some tool.
+ISOLATED_WORKSPACE = "isolated-workspace"
+SIGNAL_POPULATION = {
+    "schema_rejected": frozenset(("StructuredOutput",)),
+    "unread_before_write": frozenset(("Write", "Edit")),
+    "missing_path_target": frozenset(("Read", "Grep")),
+    "search_pattern_rejected": frozenset(("Grep",)),
+    "invalid_tool_input": frozenset(),
+    "workspace_target_outside": ISOLATED_WORKSPACE,
+    "workspace_shape_unverifiable": ISOLATED_WORKSPACE,
+}
 
 # No "abandoned session" counter, deliberately. See the metric-definitions
 # section of docs/plans/2026-08-12-retro-design.md for the measurement that
@@ -144,7 +186,13 @@ def text_of(message):
 
 
 def tool_calls_of(message):
-    """Yield (tool_name, input_signature) for each tool use in a message."""
+    """Yield (block_id, tool_name, input_signature) for each tool use.
+
+    The id is the only link between a call and the result it produced: a
+    tool_result block carries the id and never the name. Attribution by name is
+    what the mechanical-failure columns need, because the same refusal text is
+    emitted by more than one tool.
+    """
     if not isinstance(message, dict):
         return
     content = message.get("content")
@@ -152,7 +200,8 @@ def tool_calls_of(message):
         return
     for block in content:
         if isinstance(block, dict) and block.get("type") == "tool_use":
-            yield block.get("name") or "?", signature(block.get("input"))
+            yield (block.get("id") or "", block.get("name") or "?",
+                   signature(block.get("input")))
 
 
 _DIGITS = re.compile(r"\d+")
@@ -174,6 +223,169 @@ def signature(tool_input):
         return ""
     raw = json.dumps(tool_input, sort_keys=True, default=str)
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+# --- Mechanical failures ---------------------------------------------------
+#
+# A failure is counted when the refusal text STARTS the result body and the tool
+# that produced it is one that emits that refusal. Both halves were measured:
+#
+#   - Starts-with, because a command's own output can quote a refusal. One
+#     failed result in the subagent corpus is a command that printed a workspace
+#     refusal it had read out of a file. A substring test counts it as a real
+#     refusal; this rule does not. The anchor is also what keeps successful
+#     results out: 73 successful results in the corpus contain one of these
+#     texts somewhere - agents read and search transcripts - and exactly 0 begin
+#     with one.
+#   - Tool-attributed, because the same text means a different mistake
+#     depending on which tool emitted it: the unread-file refusal comes from
+#     Write and from Edit, the missing-path refusal from Read and from Grep.
+#
+# The is_error gate below is NOT what makes these specific - measured, it
+# excludes nothing the anchor has not already excluded. It is here because it is
+# the harness's own record that the call failed, and a counter of failures
+# should read that field rather than infer failure from text alone.
+
+TOOL_ERROR_PREFIX = "<tool_use_error>"
+
+# The workspace guard's two refusal families share an opening sentence and are
+# told apart by what follows. They are DIFFERENT phenomena and never share a
+# counter: one names a target outside the workspace, the other is the guard
+# declining because it could not statically verify the command's shape. The
+# second is not evidence that anything left the workspace.
+ISOLATION_HEADS = ("This session is isolated in the worktree",
+                   "This agent is isolated in the worktree")
+SHARED_CHECKOUT = ("shared checkout", "shared-checkout")
+
+# (column, tools that emit it or None for any, text that must start the body)
+FAILURE_MARKERS = (
+    ("schema_rejected", ("StructuredOutput",),
+     "Output does not match required schema"),
+    ("unread_before_write", ("Write", "Edit"), "File has not been read yet."),
+    ("missing_path_target", ("Read",), "File does not exist."),
+    ("missing_path_target", ("Grep",), "Path does not exist"),
+    ("invalid_tool_input", None, "InputValidationError"),
+    ("search_pattern_rejected", ("Grep",), "Search failed"),
+)
+
+# The tools through which a result is handed back instead of written as prose.
+# An agent that called one of these did answer; it just did not answer in text.
+RESULT_TOOLS = ("StructuredOutput", "ReportFindings")
+
+# An isolated workspace is a checkout of its own, and lives under a directory
+# with this name. It is the gate on the two workspace signals: a run that was
+# never in one could not have been refused by the guard, and counting it in
+# their denominator would state the rate as a third of what it is.
+WORKTREE_SEGMENT = "worktrees"
+
+
+def in_isolated_workspace(cwd):
+    """Was this working directory inside an isolated workspace?
+
+    A path segment test, not a substring one, so a repository that merely has
+    the word in its name is not swept in. Measured over the subagent corpus,
+    464 of 1,492 rows match and every one of them matches on this exact segment.
+    """
+    if not cwd:
+        return False
+    return WORKTREE_SEGMENT in str(cwd).replace("\\", "/").lower().split("/")
+
+
+def strip_error_wrapper(body):
+    """A tool result body with the harness's error wrapper removed."""
+    body = body.lstrip()
+    if body.startswith(TOOL_ERROR_PREFIX):
+        body = body[len(TOOL_ERROR_PREFIX):].lstrip()
+    return body
+
+
+def failure_body(block):
+    """The refusal text of a failed tool_result block, or None.
+
+    is_error is compared to True exactly: measured corpus-wide it is only ever
+    True, False or absent, so an identity test loses nothing and cannot be
+    surprised by a truthy string later. A non-string body is skipped rather
+    than serialised - JSON-dumping it would invent text for a marker to match.
+    """
+    if not isinstance(block, dict) or block.get("type") != "tool_result":
+        return None
+    if block.get("is_error") is not True:
+        return None
+    body = block.get("content")
+    if not isinstance(body, str):
+        return None
+    return strip_error_wrapper(body)
+
+
+def guard_spoke(block):
+    """Did the workspace guard address this run, refusing or not?
+
+    One row in the corpus was refused by the guard while its recorded working
+    directory was not inside an isolated workspace. Without this, that row would
+    contribute to a numerator whose denominator excluded it.
+    """
+    if not isinstance(block, dict) or block.get("type") != "tool_result":
+        return False
+    body = block.get("content")
+    if not isinstance(body, str):
+        return False
+    return strip_error_wrapper(body).startswith(ISOLATION_HEADS)
+
+
+def classify_failure(tool, body):
+    """Which mechanical-failure column a failed result belongs in, or "".
+
+    `tool` is the name resolved from the result's tool-use id; an id with no
+    matching call yields "" and therefore matches no tool-scoped category.
+    """
+    for column, tools, marker in FAILURE_MARKERS:
+        if body.startswith(marker) and (tools is None or tool in tools):
+            return column
+    if body.startswith(ISOLATION_HEADS):
+        if any(phrase in body for phrase in SHARED_CHECKOUT):
+            return "workspace_target_outside"
+        if "verif" in body:
+            return "workspace_shape_unverifiable"
+    return ""
+
+
+def prose_of(message):
+    """A message's text blocks only.
+
+    Deliberately not text_of(), which also flattens tool_result bodies into the
+    string. That is right for quoting a turn and wrong for asking whether the
+    agent itself said anything: a transcript that merely read a file mentioning
+    the interrupt marker would otherwise read as interrupted.
+    """
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(block.get("text") or "" for block in content
+                     if isinstance(block, dict) and block.get("type") == "text")
+
+
+def eligible_signals(tools_used, isolated):
+    """The signals this run could have produced, as a sorted list.
+
+    Stored on the row so a report can divide each signal by the population it
+    could have arisen in. Recomputing it needs the set of tools the run called,
+    which the ledger does not carry, so it is derived once here.
+    """
+    out = []
+    for column, need in SIGNAL_POPULATION.items():
+        if need == ISOLATED_WORKSPACE:
+            ok = isolated
+        elif need:
+            ok = bool(tools_used & need)
+        else:
+            ok = bool(tools_used)
+        if ok:
+            out.append(column)
+    return sorted(out)
 
 
 def is_approval(reply):
@@ -298,6 +510,13 @@ def measure(path):
     tokens_in = tokens_out = cache_read = 0
     prev_mode = None
     prev_skill = None
+    tool_by_id = {}
+    tools_used = set()
+    open_tool_ids = set()
+    last_assistant = None
+    caller_interrupted = False
+    answered_structured = False
+    isolated = False
 
     for rec in read_records(path):
         if not isinstance(rec, dict):
@@ -315,6 +534,10 @@ def measure(path):
 
         session_id = session_id or rec.get("sessionId") or rec.get("session_id")
         project = project or rec.get("cwd")
+        # Whether the run had an isolated workspace decides whether the two
+        # workspace signals could have happened in it at all, so it gates their
+        # denominator rather than being reported on its own.
+        isolated = isolated or in_isolated_workspace(rec.get("cwd"))
         branch = branch or rec.get("gitBranch")
         version = version or rec.get("version")
 
@@ -344,13 +567,19 @@ def measure(path):
         elif rtype == "assistant":
             m["turns"] += 1
             msg = rec.get("message") or {}
+            last_assistant = msg
             usage = msg.get("usage") or {}
             tokens_in += int(usage.get("input_tokens") or 0)
             tokens_out += int(usage.get("output_tokens") or 0)
             cache_read += int(usage.get("cache_read_input_tokens") or 0)
             body = text_of(msg)
             prior_assistant_chars = len(body)
-            for name, sig in tool_calls_of(msg):
+            for block_id, name, sig in tool_calls_of(msg):
+                tool_by_id[block_id] = name
+                tools_used.add(name)
+                open_tool_ids.add(block_id)
+                if name in RESULT_TOOLS:
+                    answered_structured = True
                 m["tool_calls"] += 1
                 key = (name, sig)
                 if sig and key in seen_sigs:
@@ -371,8 +600,37 @@ def measure(path):
 
         # Only user records carry tool results; checking the rest re-walks
         # message content for nothing.
-        if rtype == "user" and is_error_record(rec):
-            m["tool_errors"] += 1
+        if rtype == "user":
+            if is_error_record(rec):
+                m["tool_errors"] += 1
+            user_msg = rec.get("message") or {}
+            # An interrupt is the caller stopping the run. Read from the text
+            # blocks only - a tool result that happens to quote the marker is
+            # not the caller interrupting anything.
+            if _INTERRUPT.search(prose_of(user_msg)):
+                caller_interrupted = True
+            user_content = user_msg.get("content")
+            if isinstance(user_content, list):
+                for block in user_content:
+                    if not (isinstance(block, dict)
+                            and block.get("type") == "tool_result"):
+                        continue
+                    open_tool_ids.discard(block.get("tool_use_id"))
+                    if guard_spoke(block):
+                        isolated = True
+                    # Mechanical failures the harness refused on its own terms.
+                    # A non-zero command exit is NOT one of these: the command
+                    # ran, and the exit code is information, not an agent
+                    # mistake. Neither is a tool use the operator declined, nor
+                    # one a permission rule declined - both are decisions about
+                    # the environment.
+                    body = failure_body(block)
+                    if body is None:
+                        continue
+                    column = classify_failure(
+                        tool_by_id.get(block.get("tool_use_id"), ""), body)
+                    if column:
+                        m[column] += 1
 
     if not conversation:
         return None
@@ -402,6 +660,29 @@ def measure(path):
     row["schema"] = SCHEMA_VERSION
     for key in COUNTERS:
         row[key] = m[key]
+
+    # How the run answered, in ENDINGS precedence order. A run that handed a
+    # result back through a structured-result call answered, whatever prose sits
+    # beside it: asking instead whether the LAST record carried prose made the
+    # value turn on which record happened to come last, and measured, 43 rows
+    # made a structured-result call and still read as text. Only `unanswered`
+    # and `silent` are the agent failing to answer.
+    if answered_structured:
+        ending = "structured"
+    elif prose_of(last_assistant).strip():
+        ending = "text"
+    elif caller_interrupted:
+        ending = "interrupted"
+    elif open_tool_ids:
+        ending = "unanswered"
+    else:
+        ending = "silent"
+    row["ending"] = ending
+    for key in SUBAGENT_COUNTERS:
+        row[key] = m[key]
+    # Which signals could have occurred here at all. The report divides each
+    # count by the rows carrying its name, never by every row.
+    row["eligible"] = eligible_signals(tools_used, isolated)
     return row
 
 
