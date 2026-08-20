@@ -11,6 +11,9 @@ no greeting, no "Here is", no summary of what the reply is about to say.
 All three sections are always present. When a section has nothing, its entire
 content is `**1.** None.` — a stable shape is what lets the reader scan.
 
+The reader can switch this format off for the current session with
+`/format:off`, and back on with `/format:on`.
+
 ## The sections
 
 `# FINDINGS` — anything verified this turn: facts checked, results observed,

@@ -24,6 +24,14 @@ Both hooks emit plain stdout (appended to context for SessionStart and
 UserPromptSubmit); no JSON envelope is needed, so the payloads stay as
 readable markdown files under `style/`.
 
+The injection is toggleable per session: both hooks route through
+`bin/format-ctl gate`, which prints the payload unless a per-session flag
+file exists under `~/.claude/format-toggle/`. `/format:off` and `/format:on`
+flip the flag — the hook side reads the session id from the hook input JSON,
+the command side from `CLAUDE_CODE_SESSION_ID` (present in the tool
+environment). Unreadable hook input fails open to ON; flags older than 14
+days are pruned on every toggle.
+
 ## Renderer facts the format is built around
 
 Verified against the installed Claude Code CLI (2.1.237) by inspecting its
@@ -67,7 +75,11 @@ relied on above.
 
 ## Layout
 
-- `plugins/format/hooks/hooks.json` — registers both hooks; each command is a
-  bare `cat` of its payload, so a missing file surfaces as a failed hook.
+- `plugins/format/hooks/hooks.json` — registers both hooks; each command runs
+  `bin/format-ctl gate`, which prints its payload unless the session is
+  toggled off. A missing payload still surfaces as a failed hook.
+- `plugins/format/bin/format-ctl` — the gate plus the `off`/`on`/`status`
+  toggle (stdlib Python 3).
+- `plugins/format/commands/` — `/format:off` and `/format:on`.
 - `plugins/format/style/` — the payloads; editing the format means editing
   these two files only.

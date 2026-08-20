@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Per-session gate and toggle for the format plugin's context injection.
+
+gate <payload>  hook entry: print <payload> unless this session is toggled
+                off (session id read from the hook JSON on stdin; unreadable
+                input fails open to ON)
+off | on        toggle the current session (id from CLAUDE_CODE_SESSION_ID)
+status          print the current session's state
+
+Exit: 0 ran clean, 2 could not run.
+"""
+import json
+import os
+import sys
+import time
+
+FLAG_DIR = os.path.join(os.path.expanduser("~"), ".claude", "format-toggle")
+STALE_SECONDS = 14 * 24 * 3600
+
+
+def flag_path(session_id):
+    return os.path.join(FLAG_DIR, session_id + ".off")
+
+
+def prune():
+    try:
+        cutoff = time.time() - STALE_SECONDS
+        for entry in os.scandir(FLAG_DIR):
+            if entry.name.endswith(".off") and entry.stat().st_mtime < cutoff:
+                os.unlink(entry.path)
+    except OSError:
+        pass
+
+
+def session_from_env():
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        print("CLAUDE_CODE_SESSION_ID is not set", file=sys.stderr)
+        sys.exit(2)
+    return sid
+
+
+def gate(payload):
+    sid = None
+    try:
+        sid = json.load(sys.stdin).get("session_id")
+    except (json.JSONDecodeError, OSError, ValueError):
+        pass
+    if sid and os.path.exists(flag_path(sid)):
+        return
+    try:
+        with open(payload, encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+    except OSError as e:
+        print("format-ctl: cannot read payload: %s" % e, file=sys.stderr)
+        sys.exit(2)
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "gate" and len(args) == 2:
+        gate(args[1])
+        return
+    if len(args) != 1 or args[0] not in ("off", "on", "status"):
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+    os.makedirs(FLAG_DIR, exist_ok=True)
+    prune()
+    path = flag_path(session_from_env())
+    if args[0] == "off":
+        with open(path, "w", encoding="utf-8"):
+            pass
+        print("response format OFF for this session")
+    elif args[0] == "on":
+        if os.path.exists(path):
+            os.unlink(path)
+        print("response format ON for this session")
+    else:
+        state = "OFF" if os.path.exists(path) else "ON"
+        print("response format %s for this session" % state)
+
+
+main()

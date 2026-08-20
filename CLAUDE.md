@@ -48,6 +48,8 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/<name>/hooks/hooks.json` — hook wiring, for plugins that act on
   session events; commands reference plugin files via `${CLAUDE_PLUGIN_ROOT}`
   (the `format` plugin prints payload files kept under `style/`).
+- `plugins/<name>/commands/<command>.md` — slash commands, one file per
+  command, namespaced as `/<plugin>:<command>`.
 - `docs/plans/` — design documents, filename dated.
 
 Scripts in any `bin/` share one exit-code convention: `0` ran clean and flagged

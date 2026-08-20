@@ -32,7 +32,7 @@
     {
       "name": "format",
       "source": "./plugins/format",
-      "description": "Fixed reply structure — findings, problems, asks, then everything else below a rule — injected at session start and reinforced every turn.",
+      "description": "Fixed reply structure — findings, problems, asks, then everything else below a rule — injected at session start, reinforced every turn, and toggleable per session with /format:off.",
       "version": "0.1.0",
       "category": "productivity",
       "keywords": ["format", "output-style", "hooks", "response-structure"]
