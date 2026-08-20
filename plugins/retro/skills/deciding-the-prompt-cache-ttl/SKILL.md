@@ -12,15 +12,38 @@ decided from what the machine actually did rather than from intuition.
 
 Run it:
 
-    python "${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report
-    python "${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report --days 30
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report
+python "${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report --days 30
+python "${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report --project SUBSTR
+python "${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report --json
+```
 
 `${CLAUDE_PLUGIN_ROOT}` is how every other skill in this plugin invokes its
 script, and it is the only form that resolves when the plugin is installed
 rather than run from a checkout.
 
+- `--days N` restricts to the last N days by UTC timestamp; default is the
+  whole corpus.
+- `--project SUBSTR` restricts to transcripts whose path contains this
+  substring, and composes with `--days`. Only the hashed project label ever
+  appears in output — never the substring or the directory name it matched.
+- `--json` emits the same figures machine-readably, for scripting or a
+  scheduled check. The schema is fixed and carries no project identifiers at
+  all, unlike the plain-text report, which does show the hashed label.
+
 Exit `0` means the TTL in force is the right one, `1` means it should change,
 `2` means it could not run.
+
+### The smaller JSON shape on the four early-return paths
+
+`--json` combined with an outcome that has no verdict to give — no session
+directory, no readable transcripts, no main-thread requests in the window, or
+every main-thread model unpriced — emits a different, smaller payload than a
+full report: `window_days`, a machine-readable `reason` code, and
+`keep_current_ttl: null` in place of a real verdict. Check for a null
+`keep_current_ttl` (or the presence of `reason`) before reading any other key
+that only the full shape carries.
 
 ## The mechanic that decides it
 
@@ -53,8 +76,11 @@ one hour. Shorter and both policies hit; longer and both mostly miss.
    premise has changed and the verdict is not trustworthy until you know why.
 3. Check `PRICES_VERIFIED_ON` against the pricing page before quoting a dollar
    figure.
-4. Check the unpriced bucket is empty. A model with no price row is missing
-   from the cost model entirely.
+4. Check the unpriced bucket for any model carrying a non-zero token count.
+   A `<synthetic>` row with zero tokens is normal and expected — it costs
+   nothing and changes no total. A non-zero-token entry means a real model is
+   missing from the cost model, so its requests are silently absent from
+   both the observed and counterfactual totals.
 5. Only then act on the verdict, by setting or clearing the environment
    variable below.
 
@@ -89,8 +115,9 @@ Get any of these wrong and the numbers move without looking wrong:
 
 Check `PRICES_VERIFIED_ON` in the script against the pricing page. Prices change;
 the table does not update itself. Unknown model ids are reported in an "unpriced"
-bucket rather than assigned a default — a non-empty bucket means the table needs
-a new row.
+bucket rather than assigned a default, alongside their token counts — a
+zero-token entry is an ordinary synthetic row, but a non-zero-token entry means
+the table needs a new row.
 
 ## Privacy
 
@@ -114,7 +141,9 @@ mangled absolute paths that embed the account name and other projects.
 
 ## Red flags
 
-- The unpriced bucket is non-empty → a model is missing from the cost model.
+- The unpriced bucket has a model with a non-zero token count → a real model
+  is missing from the cost model. Zero-token entries are ordinary synthetic
+  rows and are not a red flag on their own.
 - The subagent validation table has lost its five-minute cliff → the premise
   the counterfactual rests on no longer holds.
 - The verdict says "nothing to decide" → the window or filter matched nothing
