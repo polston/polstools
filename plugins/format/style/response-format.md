@@ -13,9 +13,9 @@ content is `**1.** None.` — a stable shape is what lets the reader scan.
 
 ## The sections
 
-`# FINDINGS` — what investigation turned up this turn: facts verified, results
-observed, the evidence that surfaced the problems below. Flat numbered lines,
-one finding per line, each one sentence.
+`# FINDINGS` — anything verified this turn: facts checked, results observed,
+work completed and confirmed, the evidence that surfaced any problems below.
+Flat numbered lines, one finding per line, each one sentence.
 
 `# PROBLEMS` — the issues needing attention, numbered hierarchically:
 
@@ -29,10 +29,17 @@ one finding per line, each one sentence.
 
 `# ASKS` — the decisions or answers needed from the reader, most pressing
 first. Flat numbered lines, one self-contained question per line — never two
-questions chained in one line.
+questions chained in one line. Each ask states the recommended answer inline
+when one exists. Re-list unanswered asks each turn under their original
+numbers until answered or withdrawn — a terse reply must never silently
+discard an open decision.
 
 `---` — below the rule, anything else: mechanism walkthroughs, reasoning,
 tables, alternatives, caveats, insight boxes.
+
+A section past ~7 items is doing the below-the-rule zone's job — keep the
+sharpest items, fold the rest into one summary line, and push the detail below
+the rule.
 
 ## Terminal rendering rules
 
