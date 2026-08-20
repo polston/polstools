@@ -45,10 +45,9 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/<name>/skills/<skill>/SKILL.md` — one directory per skill.
 - `plugins/<name>/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
   dependencies, no compiled artifacts.
-- `plugins/<name>/hooks/hooks.json` — hook wiring, when a plugin injects
-  context instead of (or besides) shipping skills; its POSIX `sh` handlers live
-  in `plugins/<name>/hooks-handlers/` and print payload files kept in the
-  plugin (the `format` plugin keeps them under `style/`).
+- `plugins/<name>/hooks/hooks.json` — hook wiring, for plugins that act on
+  session events; commands reference plugin files via `${CLAUDE_PLUGIN_ROOT}`
+  (the `format` plugin prints payload files kept under `style/`).
 - `docs/plans/` — design documents, filename dated.
 
 Scripts in any `bin/` share one exit-code convention: `0` ran clean and flagged

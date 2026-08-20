@@ -1,12 +1,12 @@
 {
-  "description": "Injects the response-format spec at session start and a one-line reminder every turn (per-turn reinjection counters within-session drift).",
+  "description": "Injects the response-format spec at session start and a short reminder every turn (per-turn reinjection counters within-session drift). Plain stdout becomes context; no wrapper scripts and no exit-0 masking, so a missing payload surfaces as a failed hook.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/inject-spec.sh\""
+            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/style/response-format.md\""
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/inject-reminder.sh\""
+            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/style/turn-reminder.md\""
           }
         ]
       }

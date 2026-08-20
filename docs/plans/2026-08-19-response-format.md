@@ -67,10 +67,7 @@ relied on above.
 
 ## Layout
 
-- `plugins/format/hooks/hooks.json` — registers both hooks.
-- `plugins/format/hooks-handlers/inject-spec.sh` — SessionStart, cats
-  `style/response-format.md`.
-- `plugins/format/hooks-handlers/inject-reminder.sh` — UserPromptSubmit, cats
-  `style/turn-reminder.md`.
+- `plugins/format/hooks/hooks.json` — registers both hooks; each command is a
+  bare `cat` of its payload, so a missing file surfaces as a failed hook.
 - `plugins/format/style/` — the payloads; editing the format means editing
   these two files only.

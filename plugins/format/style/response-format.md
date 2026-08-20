@@ -14,8 +14,8 @@ content is `**1.** None.` — a stable shape is what lets the reader scan.
 ## The sections
 
 `# FINDINGS` — what investigation turned up this turn: facts verified, results
-observed, the evidence that surfaced the problems below. Flat bold-numbered
-lines (`**1.**`, `**2.**`), one finding per line, each one sentence.
+observed, the evidence that surfaced the problems below. Flat numbered lines,
+one finding per line, each one sentence.
 
 `# PROBLEMS` — the issues needing attention, numbered hierarchically:
 
@@ -28,8 +28,8 @@ lines (`**1.**`, `**2.**`), one finding per line, each one sentence.
   when a pointer exists.
 
 `# ASKS` — the decisions or answers needed from the reader, most pressing
-first. Flat bold-numbered lines, one self-contained question per line — never
-two questions chained in one line.
+first. Flat numbered lines, one self-contained question per line — never two
+questions chained in one line.
 
 `---` — below the rule, anything else: mechanism walkthroughs, reasoning,
 tables, alternatives, caveats, insight boxes.
