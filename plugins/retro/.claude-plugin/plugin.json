@@ -1,9 +1,15 @@
 {
   "name": "retro",
-  "description": "Workflow retrospectives from measured session history: find recurring friction, audit which standing rules and skills actually do anything, and scout tooling against named seams.",
-  "version": "0.1.0",
+  "description": "Workflow retrospectives from measured session history: find recurring friction, audit which standing rules and skills actually do anything, and scout tooling against named seams. Also counts stopped promises: turns that ended on an announced action that never ran.",
+  "version": "0.2.0",
   "author": {
     "name": "polston"
   },
-  "keywords": ["retrospective", "workflow", "session-history", "metrics"]
+  "keywords": [
+    "retrospective",
+    "workflow",
+    "session-history",
+    "metrics",
+    "follow-through"
+  ]
 }
