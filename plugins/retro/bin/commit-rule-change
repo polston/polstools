@@ -1,0 +1,99 @@
+#!/usr/bin/env sh
+# Commit one edited rule file to whatever repository owns it.
+#
+# Standing instructions, skills and memory files are the things that change how
+# a session behaves. `retro effect` compares metrics either side of a date to ask
+# whether such a change did anything -- and it can only do that if the change has
+# a date, which means a commit. Left to habit, they are edited constantly and
+# committed in bursts months apart, and the loop never closes.
+#
+# Called from a PostToolUse hook with the edited path as $1, or by hand.
+#
+# Deliberately narrow:
+#   - commits ONLY the path it was given, never `git add -A`. The repository may
+#     hold unrelated work in progress and this must not sweep it up.
+#   - respects the repository's own gitignore, so a whitelist that excludes a
+#     credentials file keeps excluding it. If the path is ignored, this does
+#     nothing and says why.
+#   - never fails the caller. A hook that breaks an edit because a commit did not
+#     land would be worse than the problem it solves.
+#
+# Exit codes match the sibling scripts:
+#   0  committed, or nothing needed committing
+#   1  could not commit, and said why
+#   2  could not run
+
+set -u
+
+usage() {
+    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-}" in
+    -h|--help|"") usage; [ -z "${1:-}" ] && exit 2 || exit 0 ;;
+esac
+
+TARGET="$1"
+command -v git >/dev/null 2>&1 || { echo "git not found" >&2; exit 2; }
+
+# A deleted rule file is a rule change like any other, so a missing path is only
+# an error if the repository has never heard of it either. Found by using this
+# script: it refused to record a deleted memory file, which is exactly the kind
+# of change someone would later want a date for.
+DIR=$(dirname "$TARGET")
+if [ ! -e "$TARGET" ]; then
+    git -C "$DIR" ls-files --error-unmatch -- "$TARGET" >/dev/null 2>&1 || {
+        echo "no such path, and not tracked: $TARGET" >&2
+        exit 2
+    }
+fi
+
+REPO=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || {
+    echo "not inside a git repository: $TARGET" >&2
+    echo "put it under version control, or its edits will have no date" >&2
+    exit 1
+}
+
+REL=$(git -C "$REPO" ls-files --full-name --others --cached --exclude-standard \
+      -- "$TARGET" 2>/dev/null | head -1)
+if [ -z "$REL" ]; then
+    # Ignored by the repository's own rules. That is a decision someone made on
+    # purpose -- a whitelist keeping a credentials file out, most likely -- and
+    # this script does not second-guess it.
+    echo "ignored by $REPO, leaving it alone: $TARGET"
+    exit 0
+fi
+
+NAME=$(basename "$TARGET")
+
+# Stage first, then ask whether anything landed. Testing for changes BEFORE
+# staging was wrong in both directions and both were found by running it: `git
+# diff` cannot see a file that is not tracked yet, so a brand new rule file was
+# silently skipped, and a deleted one never reached the staging call at all.
+# `add -A` on a single path covers all three cases -- added, modified, removed.
+git -C "$REPO" add -A -- "$TARGET" || { echo "could not stage $TARGET" >&2; exit 1; }
+
+# Nothing staged means the edit was a no-op, or something else already committed
+# it. Either way there is nothing to do, and that is not a failure.
+if git -C "$REPO" diff --cached --quiet -- "$TARGET"; then
+    exit 0
+fi
+
+# Message through a file, never an -m string: a rule file's name is data from
+# outside this script, and a backtick in a double-quoted shell string executes.
+MSG=$(mktemp) || exit 2
+{
+    printf 'chore: %s changed\n\n' "$NAME"
+    printf 'Committed automatically when the file was edited, so that the change\n'
+    printf 'has a date. Metrics either side of that date are what turns an edit to\n'
+    printf 'a standing rule into something that can be checked rather than assumed.\n'
+} > "$MSG"
+
+if git -C "$REPO" commit -q -F "$MSG" -- "$TARGET"; then
+    rm -f "$MSG"
+    echo "committed $NAME in $REPO"
+    exit 0
+fi
+rm -f "$MSG"
+echo "could not commit $TARGET" >&2
+exit 1

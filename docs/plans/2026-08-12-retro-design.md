@@ -1,6 +1,6 @@
 # retro — workflow retrospectives from measured session history
 
-**Status:** built, unreviewed
+**Status:** built; reviewed and re-measured 2026-08-20
 **Home:** `plugins/retro/` in polstools
 
 ## What it does
@@ -30,7 +30,7 @@ closed the loop."
 
 ### `plugins/retro/bin/retro.py` — Python 3, stdlib only
 
-Three subcommands:
+Seven subcommands:
 
 - `extract` — walk session transcripts, write one metrics row per transcript.
   Counts only, no message text. Incremental via a state file keyed on size and
@@ -39,7 +39,19 @@ Three subcommands:
 - `pack --days N` — build the evidence pack a model reads: trends for the window
   against the prior window, then the highest-friction sessions with their
   moments quoted. Every quote passes through the redactor first.
-- `skills --days N` — split installed skills into fired and never-fired.
+- `skills --days N` — which installed skills fire, and which never do.
+- `subagents --days N` — mechanical failures in subagent transcripts, each share
+  divided by the population the signal could have occurred in.
+- `label` — sample turns for hand marking, then report precision, recall and a
+  threshold sweep from the marked file. This is how the classifier's constants
+  stopped being guesses.
+- `rules` — whether the standing instructions are under version control at all,
+  and whether their edits are being committed as they are made. Built because
+  `effect` needs a date and a rule change with no commit has none.
+- `effect --since DATE` — the same metrics before and after a date, so a rule or
+  skill edit can be checked against what followed it. Reports both per session
+  and per hundred turns, because the first moves whenever sessions change length
+  and on its own it will tell you an edit worked when nothing did.
 
 Every field access is guarded. Transcript shape varies by CLI version, and a
 `KeyError` partway through a 900 MB corpus loses the whole run.
@@ -71,7 +83,7 @@ One JSON object per transcript:
 ```
 transcript, is_subagent, session_id, project, git_branch, cc_version, date,
 duration_s, tokens_in, tokens_out, cache_read, skills_used[],
-turns, user_prompts, tool_calls, tool_errors, tool_retries, correction_turns,
+turns, user_prompts, tool_calls, tool_errors, repeat_calls, correction_candidates,
 interrupts, permission_mode_changes, queued_prompts, skill_runs
 ```
 
@@ -87,17 +99,21 @@ Every signal was confirmed present in real transcripts.
 
 | Signal | Source | Reads as |
 |---|---|---|
-| `correction_turns` | short user prompt after a long assistant turn | a standing instruction is missing or ignored |
+| `correction_candidates` | a reply carrying a corrective signal, or a short reply after a long turn | a standing instruction is missing or ignored. Over-inclusive on purpose: 0.93 recall, 0.60 precision against 144 hand-marked turns |
 | `interrupts` | interrupt marker in user records | the turn went wrong early |
-| `tool_retries` | same tool + normalized input signature ≥2× | something rediscovered every session |
+| `repeat_calls` | same tool, byte-identical input, twice | duplicated work. Unscored: the normalising version of this was 42% of the friction score and 83% of what it flagged had different inputs |
 | `tool_errors` | `is_error` on a tool_result block, or an error-prefixed string result | a tool called wrong, repeatedly |
 | `queued_prompts` | `queue-operation` records of subtype `enqueue` | typing ahead because a turn ran long |
 | `permission_mode_changes` | transitions between consecutive `permission-mode` records | the permission config did not match the work |
 | `skill_runs`, `skills_used` | contiguous runs of `attributionSkill` | which skills actually fire |
 | `tokens_*` | `message.usage` | what the friction cost |
 
-The retry signature normalizes whitespace and numeric literals before hashing,
-so a retried command with a tweaked number still matches its predecessor.
+The call signature is an exact digest of the tool input. It used to normalize
+whitespace and numeric literals first, on the theory that a retry is the same
+command with a tweaked number — recounted 2026-08-20, that theory was wrong in
+1,157 of the 1,387 repeats it flagged, most of them one file read at successive
+offsets. Truncating the hashed prefix also let two long writes to different
+paths collide.
 
 ### Metric definitions that a first pass gets wrong
 
@@ -162,7 +178,7 @@ Measured on the live corpus, 2026-08-16, after the metric corrections above:
 
 | Check | Result |
 |---|---|
-| Full rebuild over 1,800 transcripts | 5.9 s, 1,778 rows, 22 unreadable |
+| Full rebuild over 1,800 transcripts | 5.9 s, 1,778 rows, 22 files that hold no conversation |
 | Immediate incremental re-run | 0.16 s |
 | Row split | 386 session rows, 1,392 subagent rows |
 | Ledger totals vs an independent probe | `permission_mode_changes` 68/68 — agree |
@@ -176,8 +192,21 @@ Measured on the live corpus, 2026-08-16, after the metric corrections above:
 
 Open:
 
-- The 22 unreadable transcripts are counted but not characterized.
-- `tool_retries` and `correction_turns` are heuristics with tunable thresholds
+- The 22 files this table calls unreadable were measured on 2026-08-19: every
+  one opened and decoded cleanly and holds no record of type `user` or
+  `assistant`. `extract` now reports that outcome under its own name and keeps
+  `unreadable` for files whose bytes would not read.
+- SETTLED 2026-08-20: the turn classifier was measured against turns read and
+  marked by hand, and its thresholds chosen from a sweep rather than guessed.
+  Interrupt 1.00/1.00, question 0.96/0.71, approval 1.00/0.70, correction
+  0.60/0.93, over 144 marks.
+  The first pass of this used 300 marks and reported worse numbers, because the
+  sampler was drawing from a population the ledger does not count and running a
+  drifted second copy of the classifier. Both are fixed; the surviving marks are
+  the ones drawn from the right population.
+  A third of what the ledger called a user prompt turned out to be the harness
+  rather than a person, and is now excluded by prompt origin.
+- `repeat_calls` and `correction_candidates` are heuristics with tunable thresholds
   and have not been validated against a hand-labelled sample. Their absolute
   values should not be trusted; their movement over time is the usable part.
 - Transcripts begin 2026-06-20, so "all history" is roughly two months, not the

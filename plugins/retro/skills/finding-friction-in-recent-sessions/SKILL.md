@@ -26,6 +26,9 @@ python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
 python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 7
 ```
 
+`extract` exits 1 when a transcript would not read. It still writes the ledger,
+and retries that file on the next run.
+
 `pack` prints the path of one markdown file: trends for the window against the
 previous window, then the highest-friction sessions with the actual moments
 quoted.
@@ -58,12 +61,26 @@ the one that occurred most often.
 **6. Deliver as a file and stop.** Never edit CLAUDE.md, a skill, a hook, or a
 permission rule from inside this skill. Propose; wait to be asked.
 
+## Corrections are candidates, and judging them is your job
+
+`correction_candidates` is deliberately over-inclusive. Measured against 300
+turns marked by hand: it catches 93% of real corrections and about 60% of what
+it flags is a correction. That trade is on purpose. Whether a reply is a
+correction is a judgment about intent, and no wording rule got past 0.63
+precision in testing — the ones it missed were corrections phrased as questions,
+which is exactly the shape a rule cannot see and you can.
+
+So do not report a candidate count as a correction count, and do not put it in a
+proposal as though it were measured fact. Read the quoted moments, decide which
+ones are really someone being told they got it wrong, and say how many you kept
+out of how many you were given. A count you have not read is not evidence.
+
 ## Reading the signals
 
 | Signal rising | Usually means |
 |---|---|
-| `tool_retries` | something is being rediscovered every session — a candidate for a skill or a note |
-| `correction_turns` | a standing instruction is missing, or an existing one is not being followed |
+| `repeat_calls` | the same call made twice with identical input — duplicated work, not necessarily a retry |
+| `correction_candidates` | a standing instruction is missing, or an existing one is not being followed |
 | `interrupts` | turns are going wrong early — usually scope or approach, not detail |
 | `queued_prompts` | you were typing ahead because a turn was taking too long |
 | `tool_errors` | a tool is being called wrong, repeatedly — usually a missing note about its interface |

@@ -26,6 +26,9 @@ python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
 python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 30
 ```
 
+`extract` exits 1 when a transcript would not read. It still writes the ledger,
+and retries that file on the next run.
+
 Take the top signals from the pack. If nothing is elevated, stop and report that
 — an empty scout is a valid result and a cheap one.
 
