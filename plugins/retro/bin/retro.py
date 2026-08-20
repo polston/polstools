@@ -1637,6 +1637,66 @@ def cmd_label(args):
 EFFECT_MIN_SESSIONS = 12
 
 
+# The files that change how a session behaves. Their git history is a list of
+# dates on which something was deliberately changed, which is exactly what
+# `effect` needs and what nobody remembers unaided.
+RULE_PATHS = ("CLAUDE.md", "skills", "memory", "settings.json")
+
+
+def rule_change_dates(limit=25):
+    """Dates on which the machine's standing instructions changed.
+
+    Reads the git history of the configuration directory. Returns
+    [(date, count, [subjects])], newest first. Empty if it is not a repository,
+    which is not an error -- it just means this shortcut is unavailable.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(CLAUDE_DIR), "log", "--date=short",
+             "--format=%ad\t%s", "--"] + list(RULE_PATHS),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    by_date = {}
+    for line in out.stdout.splitlines():
+        date, _, subject = line.partition("\t")
+        if len(date) == 10:
+            by_date.setdefault(date, []).append(subject.strip())
+    return [(d, len(s), s) for d, s in sorted(by_date.items(), reverse=True)][:limit]
+
+
+def print_candidates():
+    """No date given: show the ones the machine knows about."""
+    dates = rule_change_dates()
+    print("# Dates something was deliberately changed\n")
+    if not dates:
+        print(f"No history found under {CLAUDE_DIR}. Either it is not a git "
+              "repository, or the rule files have never been committed there.\n"
+              "Pass a date yourself: retro effect --since YYYY-MM-DD")
+        return EXIT_CANNOT_RUN
+    rows = load_rows()
+    dated = [r["date"] for r in rows if r.get("date")]
+    first, last = (min(dated), max(dated)) if dated else ("", "")
+    print(f"The ledger covers {first} to {last}. A date outside that has nothing "
+          "to compare on one side.\n")
+    print("| date | changes | in range | what changed |")
+    print("|---|---|---|---|")
+    for date, count, subjects in dates:
+        ok = "yes" if first < date < last else "no"
+        # Terminal only. A commit subject can name anything the operator was
+        # working on, and this is why none of it is written to a file.
+        print(f"| {date} | {count} | {ok} | {subjects[0][:56]} |")
+    print("\nThen: retro effect --since YYYY-MM-DD")
+    print("Bear in mind the counters only see tool use, prompts, interrupts and "
+          "permission changes. A rule about something else will not show up here "
+          "however well it worked.")
+    return EXIT_CLEAN
+
+
 def cmd_effect(args):
     """Metrics before and after a date, so an edit can be checked against what
     followed it.
@@ -1645,6 +1705,8 @@ def cmd_effect(args):
     N days to the N before, anchored to today, which answers "how is it going"
     and cannot answer "did the thing I changed on the 12th do anything".
     """
+    if not args.since:
+        return print_candidates()
     try:
         cut = datetime.fromisoformat(args.since).date()
     except ValueError:
@@ -1756,8 +1818,9 @@ def main():
 
     p_effect = sub.add_parser("effect",
                               help="metrics before and after a date, to check an edit")
-    p_effect.add_argument("--since", required=True, metavar="YYYY-MM-DD",
-                          help="the date the change was made")
+    p_effect.add_argument("--since", metavar="YYYY-MM-DD",
+                          help="the date the change was made; omit to list the "
+                               "dates the machine's own rule files changed")
     p_effect.add_argument("--days", type=int, default=0,
                           help="limit to this many days either side; 0 means all")
     p_effect.set_defaults(func=cmd_effect)
