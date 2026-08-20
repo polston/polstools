@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """retro — derive workflow-friction metrics from Claude Code session history.
 
-Two subcommands:
+Four subcommands:
 
     extract   walk session transcripts, append one metrics row per session
     pack      build an evidence pack (trends + redacted moments) for a window
+    skills    which installed skills actually fire
+    label     sample turns and retry candidates for hand labelling, and report
+              precision, recall and a threshold sweep from the marked file
 
-Counts only. Message text leaves this script in exactly one place — the
-`moments` section of a pack — and only after passing through redact().
+Counts only, with two exceptions. Message text leaves this script in exactly two
+places - the `moments` section of a pack, and the labelling file written by
+`label` - and only after passing through redact(). Both land in the work
+directory, which must sit outside every git repository: redact() strips machine
+and credential shapes, not the names and paths of whatever the sessions were
+about.
 
 Stdlib only. Every field access is guarded: transcript shape varies by CLI
 version, and a KeyError partway through a 900MB corpus loses the whole run.
@@ -75,6 +82,22 @@ COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "tool_retries"
 # No "abandoned session" counter, deliberately. See the metric-definitions
 # section of docs/plans/2026-08-12-retro-design.md for the measurement that
 # ruled it out.
+
+# --- Labelling -------------------------------------------------------------
+# The sample the thresholds above are argued from. 150 a side is enough to
+# separate a precision of 0.9 from one of 0.7 and small enough to mark in a
+# sitting.
+LABEL_SAMPLE_SIZE = 150
+LABEL_SEED = "retro-label-v1"
+LABEL_AFTER_CHARS = 600     # of the assistant turn before, for context
+LABEL_SAID_CHARS = 400      # of the reply itself
+LABEL_INPUT_CHARS = 300     # of a tool input, for a retry candidate
+TURN_LABELS = ("interrupt", "question", "approval", "correction", "none")
+RETRY_LABELS = ("wasteful", "legitimate")
+# Swept against the marks. The top of the reply sweep stays under
+# LABEL_SAID_CHARS, or the stored reply would be truncated where the rule reads.
+SWEEP_MAX_CHARS = (60, 90, 120, 160, 200, 300)
+SWEEP_MIN_PRIOR = (0, 200, 400, 800, 1600)
 
 
 # --- Redaction -------------------------------------------------------------
@@ -626,6 +649,261 @@ def cmd_skills(args):
     return EXIT_FLAGGED if dormant else EXIT_CLEAN
 
 
+# --- label -----------------------------------------------------------------
+
+def labels_file():
+    """The labelling file, under the work directory. A function rather than a
+    constant so a run with RETRO_HOME pointed elsewhere lands there."""
+    return WORK_DIR / "labels.jsonl"
+
+
+def refuse_inside_repo(path):
+    """The labelling file carries message text. redact() mirrors the mechanical
+    categories of the privacy audit and cannot recognise what a project is
+    called, so the file carries identifiers redaction will not catch. It lives
+    in the work directory and never inside a repository."""
+    for parent in [path] + list(path.parents):
+        if (parent / ".git").exists():
+            print(f"refusing to write {path.name}: {parent} is a repository - "
+                  "point RETRO_HOME outside every repo", file=sys.stderr)
+            sys.exit(EXIT_CANNOT_RUN)
+
+
+def _rank(sample_id):
+    """Deterministic order over candidates. A seeded shuffle draws different
+    turns once the corpus grows; hashing each candidate's own id keeps a rerun
+    on the same turns."""
+    return hashlib.sha1(f"{LABEL_SEED}|{sample_id}".encode("utf-8")).hexdigest()
+
+
+def _sample_id(rel, index, extra=""):
+    """Opaque and stable. The transcript path is hashed rather than stored: the
+    file needs to identify a sample across reruns, not to name a session."""
+    raw = f"{rel}#{index}#{extra}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def label_candidates():
+    """Walk main-session transcripts once for three candidate pools: turns the
+    classifier fires on, turns it does not, and flagged tool retries.
+
+    Main sessions only - the thresholds exist to rank sessions, and subagent
+    transcripts are excluded from that ranking.
+    """
+    fires, quiet, retries = [], [], []
+    for path in sorted(PROJECTS_DIR.rglob("*.jsonl")):
+        try:
+            rel = path.relative_to(PROJECTS_DIR).as_posix()
+        except ValueError:
+            rel = path.name
+        if "subagents/" in rel:
+            continue
+        prior = ""
+        date = ""
+        seen = {}
+        first_input = {}
+        for index, rec in enumerate(read_records(path)):
+            if not isinstance(rec, dict):
+                continue
+            date = date or str(rec.get("timestamp") or "")[:10]
+            rtype = rec.get("type")
+            if rtype == "assistant":
+                msg = rec.get("message") or {}
+                prior = text_of(msg)
+                content = msg.get("content")
+                for block in content if isinstance(content, list) else []:
+                    if not (isinstance(block, dict)
+                            and block.get("type") == "tool_use"):
+                        continue
+                    name = block.get("name") or "?"
+                    sig = signature(block.get("input"))
+                    shown = redact(json.dumps(block.get("input"), sort_keys=True,
+                                              default=str))[:LABEL_INPUT_CHARS]
+                    key = (name, sig)
+                    if sig and key in seen:
+                        seen[key] += 1
+                        retries.append({
+                            "id": _sample_id(rel, index, name),
+                            "kind": "retry", "predicted": "retry", "label": "",
+                            "date": date, "tool": name, "repeat": seen[key],
+                            "first_input": first_input.get(key, ""),
+                            "repeat_input": shown,
+                        })
+                    else:
+                        seen[key] = 1
+                        first_input[key] = shown
+            elif rtype == "user" and rec.get("toolUseResult") is None:
+                body = text_of(rec.get("message") or {})
+                if not body.strip():
+                    continue
+                kind = classify_user_turn(body, len(prior))
+                sample = {
+                    "id": _sample_id(rel, index),
+                    "kind": "turn", "predicted": kind or "none", "label": "",
+                    "date": date,
+                    # unredacted lengths: redact() shortens the reply and the
+                    # stored context is truncated, so a sweep over the stored
+                    # text would be measuring the wrong lengths.
+                    "reply_chars": len(body.strip()),
+                    "prior_chars": len(prior),
+                    "after": redact(prior.strip()[-LABEL_AFTER_CHARS:]),
+                    "said": redact(body.strip())[:LABEL_SAID_CHARS],
+                }
+                (fires if kind else quiet).append(sample)
+                prior = ""
+    return fires, quiet, retries
+
+
+def draw_sample(pools):
+    """Take LABEL_SAMPLE_SIZE from each pool, tagging every sample with the pool
+    it came from and how big that pool was. The report needs both: 150 a side is
+    not proportional to the corpus, so an unweighted precision would be an
+    artefact of the sampling."""
+    out = []
+    for stratum, pool in pools.items():
+        chosen = sorted(pool, key=lambda s: _rank(s["id"]))[:LABEL_SAMPLE_SIZE]
+        for sample in chosen:
+            sample["stratum"] = stratum
+            sample["stratum_population"] = len(pool)
+            sample["stratum_sampled"] = len(chosen)
+        out += chosen
+    return out
+
+
+def write_labels(samples, path):
+    with open(path, "w", encoding="utf-8") as fh:
+        for sample in samples:
+            fh.write(json.dumps(sample) + "\n")
+
+
+def read_labels(path):
+    if not path.exists():
+        print(f"no labelling file at {path} - run `label` first", file=sys.stderr)
+        sys.exit(EXIT_CANNOT_RUN)
+    out = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def _predict_at(sample, max_chars, min_prior):
+    """Re-run the turn classifier at a candidate pair of thresholds, from the
+    stored numbers rather than the stored text - the text is redacted and
+    truncated, the numbers are the reply's real lengths."""
+    if sample["predicted"] == "interrupt":
+        return "interrupt"
+    if not (0 < sample["reply_chars"] <= max_chars
+            and sample["prior_chars"] >= min_prior):
+        return "none"
+    said = sample["said"].strip()
+    if said.endswith("?"):
+        return "question"
+    if is_approval(said):
+        return "approval"
+    return "correction"
+
+
+def _weighted(marked, predict):
+    """Precision and recall per class, weighted back to corpus scale."""
+    out = {}
+    for cls in TURN_LABELS:
+        tp = fp = fn = 0.0
+        for sample in marked:
+            weight = sample["stratum_population"] / sample["stratum_sampled"]
+            got, want = predict(sample), sample["label"]
+            if got == cls and want == cls:
+                tp += weight
+            elif got == cls:
+                fp += weight
+            elif want == cls:
+                fn += weight
+        out[cls] = (tp / (tp + fp) if tp + fp else float("nan"),
+                    tp / (tp + fn) if tp + fn else float("nan"),
+                    tp + fn)
+    return out
+
+
+def report_labels(samples):
+    turns = [s for s in samples if s.get("kind") == "turn" and s.get("label")]
+    retries = [s for s in samples if s.get("kind") == "retry" and s.get("label")]
+    total_turns = sum(1 for s in samples if s.get("kind") == "turn")
+    total_retries = sum(1 for s in samples if s.get("kind") == "retry")
+    print(f"# Labelled {len(turns)} of {total_turns} turns, "
+          f"{len(retries)} of {total_retries} retry candidates\n")
+    if not turns:
+        print("nothing marked yet", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+
+    print(f"## Turn classifier at the settled thresholds "
+          f"(reply <= {CORRECTION_MAX_CHARS}, "
+          f"prior >= {CORRECTION_MIN_PRIOR_CHARS})\n")
+    print("| class | precision | recall | corpus turns |")
+    print("|---|---|---|---|")
+    for cls, (p, r, n) in _weighted(turns, lambda s: s["predicted"]).items():
+        print(f"| {cls} | {p:.2f} | {r:.2f} | {n:.0f} |")
+
+    print("\n## Threshold sweep, correction class\n")
+    print("| reply <= | prior >= | precision | recall | corpus corrections |")
+    print("|---|---|---|---|---|")
+    for max_chars in SWEEP_MAX_CHARS:
+        for min_prior in SWEEP_MIN_PRIOR:
+            p, r, n = _weighted(
+                turns,
+                lambda s, a=max_chars, b=min_prior: _predict_at(s, a, b),
+            )["correction"]
+            print(f"| {max_chars} | {min_prior} | {p:.2f} | {r:.2f} | {n:.0f} |")
+
+    if retries:
+        wasteful = sum(1 for s in retries if s["label"] == "wasteful")
+        print(f"\n## tool_retries\n\nprecision {wasteful / len(retries):.2f} "
+              f"over {len(retries)} marked candidates. Recall is not estimable "
+              "from this sample: only flagged retries were drawn.")
+        by_tool = Counter(s["tool"] for s in retries if s["label"] == "wasteful")
+        print("\n| tool | marked wasteful |\n|---|---|")
+        for name, count in by_tool.most_common():
+            print(f"| {name} | {count} |")
+    return EXIT_CLEAN
+
+
+def cmd_label(args):
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    path = labels_file()
+    refuse_inside_repo(path)
+    if args.report:
+        return report_labels(read_labels(path))
+    if not PROJECTS_DIR.is_dir():
+        print(f"no session directory at {PROJECTS_DIR}", file=sys.stderr)
+        sys.exit(EXIT_CANNOT_RUN)
+    if path.exists() and not args.resample:
+        print(f"{path} exists - mark it, then run `label --report` "
+              "(or `label --resample` to redraw)", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+
+    kept = {s["id"]: s.get("label", "") for s in
+            (read_labels(path) if path.exists() else [])}
+    fires, quiet, retries = label_candidates()
+    samples = draw_sample({"fires": fires, "quiet": quiet, "retries": retries})
+    carried = 0
+    for sample in samples:
+        if kept.get(sample["id"]):
+            sample["label"] = kept[sample["id"]]
+            carried += 1
+    write_labels(samples, path)
+    print(f"pools: {len(fires)} firing, {len(quiet)} quiet, "
+          f"{len(retries)} retry candidates")
+    print(f"sampled {len(samples)} into {path}" +
+          (f", {carried} marks carried over" if carried else ""))
+    print('mark each line\'s "label": turns take one of '
+          f"{'/'.join(TURN_LABELS)}, retries one of {'/'.join(RETRY_LABELS)}. "
+          "Then: retro label --report")
+    print("This file holds message text and stays in the work directory. "
+          "Only aggregates from --report go anywhere tracked.")
+    return EXIT_CLEAN
+
+
 def main():
     parser = argparse.ArgumentParser(prog="retro", description=__doc__)
     sub = parser.add_subparsers(required=True)
@@ -645,6 +923,14 @@ def main():
     p_skills.add_argument("--days", type=int, default=0,
                           help="restrict to a window; 0 means all history")
     p_skills.set_defaults(func=cmd_skills)
+
+    p_label = sub.add_parser("label",
+                             help="sample turns and retries for hand labelling")
+    p_label.add_argument("--report", action="store_true",
+                         help="read the marked file back and report")
+    p_label.add_argument("--resample", action="store_true",
+                         help="redraw the sample, carrying existing marks over")
+    p_label.set_defaults(func=cmd_label)
 
     args = parser.parse_args()
     sys.exit(args.func(args) or EXIT_CLEAN)
