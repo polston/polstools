@@ -14,7 +14,8 @@ version, and a KeyError partway through a 900MB corpus loses the whole run.
 
 Exit codes match the sibling scripts in plugins/core/bin:
     0  ran clean, nothing flagged
-    1  ran clean, something was flagged (friction in the window, dormant skills)
+    1  ran clean, something was flagged (a transcript that would not read,
+       friction in the window, dormant skills)
     2  could not run (no session directory, no ledger)
 """
 
@@ -401,6 +402,9 @@ def cmd_extract(args):
         try:
             stat = path.stat()
         except OSError:
+            # Nothing to compare and nothing to record: this is a read failure
+            # like any other, and belongs in a bucket rather than in none.
+            unreadable += 1
             continue
         # A live session grows; re-measure when size or mtime moved.
         fingerprint = f"{stat.st_size}:{int(stat.st_mtime)}"
@@ -418,13 +422,17 @@ def cmd_extract(args):
     with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
         for (path, fingerprint), (outcome, row) in zip(
                 stale, pool.map(lambda item: measure_outcome(item[0]), stale)):
+            if outcome == UNREADABLE:
+                # Deliberately not fingerprinted. Recording one would retire
+                # the file until it changes, so a live transcript that was
+                # briefly locked would be dropped for good.
+                unreadable += 1
+                continue
             if outcome == MEASURED:
                 rows[row["transcript"]] = row
                 measured += 1
-            elif outcome == NOT_TRANSCRIPT:
-                not_transcripts += 1
             else:
-                unreadable += 1
+                not_transcripts += 1
             state[str(path)] = fingerprint
 
     with open(METRICS_FILE, "w", encoding="utf-8") as fh:
@@ -437,6 +445,7 @@ def cmd_extract(args):
           f"unreadable: {unreadable}")
     print(f"sessions in ledger: {len(rows)}")
     print(f"ledger: {METRICS_FILE}")
+    return EXIT_FLAGGED if unreadable else EXIT_CLEAN
 
 
 # --- pack ------------------------------------------------------------------
