@@ -64,7 +64,7 @@ permission rule from inside this skill. Propose; wait to be asked.
 ## Corrections are candidates, and judging them is your job
 
 `correction_candidates` is deliberately over-inclusive. Measured against 300
-turns marked by hand: it catches 90% of real corrections and about 55% of what
+turns marked by hand: it catches 93% of real corrections and about 60% of what
 it flags is a correction. That trade is on purpose. Whether a reply is a
 correction is a judgment about intent, and no wording rule got past 0.63
 precision in testing — the ones it missed were corrections phrased as questions,

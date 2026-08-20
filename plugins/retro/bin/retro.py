@@ -254,8 +254,6 @@ def tool_calls_of(message):
                    signature(block.get("input")))
 
 
-_DIGITS = re.compile(r"\d+")
-_SPACES = re.compile(r"\s+")
 _INTERRUPT = re.compile(r"\[request interrupted", re.I)
 
 def signature(tool_input):
@@ -444,8 +442,6 @@ def is_approval(reply):
     Shared with the label report's threshold sweep, so the sweep cannot drift
     from the rule the ledger was built with.
     """
-    if not APPROVAL_PHRASES:
-        return False
     stripped = _APPROVAL_TAIL.sub("", _LIST_PREFIX.sub("", reply)).strip()
     if _APPROVAL.match(stripped):
         return True
@@ -457,20 +453,26 @@ def is_approval(reply):
     return bool(_APPROVAL.match(head)) and not _NEGATION.search(stripped)
 
 
-def classify_user_turn(body, prior_assistant_chars):
+def classify_user_turn(body, prior_assistant_chars,
+                       max_chars=None, min_prior=None):
     """The pack's central definition, in one place: what a user turn means.
 
     Returns "interrupt", "question", "approval", "correction" or "". Precedence
     is fixed in that order, so a turn that could read as two things is always
     the earlier one. `measure` counts the result and `moments` quotes it, so
-    both read the same rule rather than two copies that drift.
+    both read the same rule, and the threshold sweep calls it too rather than
+    keeping a second copy that drifts.
 
-    A correction is deliberately over-flagged. Measured against 300 hand-marked
-    turns, no wording rule got past about 0.63 precision, because whether a reply
+    A correction is deliberately over-flagged. Measured against turns read and
+    marked by hand -- 300 originally, of which 144 survived a later correction to
+    the sampler, which had been drawing from a population including records the
+    ledger does not count -- no wording rule got past about 0.63 precision, because whether a reply
     is a correction is a judgment about intent and every missed one was a
     correction phrased as a question. Four content rules were tried and none beat
     the length rule. So this aims for recall instead -- 0.93 against the marks,
-    at 0.59 precision -- and the column is named `correction_candidates` because
+    at 0.60 precision, measured over 144 marked turns drawn from the population
+    the ledger actually counts -- and the column is named `correction_candidates`
+    because
     that is what it holds. The model reading a pack does the judging; a regex
     cannot, and pretending otherwise put a number nobody should trust at the top
     of the ranking.
@@ -484,15 +486,22 @@ def classify_user_turn(body, prior_assistant_chars):
     if _INTERRUPT.search(body):
         return "interrupt"
     reply = body.strip()
-    short_reply = (0 < len(reply) <= CORRECTION_MAX_CHARS
-                   and prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS)
+    # The thresholds are arguments so the sweep can ask this same function what
+    # a different pair would have produced. They were a second copy of this rule
+    # for a while, and it drifted: the copy still answered "question" where this
+    # answers "correction", so a sweep table disagreed with the settled row
+    # printed directly above it.
+    max_chars = CORRECTION_MAX_CHARS if max_chars is None else max_chars
+    min_prior = CORRECTION_MIN_PRIOR_CHARS if min_prior is None else min_prior
+    short_reply = (0 < len(reply) <= max_chars
+                   and prior_assistant_chars >= min_prior)
     if short_reply:
         # A corrective signal wins every tie here, and the order was chosen by
-        # measurement rather than taste. Against 300 marked turns it beats the
-        # alternative on two classes and loses on none: approval precision 0.82
-        # against 0.78, correction recall 0.90 against 0.88. Both losing
-        # orderings misfiled the same shape -- agreement wrapped around a
-        # complaint, and a complaint wearing a question mark.
+        # measurement rather than taste: it beat the alternative on two classes
+        # and lost on none. Both losing orderings misfiled the same shape --
+        # agreement wrapped around a complaint, and a complaint wearing a
+        # question mark. On the corrected sample the settled order measures
+        # approval 1.00/0.70, question 0.96/0.71, correction 0.60/0.93.
         if _CORRECTIVE.search(reply):
             return "correction"
         if is_approval(reply):
@@ -735,12 +744,18 @@ def measure(path):
                 seen_sigs.add(key)
         elif rtype == "user":
             body = text_of(rec.get("message") or {})
-            kind = classify_user_turn(body, prior_assistant_chars)
+            # Gate before classifying. Roughly 50,000 of 59,000 user records are
+            # written by a tool or the harness, and flattening then classifying
+            # each one only to discard the answer was 8% of a rebuild.
+            #
+            # Nested rather than `continue`: the tool-error count below reads the
+            # very records this gate rejects, and skipping the rest of the loop
+            # here silently zeroed it.
+            kind = (classify_user_turn(body, prior_assistant_chars)
+                    if is_human_prompt(rec, body) else None)
             if kind == "interrupt":
-                if is_human_prompt(rec, body):
-                    m["interrupts"] += 1
-            elif (rec.get("toolUseResult") is None and is_human_prompt(rec, body)
-                    and body.strip()):
+                m["interrupts"] += 1
+            elif kind is not None and rec.get("toolUseResult") is None and body.strip():
                 m["user_prompts"] += 1
                 if kind == "correction":
                     m["correction_candidates"] += 1
@@ -856,8 +871,21 @@ def load_state():
         return {}
 
 
-def cmd_extract(args):
+def ensure_work_dir(what):
+    """Create the work directory, refusing if it sits inside a repository.
+
+    Every file this tool writes lands here and none of them belong in a
+    repository: a pack and the labelling file carry message text, and a ledger
+    row carries the working directory the session ran in. The check was applied
+    per output file and `extract` never called it -- so the ledger, the one file
+    written on every single run, was the one thing not covered.
+    """
+    refuse_inside_repo(WORK_DIR / what)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def cmd_extract(args):
+    ensure_work_dir(METRICS_FILE.name)
     if not PROJECTS_DIR.is_dir():
         print(f"no session directory at {PROJECTS_DIR}", file=sys.stderr)
         sys.exit(EXIT_CANNOT_RUN)
@@ -978,7 +1006,6 @@ def totals(rows):
         for key in COUNTERS:
             agg[key] += int(row.get(key) or 0)
         agg["tokens_out"] += int(row.get("tokens_out") or 0)
-        agg["transcripts"] += 1
     return agg
 
 
@@ -1434,7 +1461,10 @@ def label_candidates():
             rtype = rec.get("type")
             if rtype == "assistant":
                 msg = rec.get("message") or {}
-                prior = text_of(msg)
+                # Accumulate across a turn's records, exactly as `measure` does.
+                # Replacing here meant the sweep argued from a different length
+                # than the ledger recorded for the same turn.
+                prior += text_of(msg)
                 content = msg.get("content")
                 for block in content if isinstance(content, list) else []:
                     if not (isinstance(block, dict)
@@ -1460,6 +1490,12 @@ def label_candidates():
             elif rtype == "user" and rec.get("toolUseResult") is None:
                 body = text_of(rec.get("message") or {})
                 if not body.strip():
+                    continue
+                # The same gate `measure` applies. Without it the sample is drawn
+                # from a population the ledger does not count -- a third of these
+                # records are the harness talking to itself -- and precision
+                # measured on that sample describes a rule nobody runs.
+                if not is_human_prompt(rec, body):
                     continue
                 kind = classify_user_turn(body, len(prior))
                 sample = {
@@ -1515,20 +1551,27 @@ def read_labels(path):
 
 
 def _predict_at(sample, max_chars, min_prior):
-    """Re-run the turn classifier at a candidate pair of thresholds, from the
-    stored numbers rather than the stored text - the text is redacted and
-    truncated, the numbers are the reply's real lengths."""
+    """What the classifier would have said at a different pair of thresholds.
+
+    Calls the real rule rather than restating it. It restated it once, and the
+    copy went stale the next time the rule changed -- a sweep that disagrees
+    with the row it is meant to explain is worse than no sweep.
+
+    The stored lengths are used rather than the stored text because the text is
+    redacted and truncated while the numbers are the reply's real lengths.
+    """
     if sample["predicted"] == "interrupt":
         return "interrupt"
     if not (0 < sample["reply_chars"] <= max_chars
             and sample["prior_chars"] >= min_prior):
         return "none"
-    said = sample["said"].strip()
-    if said.endswith("?"):
-        return "question"
-    if is_approval(said):
-        return "approval"
-    return "correction"
+    # The stored text is redacted, which can only shorten it, so the length gate
+    # above is applied from the stored numbers and the wording rules from the
+    # text. A threshold pair is exactly those two numbers.
+    return classify_user_turn(sample["said"].strip(),
+                              sample["prior_chars"],
+                              max_chars=max_chars,
+                              min_prior=min_prior) or "none"
 
 
 def _weighted(marked, predict):
@@ -1732,7 +1775,10 @@ Two ways to fix it, and the second is the one that lasts:
     return EXIT_FLAGGED
 
 
-RULE_PATHS = ("CLAUDE.md", "skills", "memory", "settings.json")
+# Derived from RULE_SOURCES so the two cannot disagree. They did: one carried
+# the settings file and the other did not, so a settings change could hand
+# `effect` a date while `rules` never checked whether it was recorded at all.
+RULE_PATHS = tuple(path.name for _, path in RULE_SOURCES)
 
 
 def rule_change_dates(limit=25):
@@ -1742,19 +1788,12 @@ def rule_change_dates(limit=25):
     [(date, count, [subjects])], newest first. Empty if it is not a repository,
     which is not an error -- it just means this shortcut is unavailable.
     """
-    import subprocess
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(CLAUDE_DIR), "log", "--date=short",
-             "--format=%ad\t%s", "--"] + list(RULE_PATHS),
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if out.returncode != 0:
+    out = _git(CLAUDE_DIR, "log", "--date=short", "--format=%ad\t%s", "--",
+               *RULE_PATHS)
+    if out is None:
         return []
     by_date = {}
-    for line in out.stdout.splitlines():
+    for line in out.splitlines():
         date, _, subject = line.partition("\t")
         if len(date) == 10:
             by_date.setdefault(date, []).append(subject.strip())

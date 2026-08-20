@@ -97,7 +97,7 @@ Every signal was confirmed present in real transcripts.
 
 | Signal | Source | Reads as |
 |---|---|---|
-| `correction_candidates` | a reply carrying a corrective signal, or a short reply after a long turn | a standing instruction is missing or ignored. Over-inclusive on purpose: 0.90 recall, 0.55 precision against 300 hand-marked turns |
+| `correction_candidates` | a reply carrying a corrective signal, or a short reply after a long turn | a standing instruction is missing or ignored. Over-inclusive on purpose: 0.93 recall, 0.60 precision against 144 hand-marked turns |
 | `interrupts` | interrupt marker in user records | the turn went wrong early |
 | `repeat_calls` | same tool, byte-identical input, twice | duplicated work. Unscored: the normalising version of this was 42% of the friction score and 83% of what it flagged had different inputs |
 | `tool_errors` | `is_error` on a tool_result block, or an error-prefixed string result | a tool called wrong, repeatedly |
@@ -181,9 +181,14 @@ Open:
   one opened and decoded cleanly and holds no record of type `user` or
   `assistant`. `extract` now reports that outcome under its own name and keeps
   `unreadable` for files whose bytes would not read.
-- SETTLED 2026-08-20: the turn classifier was measured against 300 hand-marked
-  turns and its thresholds chosen from a sweep rather than guessed. Interrupt
-  1.00/1.00, question 0.91/0.66, approval 0.82/0.67, correction 0.55/0.90.
+- SETTLED 2026-08-20: the turn classifier was measured against turns read and
+  marked by hand, and its thresholds chosen from a sweep rather than guessed.
+  Interrupt 1.00/1.00, question 0.96/0.71, approval 1.00/0.70, correction
+  0.60/0.93, over 144 marks.
+  The first pass of this used 300 marks and reported worse numbers, because the
+  sampler was drawing from a population the ledger does not count and running a
+  drifted second copy of the classifier. Both are fixed; the surviving marks are
+  the ones drawn from the right population.
   A third of what the ledger called a user prompt turned out to be the harness
   rather than a person, and is now excluded by prompt origin.
 - `repeat_calls` and `correction_candidates` are heuristics with tunable thresholds
