@@ -1,6 +1,6 @@
 # retro — workflow retrospectives from measured session history
 
-**Status:** built, unreviewed
+**Status:** built; reviewed and re-measured 2026-08-20
 **Home:** `plugins/retro/` in polstools
 
 ## What it does
@@ -30,7 +30,7 @@ closed the loop."
 
 ### `plugins/retro/bin/retro.py` — Python 3, stdlib only
 
-Six subcommands:
+Seven subcommands:
 
 - `extract` — walk session transcripts, write one metrics row per transcript.
   Counts only, no message text. Incremental via a state file keyed on size and
@@ -45,11 +45,13 @@ Six subcommands:
 - `label` — sample turns for hand marking, then report precision, recall and a
   threshold sweep from the marked file. This is how the classifier's constants
   stopped being guesses.
+- `rules` — whether the standing instructions are under version control at all,
+  and whether their edits are being committed as they are made. Built because
+  `effect` needs a date and a rule change with no commit has none.
 - `effect --since DATE` — the same metrics before and after a date, so a rule or
   skill edit can be checked against what followed it. Reports both per session
   and per hundred turns, because the first moves whenever sessions change length
   and on its own it will tell you an edit worked when nothing did.
-- `skills --days N` — split installed skills into fired and never-fired.
 
 Every field access is guarded. Transcript shape varies by CLI version, and a
 `KeyError` partway through a 900 MB corpus loses the whole run.
@@ -106,8 +108,12 @@ Every signal was confirmed present in real transcripts.
 | `skill_runs`, `skills_used` | contiguous runs of `attributionSkill` | which skills actually fire |
 | `tokens_*` | `message.usage` | what the friction cost |
 
-The retry signature normalizes whitespace and numeric literals before hashing,
-so a retried command with a tweaked number still matches its predecessor.
+The call signature is an exact digest of the tool input. It used to normalize
+whitespace and numeric literals first, on the theory that a retry is the same
+command with a tweaked number — recounted 2026-08-20, that theory was wrong in
+1,157 of the 1,387 repeats it flagged, most of them one file read at successive
+offsets. Truncating the hashed prefix also let two long writes to different
+paths collide.
 
 ### Metric definitions that a first pass gets wrong
 

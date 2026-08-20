@@ -17,14 +17,14 @@
       "name": "windows",
       "source": "./plugins/windows",
       "description": "Windows-specific fixes and reference: terminal keybindings and other host quirks that only apply on Windows.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "productivity",
       "keywords": ["windows", "terminal", "platform"]
     },
     {
       "name": "retro",
       "source": "./plugins/retro",
-      "description": "Workflow retrospectives from measured session history: find recurring friction, audit which standing rules and skills actually do anything, and scout tooling against named seams.",
+      "description": "Workflow retrospectives from measured session history: find recurring friction, audit which standing rules and skills actually do anything, scout tooling against named seams, and check whether a rule change moved what it was aimed at.",
       "version": "0.1.0",
       "category": "productivity",
       "keywords": ["retrospective", "workflow", "session-history", "metrics"]

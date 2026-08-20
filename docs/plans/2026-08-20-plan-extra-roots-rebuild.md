@@ -1,5 +1,16 @@
 # Additional transcript directories, rebuilt — implementation plan
 
+> **NOT EXECUTED, AND THE BASE HAS MOVED.** Written 2026-08-20 against the branch
+> tip of that morning. Since then the ledger gained a schema version that refuses
+> a mismatched ledger, the retry counter was renamed and taken out of the score,
+> the turn classifier was rewritten and its thresholds settled from hand marks,
+> a subagent lens and two more subcommands landed, and `extract` now refuses to
+> write inside a repository. Its edit anchors and its "before" numbers were true
+> of that morning and are not true now. Re-measure before following it, and see
+> issue #1 — the question underneath this work turned out to be a design
+> question about which directory owns a transcript, not a defect to patch.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Measure transcripts from roots other than the built-in session directory — including compressed ones — with every file measured exactly once, every row identified by the root it came from, and no configuration mistake acted on in silence.

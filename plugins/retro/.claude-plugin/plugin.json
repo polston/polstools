@@ -1,7 +1,7 @@
 {
   "name": "retro",
-  "description": "Workflow retrospectives from measured session history: find recurring friction, audit which standing rules and skills actually do anything, and scout tooling against named seams.",
-  "version": "0.1.0",
+  "description": "Workflow retrospectives from measured session history: find recurring friction, audit which standing rules and skills actually do anything, scout tooling against named seams, and check whether a rule change moved what it was aimed at.",
+  "version": "0.2.0",
   "author": {
     "name": "polston"
   },
