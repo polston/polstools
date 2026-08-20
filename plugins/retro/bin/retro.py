@@ -415,18 +415,28 @@ def load_rows(required=True):
 
 
 def totals(rows):
+    """Aggregate the rows handed in, and nothing else.
+
+    The caller chooses the population. Deciding it here is what made the
+    printed rates wrong: every counter was summed over all transcripts and then
+    divided by a session count that excluded subagent transcripts.
+    """
     agg = Counter()
     for row in rows:
         for key in COUNTERS:
             agg[key] += int(row.get(key) or 0)
         agg["tokens_out"] += int(row.get("tokens_out") or 0)
-        # Subagent transcripts are spend, not sessions — counting them as
-        # sessions would deflate every per-session rate.
-        if row.get("is_subagent"):
-            agg["subagent_transcripts"] += 1
-        else:
-            agg["sessions"] += 1
+        agg["transcripts"] += 1
     return agg
+
+
+def split_population(rows):
+    """Main-session rows, then subagent rows. One row per transcript either
+    way — subagent transcripts are spend, not sessions, and counting them as
+    sessions deflates every per-session rate."""
+    main = [row for row in rows if not row.get("is_subagent")]
+    sub = [row for row in rows if row.get("is_subagent")]
+    return main, sub
 
 
 def friction_score(row):
@@ -481,25 +491,37 @@ def cmd_pack(args):
     prior = [r for r in rows if r.get("date")
              and prior_start.isoformat() <= r["date"] < start.isoformat()]
 
-    now_t, prev_t = totals(window), totals(prior)
+    main, sub = split_population(window)
+    prior_main, prior_sub = split_population(prior)
+    now_t, prev_t = totals(main), totals(prior_main)
+    now_s = totals(sub)
+
     lines = [f"# Evidence pack — last {args.days} days",
-             f"Window: {start} to {now}. Sessions: {now_t['sessions']} "
-             f"(prior window: {prev_t['sessions']}).", "",
+             f"Window: {start} to {now}. Sessions: {len(main)} "
+             f"(prior window: {len(prior_main)}).", "",
              "## Trends", "",
+             "Main sessions only. Subagent transcripts are spend and are "
+             "reported under the table — every rate here divides one "
+             "population by itself.", "",
              "| signal | this window | prior | delta |", "|---|---|---|---|"]
-    for key in ["sessions", "subagent_transcripts", "tokens_out"] + COUNTERS:
-        a, b = now_t[key], prev_t[key]
+    table = [("sessions", len(main), len(prior_main))]
+    table += [(key, now_t[key], prev_t[key]) for key in ["tokens_out"] + COUNTERS]
+    for key, a, b in table:
         delta = "n/a" if not b else f"{(a - b) / b * 100:+.0f}%"
         lines.append(f"| {key} | {a} | {b} | {delta} |")
 
     lines.append("")
-    if now_t["sessions"]:
+    if main:
         lines.append("Per session: " + ", ".join(
-            f"{key} {now_t[key] / now_t['sessions']:.1f}" for key in COUNTERS))
+            f"{key} {now_t[key] / len(main):.1f}" for key in COUNTERS))
+    lines.append("")
+    lines.append(f"Subagent spend — {len(sub)} transcripts "
+                 f"(prior window: {len(prior_sub)}), no per-session rate: "
+                 + ", ".join(f"{key} {now_s[key]}"
+                             for key in ["tokens_out"] + COUNTERS))
     lines += ["", "## Moments", ""]
 
-    ranked = sorted([r for r in window if not r.get("is_subagent")],
-                    key=friction_score, reverse=True)[:args.sessions]
+    ranked = sorted(main, key=friction_score, reverse=True)[:args.sessions]
     if not ranked:
         lines.append("_No sessions in window._")
     for row in ranked:
