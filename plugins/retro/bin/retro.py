@@ -83,7 +83,7 @@ _APPROVAL = re.compile(
 # definitions at once is worse than no ledger: it reports a number belonging to
 # neither, and nothing in the output says so. `extract` rebuilds on a mismatch
 # rather than trusting prose to prevent it.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_turns", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
@@ -615,7 +615,14 @@ def measure(path):
             tokens_out += int(usage.get("output_tokens") or 0)
             cache_read += int(usage.get("cache_read_input_tokens") or 0)
             body = text_of(msg)
-            prior_assistant_chars = len(body)
+            # Accumulate, do not replace. One assistant turn is often several
+            # records -- text, then a tool call, then more text -- and taking
+            # only the last one asks "was the final fragment long" instead of
+            # "was the turn long". Measured over main-session transcripts, that
+            # discarded 79 short replies which the stated rule would have
+            # classified, 56 of them corrections. The counter resets when a user
+            # turn is counted, below, which is what ends a turn.
+            prior_assistant_chars += len(body)
             for block_id, name, sig in tool_calls_of(msg):
                 tool_by_id[block_id] = name
                 tools_used.add(name)
