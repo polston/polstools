@@ -270,8 +270,10 @@ project labels are hashed instead (see Privacy below).
   corpus. The whole corpus gives 1.33×; the last 30 days gives 1.42×, so the
   window is reported alongside the verdict, and the verdict is always driven by
   the window actually requested.
-- `--project SUBSTR` matches against the redacted project label, and composes
-  with `--days`.
+- `--project SUBSTR` matches against the raw transcript path, and composes with
+  `--days`. Matching on the raw path is deliberate: it is the only form the
+  caller can type, the argument is never echoed back, and the label shown in the
+  output is still the hash.
 - `--json` emits the same figures machine-readably. Schema is fixed and carries
   **no project identifiers**.
 
@@ -323,11 +325,11 @@ a session UUID — three separately forbidden categories.
 Rules, all enforced in the script rather than left to the caller:
 
 1. No message text ever leaves the script.
-2. Project labels pass through `redact()` before display. `redact()` alone is not
-   sufficient — it rewrites the home directory and username but passes paths
-   outside home through verbatim — so labels are additionally reduced to a stable
-   short hash unless `--project` was given, in which case only the matched label
-   is shown, redacted.
+2. Project labels are shown only as a stable short hash of the directory name,
+   always, including when `--project` was given. `redact()` is not used at all:
+   it rewrites the home directory and username but passes paths outside home
+   through verbatim, and those segments name other projects. Hashing needs no
+   such judgement and cannot leak.
 3. The `--json` payload carries no project identifiers at all.
 4. No output of this tool is committed to the repository, and the skill carries
    no sample run.

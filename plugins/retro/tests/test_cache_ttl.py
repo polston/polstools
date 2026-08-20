@@ -1,6 +1,7 @@
 """Tests for cache_ttl. Stdlib unittest; no third-party runner."""
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -576,6 +577,10 @@ class TestPrivacyAndCli(unittest.TestCase):
             expected = cache_ttl.project_label(
                 root / "C--Users-someone-git-secretproject" / "s.jsonl", root)
             self.assertIn(expected, text)
+            # The count beside the label, not just the label. The assertion it
+            # replaced checked this; dropping it let the per-project tally be
+            # replaced by a constant with the suite still green.
+            self.assertRegex(text, re.escape(expected) + r"\s+2\b")
 
     def test_window_truncated_openers_are_counted_separately(self):
         """A request whose true predecessor falls before the --days boundary

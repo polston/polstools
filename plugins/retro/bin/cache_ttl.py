@@ -608,9 +608,12 @@ def report(projects_dir, days, project, as_json, stream, now=None):
                  % result["neutral_read"])
     stream.write("  session openers        %12d   (unchanged either way)\n"
                  % result["openers"])
-    stream.write("  window-truncated       %12d   (subset above; --days cut off\n"
+    stream.write("  window-truncated       %12d   (--days cut off the true\n"
                  % window_truncated)
-    stream.write("                                       the true predecessor)\n\n")
+    stream.write("                                       predecessor; counted\n")
+    stream.write("                                       independently of the line\n")
+    stream.write("                                       above, which skips\n")
+    stream.write("                                       unpriced requests)\n\n")
 
     stream.write("requests by project (labels are hashes, never names)\n")
     for label, count in sorted(by_project.items()):
