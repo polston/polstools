@@ -70,8 +70,11 @@ pattern_for() {
     # Account and plan state pasted out of a harness config. Field names, not
     # values, so no private value is embedded here. The literals are split
     # across adjacent quoted strings, which the shell rejoins into one pattern
-    # while leaving this file unable to match itself.
-    account_billing_field) printf '%s' '(hasExtra''Usage|subscription''Type|billing''Type|organizationRateLimit''Tier|userRateLimit''Tier|seat''Tier)' ;;
+    # while leaving this file unable to match itself. Kept in the subset of
+    # regex syntax both grep -E and Python re accept -- no \b (not
+    # POSIX-guaranteed) and an explicit character class rather than \w -- so
+    # this stays identical to retro.py's account_billing_field pattern.
+    account_billing_field) printf '%s' '(hasExtra''Usage[A-Za-z0-9_]*|subscription''Type|billing''Type|organizationRateLimit''Tier|userRateLimit''Tier|seat''Tier)' ;;
     secretish_assignment)  printf '%s' '(password|passwd|secret|api[_-]?key|access[_-]?token|bearer|webhook)[[:space:]]*[:=]' ;;
     custom)                printf '%s' "$EXTRA" ;;
   esac

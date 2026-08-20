@@ -84,9 +84,13 @@ def _redaction_patterns():
         (re.compile(r"\$\d{1,3}(,\d{3})+(\.\d{2})?|\$\d{4,}(\.\d{2})?"), "<amount>"),
         # Literals split across adjacent string pieces so this file does not
         # match the pattern it defines; Python rejoins them at parse time.
-        (re.compile(r"\b(hasExtra" r"Usage\w*|subscription" r"Type"
+        # Kept in the subset of regex syntax both grep -E and Python re
+        # accept -- no \b (not POSIX-guaranteed) and an explicit character
+        # class rather than \w -- so this stays identical to
+        # repo-privacy-audit's account_billing_field pattern.
+        (re.compile(r"(hasExtra" r"Usage[A-Za-z0-9_]*|subscription" r"Type"
                     r"|billing" r"Type|organizationRateLimit" r"Tier"
-                    r"|userRateLimit" r"Tier|seat" r"Tier)\b"),
+                    r"|userRateLimit" r"Tier|seat" r"Tier)"),
          "<billing-field>"),
     ]
     if len(user) > 2:
