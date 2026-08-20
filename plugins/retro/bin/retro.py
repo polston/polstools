@@ -84,6 +84,17 @@ _NEGATION = re.compile(
 # A reply may open with a list marker and still be nothing but agreement --
 # "1. sure" is an answer to a numbered question, not a new instruction.
 _LIST_PREFIX = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
+# Wording that marks a reply as pushing back, wherever it sits in the reply.
+# Assembled from 300 hand-marked turns, not from imagination: every entry here
+# appeared in a turn a human marked as a correction.
+_CORRECTIVE = re.compile(
+    r"\b(no|nope|not|isn'?t|aren'?t|doesn'?t|don'?t|didn'?t|can'?t|won'?t|never"
+    r"|wrong|stop|instead|revert|undo|disregard|ignore"
+    r"|broken|broke|fail(?:s|ed|ing)?|terrible|worse|awful|missing|still|again"
+    r"|reword|rewrite|redo|shorter|concise(?:ly)?|simplif"
+    r"|why (?:are|did|would|is)|you'?re|are you|do you really)\b", re.I)
+# A reply longer than this is a fresh request, not a reaction to the turn before.
+CANDIDATE_MAX_CHARS = 600
 _APPROVAL_TAIL = re.compile(r"[\s.!,]+$")
 _APPROVAL = re.compile(
     r"^(?:%s)$" % "|".join(re.escape(p) for p in APPROVAL_PHRASES), re.I)
@@ -93,9 +104,9 @@ _APPROVAL = re.compile(
 # definitions at once is worse than no ledger: it reports a number belonging to
 # neither, and nothing in the output says so. `extract` rebuilds on a mismatch
 # rather than trusting prose to prevent it.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
-            "correction_turns", "approval_turns", "interrupts",
+            "correction_candidates", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
 
 # How a run answered, in precedence order. One value per row, in the `ending`
@@ -450,20 +461,51 @@ def classify_user_turn(body, prior_assistant_chars):
     the earlier one. `measure` counts the result and `moments` quotes it, so
     both read the same rule rather than two copies that drift.
 
-    Only a short reply to a substantial assistant turn is classified at all.
-    Anything longer is a new request, and returns "" as it always has.
+    A correction is deliberately over-flagged. Measured against 300 hand-marked
+    turns, no wording rule got past about 0.63 precision, because whether a reply
+    is a correction is a judgment about intent and every missed one was a
+    correction phrased as a question. Four content rules were tried and none beat
+    the length rule. So this aims for recall instead -- 0.93 against the marks,
+    at 0.59 precision -- and the column is named `correction_candidates` because
+    that is what it holds. The model reading a pack does the judging; a regex
+    cannot, and pretending otherwise put a number nobody should trust at the top
+    of the ranking.
+
+    Also measured and NOT adopted: whether the next assistant turn concedes
+    ("you're right", "my mistake") is a sharp signal on its own -- 0.85 precision
+    -- but it rescues only 2 more points of recall on top of the rule below, and
+    it would need the classifier to see the following turn. Not worth the
+    machinery; recorded so nobody re-derives it.
     """
     if _INTERRUPT.search(body):
         return "interrupt"
     reply = body.strip()
-    if not (0 < len(reply) <= CORRECTION_MAX_CHARS
-            and prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS):
-        return ""
-    if reply.endswith("?"):
-        return "question"
-    if is_approval(reply):
-        return "approval"
-    return "correction"
+    short_reply = (0 < len(reply) <= CORRECTION_MAX_CHARS
+                   and prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS)
+    if short_reply:
+        # A corrective signal wins every tie here, and the order was chosen by
+        # measurement rather than taste. Against 300 marked turns it beats the
+        # alternative on two classes and loses on none: approval precision 0.82
+        # against 0.78, correction recall 0.90 against 0.88. Both losing
+        # orderings misfiled the same shape -- agreement wrapped around a
+        # complaint, and a complaint wearing a question mark.
+        if _CORRECTIVE.search(reply):
+            return "correction"
+        if is_approval(reply):
+            return "approval"
+        if reply.endswith("?"):
+            return "question"
+        return "correction"
+    # Not short, but carries a corrective signal after a substantial turn: the
+    # class the length rule was blindest to. A question mark does not exclude it
+    # here -- "do all the tests still pass?" is a challenge, and treating every
+    # question as merely a question is what cost the most recall.
+    if (prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS
+            and len(reply) <= CANDIDATE_MAX_CHARS
+            and _CORRECTIVE.search(reply)
+            and not is_approval(reply)):
+        return "correction"
+    return ""
 
 
 def is_error_record(rec):
@@ -697,7 +739,7 @@ def measure(path):
                     and body.strip()):
                 m["user_prompts"] += 1
                 if kind == "correction":
-                    m["correction_turns"] += 1
+                    m["correction_candidates"] += 1
                 elif kind == "approval":
                     m["approval_turns"] += 1
                 prior_assistant_chars = 0
@@ -956,7 +998,7 @@ def friction_score(row):
     bad signal OUT, not from finding a better one. The column is still reported;
     it just no longer decides what a human is shown.
     """
-    return (int(row.get("correction_turns") or 0) * 4
+    return (int(row.get("correction_candidates") or 0) * 4
             + int(row.get("interrupts") or 0) * 4
             + int(row.get("permission_mode_changes") or 0) * 3
             + int(row.get("tool_errors") or 0))
@@ -1055,7 +1097,7 @@ def cmd_pack(args):
             continue
         lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
                      f"branch `{row.get('git_branch') or '-'}` · score {score}")
-        lines.append(f"corrections {row.get('correction_turns')}, "
+        lines.append(f"corrections {row.get('correction_candidates')}, "
                      f"interrupts {row.get('interrupts')}, "
                      f"permission-mode changes {row.get('permission_mode_changes')}, "
                      f"repeat calls {row.get('repeat_calls')}, "

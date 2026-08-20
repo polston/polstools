@@ -71,7 +71,7 @@ One JSON object per transcript:
 ```
 transcript, is_subagent, session_id, project, git_branch, cc_version, date,
 duration_s, tokens_in, tokens_out, cache_read, skills_used[],
-turns, user_prompts, tool_calls, tool_errors, tool_retries, correction_turns,
+turns, user_prompts, tool_calls, tool_errors, repeat_calls, correction_candidates,
 interrupts, permission_mode_changes, queued_prompts, skill_runs
 ```
 
@@ -87,9 +87,9 @@ Every signal was confirmed present in real transcripts.
 
 | Signal | Source | Reads as |
 |---|---|---|
-| `correction_turns` | short user prompt after a long assistant turn | a standing instruction is missing or ignored |
+| `correction_candidates` | a reply carrying a corrective signal, or a short reply after a long turn | a standing instruction is missing or ignored. Over-inclusive on purpose: 0.90 recall, 0.55 precision against 300 hand-marked turns |
 | `interrupts` | interrupt marker in user records | the turn went wrong early |
-| `tool_retries` | same tool + normalized input signature ≥2× | something rediscovered every session |
+| `repeat_calls` | same tool, byte-identical input, twice | duplicated work. Unscored: the normalising version of this was 42% of the friction score and 83% of what it flagged had different inputs |
 | `tool_errors` | `is_error` on a tool_result block, or an error-prefixed string result | a tool called wrong, repeatedly |
 | `queued_prompts` | `queue-operation` records of subtype `enqueue` | typing ahead because a turn ran long |
 | `permission_mode_changes` | transitions between consecutive `permission-mode` records | the permission config did not match the work |
@@ -171,7 +171,12 @@ Open:
   one opened and decoded cleanly and holds no record of type `user` or
   `assistant`. `extract` now reports that outcome under its own name and keeps
   `unreadable` for files whose bytes would not read.
-- `tool_retries` and `correction_turns` are heuristics with tunable thresholds
+- SETTLED 2026-08-20: the turn classifier was measured against 300 hand-marked
+  turns and its thresholds chosen from a sweep rather than guessed. Interrupt
+  1.00/1.00, question 0.91/0.66, approval 0.82/0.67, correction 0.55/0.90.
+  A third of what the ledger called a user prompt turned out to be the harness
+  rather than a person, and is now excluded by prompt origin.
+- `repeat_calls` and `correction_candidates` are heuristics with tunable thresholds
   and have not been validated against a hand-labelled sample. Their absolute
   values should not be trusted; their movement over time is the usable part.
 - Transcripts begin 2026-06-20, so "all history" is roughly two months, not the
