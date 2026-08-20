@@ -41,6 +41,26 @@ Search by category, not by credential prefix:
 - LAN addresses, hostnames, MAC addresses, network topology
 - session IDs, harvested command or session history, anything built from it
 - credentials of any kind: API keys, tokens, passwords, webhook URLs
+- **money and plan state**: measured spend, balances, billing or subscription
+  tier, usage-credit flags
+
+That last category is the one an identity-shaped sweep cannot see, and it was
+added after a measured-spend total reached a tracked file and every pattern in
+the list above read zero. A spend figure is just a number — it carries no name,
+no path, and no prefix to match on. What separates it from a published list
+price is magnitude, so the auditor thresholds at a thousand: a per-token rate
+off a pricing page is public, a four-figure total of someone's actual spend is
+not.
+
+Note what this paragraph does **not** contain: an example figure. Writing one in
+would put a matching value into the very file that documents the check, which is
+the same trap as a verification pattern that embeds the data it hunts. The first
+draft of this skill did exactly that, and the auditor caught it.
+
+The lesson generalises past money. When you add a category to an audit, ask what
+shape it has that the existing patterns key on — if the answer is "none", the
+existing sweep was never going to find it, and a clean report from it proves
+nothing about the new category.
 
 Parse structured files (JSON, JSONL, TOML) **as structure**. Grepping them as
 flat text misses values that span lines or sit behind escaping.
