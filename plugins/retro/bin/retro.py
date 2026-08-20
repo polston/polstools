@@ -1007,6 +1007,214 @@ def cmd_skills(args):
     return EXIT_FLAGGED if dormant else EXIT_CLEAN
 
 
+# --- subagents -------------------------------------------------------------
+
+# One entry per column: what it means when it fires, the population it could
+# have fired in, and what a person could change to move it. The wording matters
+# for the two workspace signals - one is a target outside the workspace, the
+# other is a command the guard could not check - because reading the second as
+# the first is the mistake this report exists to stop.
+#
+# The last field is the honest answer to "what would I do about this?". Six of
+# the seven are reachable by editing an instruction or a schema. The seventh is
+# not, and says so rather than sitting in the table implying otherwise.
+SUBAGENT_SIGNALS = [
+    ("workspace_shape_unverifiable",
+     "command shape the workspace guard could not verify (NOT proof it left)",
+     "runs in an isolated workspace",
+     "a standing rule asking for plain single commands"),
+    ("workspace_target_outside",
+     "named a target outside its workspace",
+     "runs in an isolated workspace",
+     "a dispatch instruction to stay inside the workspace"),
+    ("schema_rejected",
+     "structured output rejected against its own schema",
+     "runs that made a structured-result call",
+     "the schema, or the instruction that describes it"),
+    ("missing_path_target",
+     "read or searched a path that does not exist",
+     "runs that read or searched",
+     "an instruction to confirm a path before using it"),
+    ("unread_before_write",
+     "wrote or edited a file it had not read",
+     "runs that wrote or edited a file",
+     "an instruction to read before writing"),
+    ("search_pattern_rejected",
+     "search pattern, glob or file type rejected",
+     "runs that searched",
+     "an instruction about search syntax"),
+    ("invalid_tool_input",
+     "tool call rejected before it ran, on its input",
+     "runs that called any tool",
+     ""),
+]
+
+# Why the one blank above is blank, kept beside it so the two cannot drift:
+# measured over the corpus, 23 of 28 are a tool input that would not parse. That
+# is the call itself being malformed, and no instruction and no schema reaches
+# it. The column is kept because the count is real and worth watching; it is
+# marked unactionable because pretending otherwise sends someone editing
+# instructions at a signal instructions cannot move.
+UNACTIONABLE_NOTE = ("no instruction or schema edit reaches this one - the "
+                     "call itself was malformed")
+
+ENDING_MEANING = {
+    "structured": "handed a result back through a structured-result call",
+    "text": "answered in text",
+    "interrupted": "the caller stopped the run",
+    "unanswered": "a tool call never got its result",
+    "silent": "stopped without answering",
+}
+
+
+def quantile(sorted_values, fraction):
+    """Nearest-rank quantile over a pre-sorted list. Empty input has no
+    quantile; callers guard."""
+    return sorted_values[int(round((len(sorted_values) - 1) * fraction))]
+
+
+def project_key(row):
+    """Which project a row belongs to, as an opaque key.
+
+    The first path component of the transcript's location is the harness's own
+    grouping of sessions by project. It is used to divide, never printed: the
+    report says how concentrated a signal is and never where it came from.
+    """
+    return str(row.get("transcript") or "?").split("/")[0]
+
+
+def concentration(rows, key):
+    """The share of a signal's occurrences held by its largest single project.
+
+    A count is a pattern only if more than one workflow produces it. Measured on
+    the corpus, two of the seven columns are more than half one project, and a
+    reader given the count alone cannot tell. Returned as a percentage, or None
+    when the signal did not occur.
+    """
+    by_project = Counter()
+    for row in rows:
+        count = int(row.get(key) or 0)
+        if count:
+            by_project[project_key(row)] += count
+    total = sum(by_project.values())
+    if not total:
+        return None
+    return by_project.most_common(1)[0][1] / total * 100
+
+
+def reporting_session_ids(extra):
+    """Session ids whose rows this report must not count.
+
+    The corpus holds the transcripts of whichever session is running the report,
+    still being written, and counting them measures the act of measuring: of the
+    runs that looked like they never answered, most were live transcripts and
+    one belonged to the reporting session itself. Subagent transcripts carry
+    their PARENT session's id, so one id drops a session and everything it
+    dispatched. The ids are read, matched and discarded - never printed.
+    """
+    ids = {value for value in (extra or []) if value}
+    current = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if current:
+        ids.add(current)
+    return ids
+
+
+def cmd_subagents(args):
+    """Mechanical failures in subagent transcripts, over a window.
+
+    Reads the ledger and nothing else. It never stats a file, never walks the
+    corpus, and never treats a transcript's absence from the ledger as a
+    signal - counting files the ledger had not caught up with, dated by their
+    modification time, is what produced a 74 where the answer was 8. Windows
+    are on the row's `date`, which comes from the first timestamp inside the
+    transcript.
+    """
+    rows = [r for r in load_rows() if r.get("is_subagent")]
+    if args.days:
+        start = (datetime.now(timezone.utc).date()
+                 - timedelta(days=args.days)).isoformat()
+        rows = [r for r in rows if (r.get("date") or "") >= start]
+    skip = reporting_session_ids(args.exclude_session)
+    dropped = sum(1 for r in rows if r.get("session_id") in skip)
+    rows = [r for r in rows if r.get("session_id") not in skip]
+    window = f"last {args.days} days" if args.days else "all history"
+    if not rows:
+        print(f"# Subagent lens - {window}\n\nNo subagent transcripts in window.")
+        return EXIT_CLEAN
+
+    taken = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"# Subagent lens - {window}, {len(rows)} transcripts\n")
+    print(f"Taken {taken}, over {len(rows)} rows of the ledger as last "
+          f"extracted. A snapshot, not a settled figure: the corpus is appended "
+          f"to while it is read, so a recount minutes later moves the larger "
+          f"counts. Compare closed windows, not consecutive runs.")
+    if dropped:
+        print(f"\n{dropped} rows written by the session running this report "
+              f"were left out - transcripts still being written.")
+
+    print("\n## Mechanical failures\n")
+    print("Each share divides by the population the signal could have occurred "
+          "in, named per row - never by every transcript. `top project` is the "
+          "share of that signal's occurrences coming from its single largest "
+          "project; a high one means one workflow repeating itself rather than "
+          "a general pattern. No project is named.\n")
+    print("| signal | occurrences | transcripts | could occur in | share "
+          "| top project | actionable |")
+    print("|---|---|---|---|---|---|---|")
+    flagged = 0
+    tallies = []
+    for key, _meaning, population, fix in SUBAGENT_SIGNALS:
+        occurrences = sum(int(r.get(key) or 0) for r in rows)
+        carrying = sum(1 for r in rows if int(r.get(key) or 0))
+        eligible = sum(1 for r in rows if key in (r.get("eligible") or []))
+        flagged += occurrences
+        tallies.append((occurrences, carrying, eligible, key, population, fix))
+    for occurrences, carrying, eligible, key, population, fix in sorted(
+            tallies, reverse=True):
+        share = f"{carrying / eligible * 100:.1f}%" if eligible else "n/a"
+        top = concentration(rows, key)
+        top_text = "n/a" if top is None else f"{top:.0f}%"
+        print(f"| {key} | {occurrences} | {carrying} | {eligible} {population} "
+              f"| {share} | {top_text} | {'yes' if fix else 'no'} |")
+
+    print("\nWhat each one means, and what would move it:\n")
+    for key, meaning, _population, fix in SUBAGENT_SIGNALS:
+        print(f"- {key} - {meaning}. {fix if fix else UNACTIONABLE_NOTE}.")
+
+    print("\nNot counted: a command that ran and returned a non-zero exit, a "
+          "tool use the operator declined, and one a permission rule declined. "
+          "None of the three is an agent mistake.")
+
+    print("\n## How runs answered\n")
+    print("A run answered structurally if it handed a result back through a "
+          "structured-result call at any point. Asking instead which record "
+          "came last put runs that had done exactly that into `text`.\n")
+    print("| ending | transcripts | share |")
+    print("|---|---|---|")
+    endings = Counter(r.get("ending") or "?" for r in rows)
+    for name in ENDINGS:
+        count = endings.get(name, 0)
+        print(f"| {name} - {ENDING_MEANING[name]} | {count} | "
+              f"{count / len(rows) * 100:.1f}% |")
+    no_answer = endings.get("unanswered", 0) + endings.get("silent", 0)
+    print(f"\nFailed to answer: {no_answer}. Answering through a "
+          f"structured-result call is answering, and an interrupted run is the "
+          f"caller's doing. Some of what is left is a transcript that had not "
+          f"finished being written when the ledger was built.")
+
+    turns = sorted(int(r.get("turns") or 0) for r in rows)
+    print(f"\n## Length\n\nturns: median {quantile(turns, 0.5)}, "
+          f"p90 {quantile(turns, 0.90)}, p95 {quantile(turns, 0.95)}, "
+          f"max {turns[-1]}.")
+    for threshold in (100, 150, 200):
+        print(f"  {sum(1 for t in turns if t >= threshold)} transcripts at "
+              f"{threshold} turns or more")
+    print("\nA distribution, not a failure count: no turn number in this "
+          "corpus marks a boundary between a long job and a runaway one.")
+
+    return EXIT_FLAGGED if (flagged or no_answer) else EXIT_CLEAN
+
+
 def main():
     parser = argparse.ArgumentParser(prog="retro", description=__doc__)
     sub = parser.add_subparsers(required=True)
@@ -1026,6 +1234,17 @@ def main():
     p_skills.add_argument("--days", type=int, default=0,
                           help="restrict to a window; 0 means all history")
     p_skills.set_defaults(func=cmd_skills)
+
+    p_sub = sub.add_parser("subagents",
+                           help="mechanical failures in subagent transcripts")
+    p_sub.add_argument("--days", type=int, default=30,
+                       help="restrict to a window; 0 means all history")
+    p_sub.add_argument("--exclude-session", action="append", default=[],
+                       metavar="ID",
+                       help="drop a session's rows, and its subagents' rows "
+                            "with them. The session running the report is "
+                            "dropped already, read from the environment.")
+    p_sub.set_defaults(func=cmd_subagents)
 
     args = parser.parse_args()
     sys.exit(args.func(args) or EXIT_CLEAN)
