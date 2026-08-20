@@ -110,5 +110,68 @@ class TestCollect(unittest.TestCase):
             self.assertEqual(skipped["no_timestamp"], 1)
 
 
+class TestChains(unittest.TestCase):
+    def _corpus(self, root, offsets):
+        rows = [fixtures.usage_row("r%d" % i, "claude-opus-5", 100, 5, 0, 1,
+                                   T0 + timedelta(seconds=off))
+                for i, off in enumerate(offsets)]
+        fixtures.build_corpus(root, [
+            {"project": "p", "session": "s", "rows": rows}])
+
+    def test_chain_is_ordered_by_start_not_file_position(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("late", "claude-opus-5", 1, 1, 0, 1,
+                                       T0 + timedelta(seconds=60)),
+                    fixtures.usage_row("early", "claude-opus-5", 1, 1, 0, 1, T0),
+                ]}])
+            requests, _ = cache_ttl.collect(root)
+            chain = list(cache_ttl.chains(requests).values())[0]
+            self.assertEqual([r["rid"] for r in chain], ["early", "late"])
+
+    def test_opener_has_no_gap_and_others_measure_from_previous_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._corpus(root, [0, 30, 630])
+            requests, _ = cache_ttl.collect(root)
+            chain = list(cache_ttl.chains(requests).values())[0]
+            gaps = [gap for _, gap in cache_ttl.gap_seconds(chain)]
+            self.assertIsNone(gaps[0])
+            self.assertEqual(gaps[1], 30.0)
+            self.assertEqual(gaps[2], 600.0)
+
+    def test_subagent_requests_are_excluded_from_main_chains(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("m", "claude-opus-5", 1, 1, 0, 1, T0)]},
+                {"project": "p", "session": "s", "subagent": True, "rows": [
+                    fixtures.usage_row("s1", "claude-sonnet-5", 1, 0, 1, 1, T0)]},
+            ])
+            requests, _ = cache_ttl.collect(root)
+            main = cache_ttl.chains(requests, main_only=True)
+            subs = cache_ttl.chains(requests, main_only=False)
+            self.assertEqual(sum(len(c) for c in main.values()), 1)
+            self.assertEqual(sum(len(c) for c in subs.values()), 1)
+
+    def test_band_table_puts_each_gap_in_the_right_bucket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # gaps after the opener: 30s, 120s, 400s, 700s, 1800s, 7200s
+            self._corpus(root, [0, 30, 150, 550, 1250, 3050, 10250])
+            requests, _ = cache_ttl.collect(root)
+            chain = list(cache_ttl.chains(requests).values())[0]
+            table = cache_ttl.band_table(cache_ttl.gap_seconds(chain))
+            self.assertEqual(table["0-1m"]["n"], 1)
+            self.assertEqual(table["1-5m"]["n"], 1)
+            self.assertEqual(table["5-10m"]["n"], 1)
+            self.assertEqual(table["10-15m"]["n"], 1)
+            self.assertEqual(table["15-60m"]["n"], 1)
+            self.assertEqual(table[">60m"]["n"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

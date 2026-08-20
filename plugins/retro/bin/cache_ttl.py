@@ -152,3 +152,72 @@ def collect(projects_dir):
             else:
                 previous["start"] = earliest
     return requests, skipped
+
+
+BANDS = (
+    (0.0, 60.0, "0-1m"),
+    (60.0, 300.0, "1-5m"),
+    (300.0, 600.0, "5-10m"),
+    (600.0, 900.0, "10-15m"),
+    (900.0, 3600.0, "15-60m"),
+    (3600.0, float("inf"), ">60m"),
+)
+
+
+def chains(requests, main_only=True):
+    """Group requests into per-transcript chains ordered by start time.
+
+    Gaps are measured within one transcript. Grouping by project directory
+    instead moves the decisive band's zero-read share by an order of
+    magnitude, so the choice is explicit: the conversation history dominates
+    the cached prefix and is specific to one session.
+    """
+    grouped = {}
+    for record in requests.values():
+        if bool(record["main"]) != bool(main_only):
+            continue
+        grouped.setdefault(record["source"], []).append(record)
+    for rows in grouped.values():
+        rows.sort(key=lambda item: item["start"])
+    return grouped
+
+
+def gap_seconds(chain):
+    """Pair each record with the seconds since the previous request started.
+
+    The first request of a chain has no previous request and yields None.
+    Rows are ordered by timestamp rather than file position, because a few
+    rows appear out of order within their own transcript and trusting file
+    order yields negative gaps.
+    """
+    paired = []
+    for index, record in enumerate(chain):
+        if index == 0:
+            paired.append((record, None))
+            continue
+        delta = (record["start"] - chain[index - 1]["start"]).total_seconds()
+        paired.append((record, max(0.0, delta)))
+    return paired
+
+
+def band_of(seconds):
+    for low, high, name in BANDS:
+        if low <= seconds < high:
+            return name
+    return ">60m"
+
+
+def band_table(paired):
+    """Summarise gap bands. Openers carry no gap and are not banded."""
+    table = {name: {"n": 0, "zero_read": 0, "read": 0, "write": 0}
+             for _, _, name in BANDS}
+    for record, gap in paired:
+        if gap is None:
+            continue
+        bucket = table[band_of(gap)]
+        bucket["n"] += 1
+        bucket["read"] += record["read"]
+        bucket["write"] += record["w1"] + record["w5"]
+        if record["read"] == 0:
+            bucket["zero_read"] += 1
+    return table
