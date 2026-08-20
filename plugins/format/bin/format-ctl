@@ -14,7 +14,13 @@ import os
 import sys
 import time
 
-FLAG_DIR = os.path.join(os.path.expanduser("~"), ".claude", "format-toggle")
+# Outside ~/.claude on purpose: that directory is often a git repo, and state
+# files must not show up as untracked noise in it.
+FLAG_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA")
+    or os.path.join(os.path.expanduser("~"), ".local", "state"),
+    "claude-format-toggle",
+)
 STALE_SECONDS = 14 * 24 * 3600
 
 

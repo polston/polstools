@@ -26,7 +26,8 @@ readable markdown files under `style/`.
 
 The injection is toggleable per session: both hooks route through
 `bin/format-ctl gate`, which prints the payload unless a per-session flag
-file exists under `~/.claude/format-toggle/`. `/format:off` and `/format:on`
+file exists in a state directory outside any repo (`%LOCALAPPDATA%` on
+Windows, `~/.local/state` elsewhere). `/format:off` and `/format:on`
 flip the flag — the hook side reads the session id from the hook input JSON,
 the command side from `CLAUDE_CODE_SESSION_ID` (present in the tool
 environment). Unreadable hook input fails open to ON; flags older than 14
