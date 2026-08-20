@@ -30,7 +30,7 @@ closed the loop."
 
 ### `plugins/retro/bin/retro.py` — Python 3, stdlib only
 
-Three subcommands:
+Six subcommands:
 
 - `extract` — walk session transcripts, write one metrics row per transcript.
   Counts only, no message text. Incremental via a state file keyed on size and
@@ -39,6 +39,16 @@ Three subcommands:
 - `pack --days N` — build the evidence pack a model reads: trends for the window
   against the prior window, then the highest-friction sessions with their
   moments quoted. Every quote passes through the redactor first.
+- `skills --days N` — which installed skills fire, and which never do.
+- `subagents --days N` — mechanical failures in subagent transcripts, each share
+  divided by the population the signal could have occurred in.
+- `label` — sample turns for hand marking, then report precision, recall and a
+  threshold sweep from the marked file. This is how the classifier's constants
+  stopped being guesses.
+- `effect --since DATE` — the same metrics before and after a date, so a rule or
+  skill edit can be checked against what followed it. Reports both per session
+  and per hundred turns, because the first moves whenever sessions change length
+  and on its own it will tell you an edit worked when nothing did.
 - `skills --days N` — split installed skills into fired and never-fired.
 
 Every field access is guarded. Transcript shape varies by CLI version, and a

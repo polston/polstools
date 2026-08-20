@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """retro — derive workflow-friction metrics from Claude Code session history.
 
-Five subcommands:
+Six subcommands:
 
     extract    walk session transcripts, append one metrics row per session
     pack       build an evidence pack (trends + redacted moments) for a window
@@ -9,6 +9,8 @@ Five subcommands:
     subagents  mechanical failures in subagent transcripts, over a window
     label      sample turns and retry candidates for hand labelling, and report
                precision, recall and a threshold sweep from the marked file
+    effect     metrics before and after a date, to check whether an edit moved
+               the thing it was aimed at
 
 Message text leaves this script in exactly two places: the `moments` section of
 a pack, and the labelling file written by `label`. Both pass through redact()
@@ -1625,6 +1627,95 @@ def cmd_label(args):
     return EXIT_CLEAN
 
 
+# --- effect ----------------------------------------------------------------
+
+# Below this many sessions on either side, a difference is not worth reading.
+# Not a significance test: the ledger is a census of what happened, not a sample
+# from a population, and the sessions either side of a date differ in what they
+# were about as much as in how they went. This is a floor for "do not bother",
+# chosen because a handful of sessions can swing any per-session rate by half.
+EFFECT_MIN_SESSIONS = 12
+
+
+def cmd_effect(args):
+    """Metrics before and after a date, so an edit can be checked against what
+    followed it.
+
+    This is the step the rest of the tool was missing. `pack` compares the last
+    N days to the N before, anchored to today, which answers "how is it going"
+    and cannot answer "did the thing I changed on the 12th do anything".
+    """
+    try:
+        cut = datetime.fromisoformat(args.since).date()
+    except ValueError:
+        print(f"not a date: {args.since} - use YYYY-MM-DD", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+
+    rows = [r for r in load_rows() if r.get("date")]
+    if args.days:
+        lo = (cut - timedelta(days=args.days)).isoformat()
+        hi = (cut + timedelta(days=args.days)).isoformat()
+        rows = [r for r in rows if lo <= r["date"] <= hi]
+
+    before_rows = [r for r in rows if r["date"] < cut.isoformat()]
+    after_rows = [r for r in rows if r["date"] >= cut.isoformat()]
+    before, _ = split_population(before_rows)
+    after, _ = split_population(after_rows)
+
+    span = f", within {args.days} days either side" if args.days else ""
+    print(f"# Effect around {cut}{span}\n")
+    print(f"Before: {len(before)} sessions, {min((r['date'] for r in before), default='-')} "
+          f"to {max((r['date'] for r in before), default='-')}")
+    print(f"After:  {len(after)} sessions, {min((r['date'] for r in after), default='-')} "
+          f"to {max((r['date'] for r in after), default='-')}\n")
+
+    if not before or not after:
+        print("Nothing to compare on one side of that date.", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+
+    thin = min(len(before), len(after)) < EFFECT_MIN_SESSIONS
+    if thin:
+        print(f"**Too thin to read.** Fewer than {EFFECT_MIN_SESSIONS} sessions on one "
+              "side. The numbers are printed because hiding them would be worse, "
+              "but a handful of sessions swings any per-session rate by half.\n")
+
+    b, a = totals(before), totals(after)
+    # Two normalisations, because per session lies on its own. It moves whenever
+    # sessions get longer or shorter: on the first real run of this command every
+    # signal fell by half or more, INCLUDING turns and tokens, which is a change
+    # in how the work was done rather than an effect of any edit. Per hundred
+    # turns holds session length still, so a signal that moves there moved
+    # relative to the work. When the two disagree, the second answers the
+    # question and the first is telling you sessions changed shape.
+    turns_b, turns_a = max(b["turns"], 1), max(a["turns"], 1)
+    print("Main-session rows only, one population throughout.\n")
+    print("| signal | /session before | after | /100 turns before | after | change |")
+    print("|---|---|---|---|---|---|")
+    for key in COUNTERS + ["tokens_out"]:
+        if key == "turns":
+            continue
+        sb, sa = b[key] / len(before), a[key] / len(after)
+        tb, ta = b[key] / turns_b * 100, a[key] / turns_a * 100
+        if sb == 0 and sa == 0:
+            continue
+        delta = "n/a" if not tb else f"{(ta - tb) / tb * 100:+.0f}%"
+        fmt = "{:.0f}" if key == "tokens_out" else "{:.2f}"
+        print(f"| {key} | {fmt.format(sb)} | {fmt.format(sa)} | "
+              f"{fmt.format(tb)} | {fmt.format(ta)} | {delta} |")
+    sb, sa = b["turns"] / len(before), a["turns"] / len(after)
+    print(f"| **turns per session** | {sb:.1f} | {sa:.1f} | - | - | "
+          f"{(sa - sb) / sb * 100:+.0f}% |")
+
+    print("\nThe change column compares the per-hundred-turn figures. Read the "
+          "turns-per-session row first: if it moved a lot, every per-session "
+          "column moved with it and means little on its own.")
+    print("\nA change here is not proof the edit caused it. Sessions either side "
+          "of a date differ in what they were about, and everything moves at "
+          "once. Read it as: did the thing you targeted move at all, and did "
+          "anything else move with it.")
+    return EXIT_FLAGGED if thin else EXIT_CLEAN
+
+
 def main():
     parser = argparse.ArgumentParser(prog="retro", description=__doc__)
     sub = parser.add_subparsers(required=True)
@@ -1662,6 +1753,14 @@ def main():
     p_label.add_argument("--resample", action="store_true",
                          help="redraw the sample, carrying existing marks over")
     p_label.set_defaults(func=cmd_label)
+
+    p_effect = sub.add_parser("effect",
+                              help="metrics before and after a date, to check an edit")
+    p_effect.add_argument("--since", required=True, metavar="YYYY-MM-DD",
+                          help="the date the change was made")
+    p_effect.add_argument("--days", type=int, default=0,
+                          help="limit to this many days either side; 0 means all")
+    p_effect.set_defaults(func=cmd_effect)
 
     args = parser.parse_args()
     sys.exit(args.func(args) or EXIT_CLEAN)
