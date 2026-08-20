@@ -274,8 +274,9 @@ project labels are hashed instead (see Privacy below).
   `--days`. Matching on the raw path is deliberate: it is the only form the
   caller can type, the argument is never echoed back, and the label shown in the
   output is still the hash.
-- `--json` emits the same figures machine-readably. Schema is fixed and carries
-  **no project identifiers**.
+- `--json` emits the same figures machine-readably, including the per-project
+  breakdown under the **same hashed labels** the plain text shows. Never a raw
+  directory name, in either mode.
 
 A request whose in-window gap would reach back before the window boundary is
 treated as a session opener; the count of such requests is reported.
@@ -330,7 +331,13 @@ Rules, all enforced in the script rather than left to the caller:
    it rewrites the home directory and username but passes paths outside home
    through verbatim, and those segments name other projects. Hashing needs no
    such judgement and cannot leak.
-3. The `--json` payload carries no project identifiers at all.
+3. The `--json` payload carries the same hashed labels the display does, and no
+   raw ones. An earlier draft of this rule forbade project identifiers in the
+   payload entirely, which was inconsistent rather than conservative: the same
+   hash is printed in plain text, so banning it from the machine-readable output
+   protected nothing and cost a caller the per-project breakdown. What the rule
+   is actually for is keeping the *directory name* out, and the hash does that
+   in both modes.
 4. No output of this tool is committed to the repository, and the skill carries
    no sample run.
 

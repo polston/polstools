@@ -29,8 +29,9 @@ rather than run from a checkout.
   substring, and composes with `--days`. Only the hashed project label ever
   appears in output — never the substring or the directory name it matched.
 - `--json` emits the same figures machine-readably, for scripting or a
-  scheduled check. The schema is fixed and carries no project identifiers at
-  all, unlike the plain-text report, which does show the hashed label.
+  scheduled check. The schema is fixed, and its per-project breakdown uses the
+  same hashed labels the plain-text report shows. Neither mode ever emits a raw
+  directory name.
 
 Exit `0` means the TTL in force is the right one, `1` means it should change,
 `2` means it could not run.

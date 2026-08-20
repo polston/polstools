@@ -557,11 +557,11 @@ class TestPrivacyAndCli(unittest.TestCase):
                 stream.getvalue(),
                 "no main-thread requests in this window; nothing to decide\n")
 
-    def test_json_output_carries_no_project_identifiers(self):
-        """Spec privacy rule 3: the --json payload carries no project
-        identifiers at all -- not even the hashed label rule 2 permits in
-        displayed output. No project field, and none of the directory name's
-        pieces, anywhere in the payload text."""
+    def test_json_output_carries_hashed_labels_and_no_raw_ones(self):
+        """Spec privacy rule 3: the payload carries the same hashed labels the
+        display does, and no raw directory name. Asserting only that the raw
+        name is absent would pass with no labels emitted at all, so the hash
+        has to be required as well."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixtures.build_corpus(root, [
@@ -577,10 +577,10 @@ class TestPrivacyAndCli(unittest.TestCase):
             self.assertNotIn("someone", payload)
             self.assertNotIn("C--", payload)
             body = json.loads(payload)
-            self.assertNotIn("requests_by_project", body)
             expected = cache_ttl.project_label(
                 root / "C--Users-someone-git-secretproject" / "s.jsonl", root)
-            self.assertNotIn(expected, payload)
+            self.assertIn(expected, body["requests_by_project"])
+            self.assertEqual(body["requests_by_project"][expected], 2)
 
     def test_plain_text_output_carries_the_hashed_project_label(self):
         """Spec privacy rule 2: a hashed label is permitted in displayed

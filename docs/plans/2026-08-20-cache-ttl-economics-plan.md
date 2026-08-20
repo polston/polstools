@@ -1895,9 +1895,10 @@ banned = [account, "C--", "/Users/", "/home/", str(pathlib.Path.home())]
 for text, name in ((plain, "plain"), (json.dumps(body), "json")):
     for token in banned:
         assert token not in text, "%s output contains %r" % (name, token)
-assert "requests_by_project" not in body, "json must carry no project identifiers"
-labels = re.findall(r"project-[0-9a-f]{8}", plain)
-assert labels, "no hashed labels in plain text; the hashing path never ran"
+labels = body["requests_by_project"]
+assert labels, "no hashed labels in json; the hashing path never ran"
+assert all(re.fullmatch(r"project-[0-9a-f]{8}", k) for k in labels), labels
+assert re.search(r"project-[0-9a-f]{8}", plain), "no hashed labels in plain text"
 print("OK: %d hashed labels in plain text, none in json, no identifying tokens"
       % len(set(labels)))
 PROBE

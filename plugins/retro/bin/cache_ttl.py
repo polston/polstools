@@ -598,6 +598,10 @@ def report(projects_dir, days, project, as_json, stream, now=None):
             "unpriced_requests": dict(unpriced_all),
             "unpriced_tokens": dict(unpriced_tokens),
             "pinned_to_5m_models": sorted(pinned),
+            # Hashed labels, the same ones the plain text prints. Keeping them
+            # out of the payload while printing them in the other mode
+            # protected nothing and cost a caller the per-project breakdown.
+            "requests_by_project": dict(by_project),
             "snapshot_earliest": min(r["start"] for r in main_records).isoformat(),
             "snapshot_latest": max(r["start"] for r in main_records).isoformat(),
             "sensitivity_ratio_grouped_by_directory": round(dir_result["ratio"], 3),
