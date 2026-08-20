@@ -20,10 +20,12 @@ Exit codes match the sibling scripts in plugins/core/bin:
 
 EXIT_CLEAN, EXIT_FLAGGED, EXIT_CANNOT_RUN = 0, 1, 2
 
+import argparse
 import hashlib
 import json
 import sys
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # retro.py is a sibling in this directory. It is import-safe: every statement
@@ -295,3 +297,312 @@ def evaluate(chained):
     result["ratio"] = (result["counterfactual"] / result["observed"]
                        if result["observed"] else 0.0)
     return result
+
+
+def project_label(path, projects_dir):
+    """A stable, non-reversible label for a project directory.
+
+    Never the directory name. On a real machine those names are mangled
+    absolute paths that embed the account name, other projects' names, and
+    sometimes a session id -- all of which are forbidden in this repository
+    and in anything this script prints. retro.redact() is not enough on its
+    own, because it rewrites the home path and username but passes other
+    path segments through verbatim.
+    """
+    try:
+        raw = path.relative_to(projects_dir).parts[0]
+    except (ValueError, IndexError):
+        raw = "unknown"
+    return "project-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+
+
+def within_window(requests, days, now=None):
+    """Keep requests whose start falls inside the last `days` days (UTC)."""
+    if days is None:
+        return requests
+    if days <= 0:
+        return {}
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+    return {rid: record for rid, record in requests.items()
+            if record["start"] >= cutoff}
+
+
+def _money(value):
+    return "$%s" % format(round(value, 2), ",.2f")
+
+
+def report(projects_dir, days, project, as_json, stream):
+    """Measure the corpus and print the verdict. Returns an exit code."""
+    if not projects_dir.is_dir():
+        stream.write("cannot run: no session directory at %s\n"
+                     % projects_dir.name)
+        return EXIT_CANNOT_RUN
+
+    requests, skipped = collect(projects_dir)
+    if not requests and not skipped:
+        stream.write("cannot run: no readable transcripts\n")
+        return EXIT_CANNOT_RUN
+
+    requests = within_window(requests, days)
+    if project:
+        requests = {rid: record for rid, record in requests.items()
+                    if project in str(record["source"])}
+
+    main_chains = chains(requests, main_only=True)
+    sub_chains = chains(requests, main_only=False)
+    result = evaluate(main_chains)
+
+    main_records = [r for c in main_chains.values() for r in c]
+    sub_records = [r for c in sub_chains.values() for r in c]
+    if not main_records:
+        # A window or project filter that matches nothing is an ordinary
+        # result, not a failure. Exit code 2 is for absent input only.
+        stream.write("no main-thread requests in this window; nothing to decide\n")
+        return EXIT_CLEAN
+    main_read = sum(r["read"] for r in main_records)
+    sub_read = sum(r["read"] for r in sub_records)
+    w1_total = sum(r["w1"] for r in main_records)
+    w5_total = sum(r["w5"] for r in main_records)
+
+    # A model counts as pinned to five minutes only if it never received a
+    # one-hour write anywhere in the window. Testing one request at a time
+    # would flag any model that merely happened to write nothing that turn.
+    wrote_1h, wrote_5m = set(), set()
+    for record in main_records:
+        if record["w1"]:
+            wrote_1h.add(record["model"])
+        if record["w5"]:
+            wrote_5m.add(record["model"])
+    pinned = wrote_5m - wrote_1h
+    pinned_read = sum(r["read"] for r in main_records if r["model"] in pinned)
+    governed = main_read - pinned_read
+    all_read = main_read + sub_read
+    governed_share = (100.0 * governed / all_read) if all_read else 0.0
+
+    ttl_in_force = "one hour" if w1_total >= w5_total else "five minutes"
+    if result["observed"] <= 0.0:
+        # Guarding an empty record list is not enough: observed also reaches
+        # zero when every main-thread model is missing from the price table,
+        # and the ratio then reads 0.0, which renders as a confident "switch
+        # the TTL" produced from no priced data at all.
+        stream.write("no priced main-thread requests in this window; "
+                     "nothing to decide\n")
+        if result["unpriced"]:
+            stream.write("every main-thread request used a model with no "
+                         "price row: %s\n"
+                         % ", ".join(sorted(result["unpriced"])))
+        return EXIT_CLEAN
+    keep_current = result["ratio"] >= 1.0
+    verdict_code = EXIT_CLEAN if keep_current else EXIT_FLAGGED
+
+    # Unpriced models are counted across BOTH splits, with token volume. The
+    # cost model runs on main chains only, so a subagent-only unknown model
+    # would otherwise never surface -- and those models feed the subagent
+    # table the skill calls the validation.
+    unpriced_all = Counter()
+    unpriced_tokens = Counter()
+    for record in main_records + sub_records:
+        if record["model"] not in PRICES:
+            unpriced_all[record["model"]] += 1
+            unpriced_tokens[record["model"]] += record["tokens"]
+
+    by_project = Counter()
+    for record in main_records:
+        by_project[project_label(record["source"], projects_dir)] += 1
+
+    # Sensitivity 1: group gaps by project directory instead of by transcript.
+    dir_chains = {}
+    for record in main_records:
+        try:
+            key = record["source"].relative_to(projects_dir).parts[0]
+        except (ValueError, IndexError):
+            key = "unknown"
+        dir_chains.setdefault(key, []).append(record)
+    for rows in dir_chains.values():
+        rows.sort(key=lambda item: item["start"])
+    dir_result = evaluate(dir_chains)
+
+    # Sensitivity 2: force every session opener to miss.
+    openers_forced = 0.0
+    for chain in main_chains.values():
+        if not chain:
+            continue
+        first = chain[0]
+        price = PRICES.get(first["model"])
+        if price is None:
+            continue
+        write_5m, _, read_price = price
+        hit = (first["w1"] + first["w5"]) * write_5m + first["read"] * read_price
+        miss = (first["read"] + first["w1"] + first["w5"]) * write_5m
+        openers_forced += miss - hit
+
+    if as_json:
+        json.dump({
+            "window_days": days,
+            "prices_verified_on": PRICES_VERIFIED_ON,
+            "prices_source": PRICES_SOURCE,
+            "ttl_in_force": ttl_in_force,
+            "main_requests": len(main_records),
+            "subagent_requests": len(sub_records),
+            "main_read_tokens": main_read,
+            "subagent_read_tokens": sub_read,
+            "write_tokens_1h": w1_total,
+            "write_tokens_5m": w5_total,
+            "governed_share_of_read_tokens": round(governed_share, 1),
+            "observed_cost": round(result["observed"], 2),
+            "counterfactual_cost": round(result["counterfactual"], 2),
+            "delta": round(result["delta"], 2),
+            "ratio": round(result["ratio"], 3),
+            "decisive_band_requests": result["bands"]["5-60m"],
+            "decisive_read_tokens": result["decisive_read"],
+            "neutral_read_tokens": result["neutral_read"],
+            "session_openers": result["openers"],
+            "unpriced_requests": dict(unpriced_all),
+            "unpriced_tokens": dict(unpriced_tokens),
+            "pinned_to_5m_models": sorted(pinned),
+            "requests_by_project": dict(by_project),
+            "snapshot_earliest": min(r["start"] for r in main_records).isoformat(),
+            "snapshot_latest": max(r["start"] for r in main_records).isoformat(),
+            "sensitivity_ratio_grouped_by_directory": round(dir_result["ratio"], 3),
+            "sensitivity_openers_forced_to_miss": round(openers_forced, 2),
+            "skipped": dict(skipped),
+            "keep_current_ttl": keep_current,
+        }, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+        return verdict_code
+
+    stream.write("prompt-cache TTL economics\n")
+    stream.write("window: %s   prices verified %s\n\n"
+                 % ("all history" if days is None else "last %d days" % days,
+                    PRICES_VERIFIED_ON))
+
+    stream.write("corpus\n")
+    stream.write("  main-thread requests   %12d\n" % len(main_records))
+    stream.write("  subagent requests      %12d   (pinned to 5m, unaffected)\n"
+                 % len(sub_records))
+    stream.write("  main read tokens       %12d\n" % main_read)
+    stream.write("  1h write tokens        %12d\n" % w1_total)
+    stream.write("  5m write tokens        %12d\n" % w5_total)
+    stream.write("  TTL in force           %12s\n" % ttl_in_force)
+    stream.write("  snapshot               %s .. %s\n"
+                 % (min(r["start"] for r in main_records).date(),
+                    max(r["start"] for r in main_records).date()))
+    if pinned:
+        # Names, not a count: the spec's risk mitigation is that the pinned
+        # set is computed rather than hardcoded, and a bare count cannot be
+        # read as evidence of that.
+        stream.write("  pinned to 5m           %12s   (unaffected by the setting)\n"
+                     % ", ".join(sorted(pinned)))
+    stream.write("  setting governs        %11.1f%%  of all cache-read tokens\n\n"
+                 % governed_share)
+
+    stream.write("validation: subagents run on the 5m TTL, so their gap bands\n")
+    stream.write("show the counterfactual directly rather than modelled.\n")
+    stream.write("  %-8s %9s %9s %12s %12s\n"
+                 % ("band", "requests", "zero read", "mean read", "mean write"))
+    sub_bands = band_table([pair for chain in sub_chains.values()
+                            for pair in gap_seconds(chain)])
+    for _, _, name in BANDS:
+        bucket = sub_bands[name]
+        if not bucket["n"]:
+            continue
+        stream.write("  %-8s %9d %8.1f%% %12d %12d\n"
+                     % (name, bucket["n"],
+                        100.0 * bucket["zero_read"] / bucket["n"],
+                        bucket["read"] // bucket["n"],
+                        bucket["write"] // bucket["n"]))
+    stream.write("\n")
+
+    stream.write("main-thread gap bands\n")
+    stream.write("  %-8s %9s %9s %12s %12s\n"
+                 % ("band", "requests", "zero read", "mean read", "mean write"))
+    main_bands = band_table([pair for chain in main_chains.values()
+                             for pair in gap_seconds(chain)])
+    for _, _, name in BANDS:
+        bucket = main_bands[name]
+        if not bucket["n"]:
+            continue
+        stream.write("  %-8s %9d %8.1f%% %12d %12d\n"
+                     % (name, bucket["n"],
+                        100.0 * bucket["zero_read"] / bucket["n"],
+                        bucket["read"] // bucket["n"],
+                        bucket["write"] // bucket["n"]))
+    stream.write("\n")
+
+    stream.write("cost, cache-related only (not total spend)\n")
+    stream.write("  observed, %-14s %14s\n" % (ttl_in_force, _money(result["observed"])))
+    stream.write("  counterfactual, 5m       %14s\n" % _money(result["counterfactual"]))
+    stream.write("  difference               %14s   ratio %.2fx\n\n"
+                 % (_money(result["delta"]), result["ratio"]))
+
+    stream.write("the decision lives in the 5-60 minute band\n")
+    stream.write("  requests there         %12d\n" % result["bands"]["5-60m"])
+    stream.write("  their read tokens      %12d\n" % result["decisive_read"])
+    stream.write("  reads costing the same %12d   (gaps under 5m)\n"
+                 % result["neutral_read"])
+    stream.write("  session openers        %12d   (unchanged either way)\n\n"
+                 % result["openers"])
+
+    stream.write("requests by project (labels are hashes, never names)\n")
+    for label, count in sorted(by_project.items()):
+        stream.write("  %-22s %12d\n" % (label, count))
+    stream.write("\n")
+
+    stream.write("sensitivities, so the modelling choices are not buried\n")
+    stream.write("  gaps grouped by project dir  ratio %.2fx (vs %.2fx by transcript)\n"
+                 % (dir_result["ratio"], result["ratio"]))
+    stream.write("  openers all forced to miss   %s on top of the delta\n\n"
+                 % _money(openers_forced))
+
+    if unpriced_all:
+        stream.write("unpriced models (no price row; not defaulted)\n")
+        for model, count in sorted(unpriced_all.items()):
+            stream.write("  %-30s %6d requests %12d tokens\n"
+                         % (model, count, unpriced_tokens[model]))
+        stream.write("\n")
+    if skipped:
+        stream.write("skipped rows: %s\n\n"
+                     % ", ".join("%s=%d" % kv for kv in sorted(skipped.items())))
+
+    if keep_current:
+        stream.write("VERDICT: keep the %s TTL. Forcing five minutes would cost\n"
+                     % ttl_in_force)
+        stream.write("         %s more, %.2fx, over this window.\n"
+                     % (_money(result["delta"]), result["ratio"]))
+    else:
+        stream.write("VERDICT: the five-minute TTL would be cheaper here, by %s.\n"
+                     % _money(-result["delta"]))
+        stream.write("         Set FORCE_PROMPT_CACHING_5M=1 to switch.\n")
+    return verdict_code
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="cache_ttl",
+        description="Decide the prompt-cache TTL from measured session history.")
+    sub = parser.add_subparsers(required=True, dest="command")
+    p_report = sub.add_parser("report", help="measure the corpus and decide")
+    p_report.add_argument("--days", type=int, default=None,
+                          help="restrict to the last N days (UTC); "
+                               "default is the whole corpus")
+    p_report.add_argument("--project", default=None,
+                          help="restrict to transcripts whose path contains "
+                               "this substring; only the hashed label is printed")
+    p_report.add_argument("--json", action="store_true",
+                          help="emit the same figures machine-readably")
+    args = parser.parse_args(argv)
+    try:
+        return report(PROJECTS_DIR, args.days, args.project, args.json,
+                      sys.stdout)
+    except Exception as error:
+        # Exit 1 is reserved for "ran clean and flagged something". A crash
+        # that exits 1 is indistinguishable from a verdict to an automated
+        # caller, so every unexpected failure lands on 2.
+        sys.stderr.write("cannot run: %s: %s\n"
+                         % (type(error).__name__, error))
+        return EXIT_CANNOT_RUN
+
+
+if __name__ == "__main__":
+    sys.exit(main())

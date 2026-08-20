@@ -234,5 +234,257 @@ class TestCostModel(unittest.TestCase):
             self.assertAlmostEqual(read, w5 * 0.08, places=12, msg=model)
 
 
+import io  # noqa: E402
+
+
+class TestBoundariesAndBranches(unittest.TestCase):
+    """The comparisons the verdict turns on. Mutation testing showed the suite
+    stayed green when either boundary was moved, so each is pinned from both
+    sides at its exact value."""
+
+    def _at_gap(self, seconds):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("a", "claude-opus-5", 1000, 100, 0, 1, T0),
+                    fixtures.usage_row("b", "claude-opus-5", 1000, 100, 0, 1,
+                                       T0 + timedelta(seconds=seconds))]}])
+            requests, _ = cache_ttl.collect(root)
+            return cache_ttl.evaluate(cache_ttl.chains(requests))
+
+    def test_gap_of_exactly_five_minutes_still_counts_as_a_hit(self):
+        result = self._at_gap(300)
+        self.assertEqual(result["bands"]["0-5m"], 1)
+        self.assertEqual(result["neutral_read"], 1000)
+        self.assertEqual(result["decisive_read"], 0)
+
+    def test_one_second_past_five_minutes_counts_as_a_miss(self):
+        result = self._at_gap(301)
+        self.assertEqual(result["bands"]["5-60m"], 1)
+        self.assertEqual(result["decisive_read"], 1000)
+        self.assertEqual(result["neutral_read"], 0)
+
+    def test_gap_of_exactly_one_hour_is_still_the_decisive_band(self):
+        result = self._at_gap(3600)
+        self.assertEqual(result["bands"]["5-60m"], 1)
+        self.assertEqual(result["bands"][">60m"], 0)
+
+    def test_one_second_past_an_hour_leaves_the_decisive_band(self):
+        result = self._at_gap(3601)
+        self.assertEqual(result["bands"][">60m"], 1)
+        self.assertEqual(result["bands"]["5-60m"], 0)
+        self.assertEqual(result["decisive_read"], 0)
+
+    def test_delta_is_counterfactual_minus_observed(self):
+        result = self._at_gap(600)
+        self.assertAlmostEqual(result["delta"],
+                               result["counterfactual"] - result["observed"],
+                               places=12)
+        self.assertGreater(result["delta"], 0.0)
+
+    def test_malformed_json_rows_are_tallied_not_silently_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("a", "claude-opus-5", 1, 1, 0, 1, T0)]}])
+            with open(root / "p" / "s.jsonl", "a", encoding="utf-8") as handle:
+                handle.write('{"type":"assistant","usage": BROKEN\n')
+            _, skipped = cache_ttl.collect(root)
+            self.assertEqual(skipped["bad_json"], 1)
+
+    def test_a_timestamp_without_a_zone_is_skipped_rather_than_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            naive = fixtures.usage_row("n", "claude-opus-5", 1, 1, 0, 1, T0)
+            naive["timestamp"] = "2026-08-01T12:00:00"
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    naive,
+                    fixtures.usage_row("a", "claude-opus-5", 1, 1, 0, 1, T0)]}])
+            requests, skipped = cache_ttl.collect(root)
+            self.assertEqual(skipped["naive_timestamp"], 1)
+            self.assertEqual(list(requests), ["a"])
+
+    def test_unpriced_main_thread_yields_no_verdict_rather_than_a_false_one(self):
+        """observed reaches zero when every main model is unpriced, and a zero
+        denominator rendered as a confident 'switch the TTL'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("x", "claude-zzz-unknown", 5, 1, 0, 1, T0),
+                    fixtures.usage_row("y", "claude-zzz-unknown", 5, 1, 0, 1,
+                                       T0 + timedelta(seconds=30))]}])
+            stream = io.StringIO()
+            code = cache_ttl.report(root, None, None, False, stream)
+            self.assertEqual(code, cache_ttl.EXIT_CLEAN)
+            self.assertIn("nothing to decide", stream.getvalue())
+            self.assertNotIn("FORCE_PROMPT_CACHING_5M", stream.getvalue())
+
+    def test_a_subagent_only_unknown_model_still_reaches_the_unpriced_bucket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("m1", "claude-opus-5", 100, 5, 0, 1, T0),
+                    fixtures.usage_row("m2", "claude-opus-5", 100, 5, 0, 1,
+                                       T0 + timedelta(seconds=30))]},
+                {"project": "p", "session": "s", "subagent": True, "rows": [
+                    fixtures.usage_row("s1", "claude-mystery-7", 900, 0, 9, 1,
+                                       T0)]},
+            ])
+            stream = io.StringIO()
+            cache_ttl.report(root, None, None, True, stream)
+            body = json.loads(stream.getvalue())
+            self.assertIn("claude-mystery-7", body["unpriced_requests"])
+            self.assertGreater(body["unpriced_tokens"]["claude-mystery-7"], 0)
+
+    def test_ttl_in_force_is_read_from_the_write_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("a", "claude-opus-5", 10, 0, 900, 1, T0),
+                    fixtures.usage_row("b", "claude-opus-5", 10, 0, 900, 1,
+                                       T0 + timedelta(seconds=30))]}])
+            stream = io.StringIO()
+            cache_ttl.report(root, None, None, True, stream)
+            self.assertEqual(json.loads(stream.getvalue())["ttl_in_force"],
+                             "five minutes")
+
+    def test_validation_table_is_fed_from_subagent_chains(self):
+        """The skill calls this table the validation. Fed from main chains it
+        would validate nothing, and no exit code would move."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("m1", "claude-opus-5", 100, 5, 0, 1, T0),
+                    fixtures.usage_row("m2", "claude-opus-5", 100, 5, 0, 1,
+                                       T0 + timedelta(seconds=30))]},
+                {"project": "p", "session": "s", "subagent": True, "rows": [
+                    fixtures.usage_row("s1", "claude-sonnet-5", 50, 0, 5, 1, T0),
+                    fixtures.usage_row("s2", "claude-sonnet-5", 50, 0, 5, 1,
+                                       T0 + timedelta(seconds=7200))]},
+            ])
+            stream = io.StringIO()
+            cache_ttl.report(root, None, None, False, stream)
+            text = stream.getvalue()
+            validation = text.split("validation:")[1].split("main-thread gap bands")[0]
+            self.assertIn(">60m", validation)
+            self.assertNotIn("0-1m", validation)
+
+    def test_workflow_nested_subagents_are_still_classified_as_subagents(self):
+        """Most real subagent transcripts sit under subagents/workflows/<id>/,
+        two levels deeper than the shallow case the other tests build."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("m", "claude-opus-5", 1, 1, 0, 1, T0)]},
+                {"project": "p", "session": "s", "subagent": True,
+                 "workflow": "wf_abc123", "rows": [
+                     fixtures.usage_row("w", "claude-sonnet-5", 9, 0, 1, 1, T0)]},
+            ])
+            requests, _ = cache_ttl.collect(root)
+            self.assertTrue(requests["m"]["main"])
+            self.assertFalse(requests["w"]["main"])
+
+    def test_a_projects_directory_with_no_transcripts_cannot_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "empty-project").mkdir()
+            code = cache_ttl.report(root, None, None, False, io.StringIO())
+            self.assertEqual(code, cache_ttl.EXIT_CANNOT_RUN)
+
+
+class TestPrivacyAndCli(unittest.TestCase):
+    def test_project_label_never_reveals_the_directory_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            name = "C--Users-someone-git-secretproject"
+            path = root / name / "s.jsonl"
+            label = cache_ttl.project_label(path, root)
+            self.assertNotIn("secretproject", label)
+            self.assertNotIn("someone", label)
+            self.assertNotIn("C--", label)
+            self.assertTrue(label.startswith("project-"))
+
+    def test_project_label_is_stable_for_the_same_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a = cache_ttl.project_label(root / "same" / "one.jsonl", root)
+            b = cache_ttl.project_label(root / "same" / "two.jsonl", root)
+            self.assertEqual(a, b)
+
+    def test_window_filter_keeps_only_recent_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("old", "claude-opus-5", 1, 1, 0, 1,
+                                       T0 - timedelta(days=90)),
+                    fixtures.usage_row("new", "claude-opus-5", 1, 1, 0, 1, T0),
+                ]}])
+            requests, _ = cache_ttl.collect(root)
+            kept = cache_ttl.within_window(requests, 30, T0)
+            self.assertEqual(list(kept), ["new"])
+
+    def test_missing_projects_directory_exits_cannot_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nope"
+            code = cache_ttl.report(missing, None, None, False, io.StringIO())
+            self.assertEqual(code, cache_ttl.EXIT_CANNOT_RUN)
+
+    def test_empty_window_is_an_ordinary_result_not_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("old", "claude-opus-5", 1, 1, 0, 1,
+                                       T0 - timedelta(days=900))]}])
+            code = cache_ttl.report(root, 1, None, False, io.StringIO())
+            self.assertEqual(code, cache_ttl.EXIT_CLEAN)
+
+    def test_json_output_carries_no_project_identifiers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "C--Users-someone-git-secretproject",
+                 "session": "s", "rows": [
+                     fixtures.usage_row("a", "claude-opus-5", 100, 5, 0, 1, T0),
+                     fixtures.usage_row("b", "claude-opus-5", 100, 5, 0, 1,
+                                        T0 + timedelta(seconds=600))]}])
+            stream = io.StringIO()
+            cache_ttl.report(root, None, None, True, stream)
+            payload = stream.getvalue()
+            self.assertNotIn("secretproject", payload)
+            self.assertNotIn("someone", payload)
+            self.assertNotIn("C--", payload)
+            # Asserting only absence passes even when no label is emitted at
+            # all, so it could never fail for the reason it names. Require the
+            # hashed label to be present, and to be this directory's hash.
+            body = json.loads(payload)
+            expected = cache_ttl.project_label(
+                root / "C--Users-someone-git-secretproject" / "s.jsonl", root)
+            self.assertIn(expected, body["requests_by_project"])
+            self.assertEqual(body["requests_by_project"][expected], 2)
+
+    def test_verdict_flags_when_the_counterfactual_is_cheaper(self):
+        """All gaps under five minutes: nothing is ever rewritten, so the
+        cheaper five-minute writes win and the tool should say so."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [fixtures.usage_row("r%d" % i, "claude-opus-5", 10, 5000, 0,
+                                       1, T0 + timedelta(seconds=i * 30))
+                    for i in range(5)]
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": rows}])
+            code = cache_ttl.report(root, None, None, False, io.StringIO())
+            self.assertEqual(code, cache_ttl.EXIT_FLAGGED)
+
+
 if __name__ == "__main__":
     unittest.main()
