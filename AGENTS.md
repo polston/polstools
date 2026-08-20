@@ -48,8 +48,13 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/<name>/hooks/hooks.json` — hook wiring, for plugins that act on
   session events; commands reference plugin files via `${CLAUDE_PLUGIN_ROOT}`
   (the `format` plugin prints payload files kept under `style/`).
-- `plugins/<name>/commands/<command>.md` — slash commands, one file per
-  command, namespaced as `/<plugin>:<command>`.
+- `plugins/<name>/commands/<command>.md` — one file per slash command,
+  namespaced as `/<plugin>:<command>`. Refer to files inside the plugin as
+  `${CLAUDE_PLUGIN_ROOT}/…`, never by a path under the author's home directory.
+- `plugins/<name>/workflows/` — deterministic multi-agent workflow scripts, run
+  by the harness rather than executed directly. A command invokes one instead of
+  restating its recipe in prose, so the procedure cannot drift from one model
+  reading it to the next.
 - `plugins/<name>/tests/` — stdlib `unittest`, no runner or dependency. Run
   with `python -m unittest discover -s plugins/<name>/tests -t plugins/<name>/tests`.
 - `docs/plans/` — design documents, filename dated.
