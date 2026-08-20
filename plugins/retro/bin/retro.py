@@ -57,10 +57,10 @@ STATE_FILE = WORK_DIR / "state.json"
 
 # A user prompt shorter than this, arriving right after a long assistant turn,
 # reads as a correction ("no", "stop", "I said X") rather than a new request.
-CORRECTION_MAX_CHARS = 120
+CORRECTION_MAX_CHARS = 200
 # ...and the assistant turn it follows has to have been substantial, or every
 # short back-and-forth in a fast exchange scores as a correction.
-CORRECTION_MIN_PRIOR_CHARS = 400
+CORRECTION_MIN_PRIOR_CHARS = 200
 
 # A short reply that only agrees is the process working, not friction. The whole
 # reply has to be one of these, ignoring case and trailing punctuation: "yes" is
@@ -70,10 +70,20 @@ CORRECTION_MIN_PRIOR_CHARS = 400
 # `label` subcommand exists to settle this list from marked turns rather than
 # from a guess - add a phrase when the marks show it is being missed.
 APPROVAL_PHRASES = (
-    "yes", "yep", "yeah", "yup", "ok", "okay", "sure", "correct", "agreed",
-    "go ahead", "go for it", "do it", "sounds good", "looks good", "lgtm",
-    "perfect", "exactly", "approved", "please do", "ship it",
+    "yes", "yep", "yeah", "yup", "ok", "okay", "k", "kk", "sure", "correct",
+    "agreed", "go ahead", "go for it", "go", "do it", "sounds good",
+    "looks good", "lgtm", "seems right", "seems ok", "seems okay", "seems good",
+    "lets go", "let's go", "perfect", "exactly", "approved", "please do",
+    "ship it", "fine", "yes please",
 )
+# A negation anywhere means the reply is doing more than agreeing, so the
+# leading-affirmative rule below must not claim it: "sure, but that is wrong" is
+# a correction wearing an approval's first word.
+_NEGATION = re.compile(
+    r"(no|not|n't|never|stop|wrong|instead|revert|undo|but|however|except)", re.I)
+# A reply may open with a list marker and still be nothing but agreement --
+# "1. sure" is an answer to a numbered question, not a new instruction.
+_LIST_PREFIX = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 _APPROVAL_TAIL = re.compile(r"[\s.!,]+$")
 _APPROVAL = re.compile(
     r"^(?:%s)$" % "|".join(re.escape(p) for p in APPROVAL_PHRASES), re.I)
@@ -83,7 +93,7 @@ _APPROVAL = re.compile(
 # definitions at once is worse than no ledger: it reports a number belonging to
 # neither, and nothing in the output says so. `extract` rebuilds on a mismatch
 # rather than trusting prose to prevent it.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_turns", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
@@ -421,7 +431,15 @@ def is_approval(reply):
     """
     if not APPROVAL_PHRASES:
         return False
-    return bool(_APPROVAL.match(_APPROVAL_TAIL.sub("", reply)))
+    stripped = _APPROVAL_TAIL.sub("", _LIST_PREFIX.sub("", reply)).strip()
+    if _APPROVAL.match(stripped):
+        return True
+    # Widened from evidence: 300 turns read and marked by hand showed the
+    # whole-reply rule catching 24% of real approvals. The misses were an
+    # affirmative followed by a qualifier -- agreeing and adding a preference.
+    # Requiring no negation is what keeps "sure, but not that way" out.
+    head = re.split(r"[,;.!]", stripped, 1)[0].strip()
+    return bool(_APPROVAL.match(head)) and not _NEGATION.search(stripped)
 
 
 def classify_user_turn(body, prior_assistant_chars):
@@ -484,8 +502,43 @@ def is_tool_generated(rec):
     the marker coincides exactly with `toolUseResult`, so this is a no-op there
     and the ledger will show that as a step in the trend rather than a change in
     behaviour.
+    That gap is what HUMAN_PROMPT_SOURCES closes, below.
     """
     return "sourceToolAssistantUUID" in rec
+
+
+# The harness records where a user-role prompt came from. Only these three are a
+# person typing; `system` is the harness injecting a reminder, a notification or
+# a skill preamble, and `sdk` is a programmatic caller.
+#
+# Measured over main-session transcripts 2026-08-20, against 300 turns read and
+# marked by hand: of 985 records marked `system`, 981 carry machine wrapper text.
+# Of 1,933 marked `typed`, 1,885 are a person writing. Excluding `system` and
+# `sdk` drops 1,379 of 4,148 counted prompts -- a third of what the ledger has
+# been calling a user prompt, on top of what the tool-output guard already
+# removed.
+HUMAN_PROMPT_SOURCES = frozenset(("typed", "queued", "suggestion_accepted"))
+
+# Older transcripts predate the field. 630 records have no `promptSource` at all
+# and are roughly half machine, so they get a narrow text test instead: a body
+# that OPENS with one of these is a harness wrapper, not a person. Anchored at
+# the start deliberately -- a person quoting one of these phrases mid-message is
+# still a person.
+MACHINE_PROMPT_OPENERS = (
+    "<task-notification>", "<system-reminder>", "<command-name>",
+    "<local-command-stdout>", "Base directory for this skill:",
+    "This session is being continued", "Caveat: The messages below were generated",
+)
+
+
+def is_human_prompt(rec, body):
+    """Did a person write this, or did the harness?"""
+    if is_tool_generated(rec):
+        return False
+    source = rec.get("promptSource")
+    if source:
+        return source in HUMAN_PROMPT_SOURCES
+    return not body.lstrip().startswith(MACHINE_PROMPT_OPENERS)
 
 
 def parse_ts(value):
@@ -638,9 +691,9 @@ def measure(path):
             body = text_of(rec.get("message") or {})
             kind = classify_user_turn(body, prior_assistant_chars)
             if kind == "interrupt":
-                if not is_tool_generated(rec):
+                if is_human_prompt(rec, body):
                     m["interrupts"] += 1
-            elif (rec.get("toolUseResult") is None and not is_tool_generated(rec)
+            elif (rec.get("toolUseResult") is None and is_human_prompt(rec, body)
                     and body.strip()):
                 m["user_prompts"] += 1
                 if kind == "correction":
@@ -935,9 +988,10 @@ def _moments(row):
             continue
         if rec.get("type") == "assistant":
             prior = text_of(rec.get("message") or {})
-        elif (rec.get("type") == "user" and rec.get("toolUseResult") is None
-                and not is_tool_generated(rec)):
+        elif rec.get("type") == "user" and rec.get("toolUseResult") is None:
             body = text_of(rec.get("message") or {})
+            if not is_human_prompt(rec, body):
+                continue
             kind = classify_user_turn(body, len(prior))
             if kind in ("interrupt", "correction"):
                 out.append({
