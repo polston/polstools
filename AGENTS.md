@@ -45,6 +45,13 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/<name>/skills/<skill>/SKILL.md` — one directory per skill.
 - `plugins/<name>/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
   dependencies, no compiled artifacts.
+- `plugins/<name>/commands/<command>.md` — one file per slash command. Refer to
+  files inside the plugin as `${CLAUDE_PLUGIN_ROOT}/…`, never by a path under the
+  author's home directory.
+- `plugins/<name>/workflows/` — deterministic multi-agent workflow scripts, run
+  by the harness rather than executed directly. A command invokes one instead of
+  restating its recipe in prose, so the procedure cannot drift from one model
+  reading it to the next.
 - `docs/plans/` — design documents, filename dated.
 
 Scripts in any `bin/` share one exit-code convention: `0` ran clean and flagged
