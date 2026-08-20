@@ -133,6 +133,29 @@ def read_records(path):
         return
 
 
+def read_transcript(path):
+    """(records, status) where status is 'ok', 'empty', or 'unreadable'.
+
+    Conflating the last two hid real read failures behind a census line that
+    claimed to count them: an empty file, a blank file and a corrupt file all
+    landed in one bucket labelled "could not be read". A partly-read archive
+    returns what it got AND 'unreadable', which is the honest answer.
+    """
+    records = []
+    try:
+        with _open_transcript(path) as fh:
+            for line in fh:
+                if not line or line.isspace():
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except (OSError, EOFError, gzip.BadGzipFile):
+        return records, "unreadable"
+    return records, ("ok" if records else "empty")
+
+
 # --- Redaction -------------------------------------------------------------
 
 @lru_cache(maxsize=1)
@@ -155,11 +178,17 @@ def _redaction_patterns():
         (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b"), "<email>"),
         (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
         (re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), "<mac>"),
-        # Absolute paths belonging to anywhere else. Three shapes leaked past a
-        # first attempt: network paths, unix paths outside a fixed prefix list,
-        # and paths containing a space (the class stopped at whitespace).
-        (re.compile(r"\\\\[^\s\"'<>|]+(?:\\[^\\\n\"'<>|]*)*"), "<path>"),
-        (re.compile(r"\b[A-Za-z]:[\\/](?:[^\\/\n\"'<>|]*[\\/])*[^\\/\n\"'<>|]*"), "<path>"),
+        # Absolute paths belonging to anywhere else.
+        #
+        # A path with a space in it has to be matched WITHOUT letting the match
+        # run past the path. Allowing spaces in a segment cost a whole sentence:
+        # "...on <drive>:/data now and report the counts." redacted to
+        # "...on <path>", destroying the very evidence a candidate tail exists
+        # to carry. So: a quoted or backticked path is matched as a bounded
+        # unit, and an unquoted one stops at whitespace.
+        (re.compile(r"[`\"'][^`\"'\n]*(?:[A-Za-z]:[\\/]|\\\\)[^`\"'\n]*[`\"']"), "<path>"),
+        (re.compile(r"\\\\[^\s\"'<>|]+"), "<path>"),
+        (re.compile(r"\b[A-Za-z]:[\\/][^\s\"'<>|]*"), "<path>"),
         (re.compile(r"(?<![\w~.])/(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]*"), "<path>"),
         (re.compile(r"\b[A-Za-z0-9_-]{32,}\b"), "<long-token>"),
     ]
@@ -263,17 +292,43 @@ def _user_text(record):
                      if isinstance(b, dict) and b.get("type") == "text")
 
 
+KNOWN_PROMPT_SOURCES = HUMAN_PROMPT_SOURCES | {"system", "sdk"}
+
+
+def prompt_source_kind(record):
+    """human / automatic / unrecognized / absent, for a main-thread user record.
+
+    Keying on the field being ABSENT rather than on its value being UNKNOWN was
+    a trap: a source kind this script has never heard of matched neither branch,
+    so the turn it closed was absorbed into the next one and a real stopped
+    promise vanished with no counter to show it. A new harness release would
+    have moved the number for a reason unrelated to behaviour - the exact
+    failure this tool was rebuilt to avoid.
+    """
+    source = record.get("promptSource")
+    if source is None:
+        return "absent"
+    if source in HUMAN_PROMPT_SOURCES:
+        return "human"
+    if source in KNOWN_PROMPT_SOURCES:
+        return "automatic"
+    return "unrecognized"
+
+
 def is_human_prompt(record):
-    """Hybrid. Where the harness stamps a prompt source, trust it and accept only
-    the human kinds - that removes automatic completion notices and dispatched
-    prompts, which a negative list silently accepts. Where it is absent, fall
-    back to structure, which recovers 20 real prompts the field would have lost.
+    """Hybrid. Where the harness stamps a source we recognise, trust it and
+    accept only the human kinds - that removes automatic completion notices and
+    dispatched prompts, which a negative list silently accepts. Where it is
+    absent OR unrecognised, fall back to structure, which recovers 20 real
+    prompts the field would have lost and keeps a future source kind visible.
     """
     if record.get("type") != "user" or record.get("isSidechain"):
         return False
-    source = record.get("promptSource")
-    if source is not None:
-        return source in HUMAN_PROMPT_SOURCES
+    kind = prompt_source_kind(record)
+    if kind == "human":
+        return True
+    if kind == "automatic":
+        return False
     content = (record.get("message") or {}).get("content")
     if isinstance(content, list) and any(
             isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
@@ -297,7 +352,7 @@ def is_automatic_notice(record):
     """A harness-injected message - a background job reporting in. It ends the
     turn just as a human prompt does; the assistant stopped either way."""
     return (record.get("type") == "user" and not record.get("isSidechain")
-            and record.get("promptSource") == "system")
+            and prompt_source_kind(record) == "automatic")
 
 
 def turn_ends(records):
@@ -308,28 +363,42 @@ def turn_ends(records):
     record cannot discard every later turn in the file.
     """
     out, group = [], []
-    pending, excluded = False, False
+    backgrounded, outstanding, excluded = False, set(), False
 
     def close(closer):
-        nonlocal group, pending, excluded
+        nonlocal group, backgrounded, outstanding, excluded
         if group and not excluded:
             messages = assistant_messages(group)
             if messages:
                 last = messages[-1]
+                # Pending means work could still report back: something was
+                # backgrounded, or a tool call in this turn never came back.
+                # Keying on a hardcoded tool-name pair was the fixed-token-list
+                # mechanism the classifier deliberately rejected - it marked a
+                # subagent that had already RETURNED as still pending, and any
+                # new dispatch tool would have needed another hand edit.
+                pending = backgrounded or bool(outstanding)
                 out.append(TurnEnd(last, closer, pending, last.session_id))
-        group, pending, excluded = [], False, False
+        group, backgrounded, outstanding, excluded = [], False, set(), False
 
     for record in records:
         if record.get("type") == "assistant" and not record.get("isSidechain"):
             if is_excluded_record(record):
                 excluded = True
             group.append(record)
-            for name, background in _tools_of([record]):
-                if background or name in ("Task", "Agent"):
-                    pending = True
+            for block in _blocks(record):
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    payload = block.get("input")
+                    if isinstance(payload, dict) and payload.get("run_in_background"):
+                        backgrounded = True
+                    if block.get("id"):
+                        outstanding.add(block["id"])
             continue
         if record.get("type") != "user" or record.get("isSidechain"):
             continue
+        for block in _blocks(record):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                outstanding.discard(block.get("tool_use_id"))
         if INTERRUPT.search(_user_text(record)):
             close("interrupt")
         elif is_human_prompt(record):
@@ -487,19 +556,35 @@ def find_candidates(turn_end_list, seen=None, counts=None):
 
 # --- Verdicts --------------------------------------------------------------
 
+REAL_WORDS = {"real", "yes", "true", "1"}
+NOT_REAL_WORDS = {"not-real", "notreal", "no", "false", "0"}
+
+
 def read_verdicts(path):
     """`<id> real` / `<id> not-real`, one per line. Blank lines and # comments
-    ignored. Hand-written input the script only ever reads."""
-    verdicts = {}
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    ignored. Hand-written input the script only ever reads.
+
+    Returns (verdicts, unparsed). An unrecognised word is REPORTED, not folded
+    into not-real: treating anything-that-is-not-real as not-real meant a typo
+    silently counted as a reviewed negative and pulled precision down.
+    """
+    verdicts, unparsed = {}, []
+    for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.split()
         if len(parts) < 2:
+            unparsed.append(f"line {number}: no verdict word")
             continue
-        verdicts[parts[0]] = parts[1].lower() in ("real", "yes", "true", "1")
-    return verdicts
+        word = parts[1].lower()
+        if word in REAL_WORDS:
+            verdicts[parts[0]] = True
+        elif word in NOT_REAL_WORDS:
+            verdicts[parts[0]] = False
+        else:
+            unparsed.append(f"line {number}: unrecognised verdict {word!r}")
+    return verdicts, unparsed
 
 
 def score(candidates, verdicts, turn_ends_total):
@@ -576,14 +661,18 @@ def _session_in_window(records, since, until):
 
 def collect(roots, since, until):
     census = {"roots": len(roots), "files_seen": 0, "files_unreadable": 0,
-              "files_outside_window": 0, "files_measured": 0, "sessions": set(),
-              "first_day": None, "last_day": None, "active_days": set()}
+              "files_empty": 0, "files_outside_window": 0, "files_measured": 0,
+              "sessions": set(), "first_day": None, "last_day": None,
+              "active_days": set()}
     candidates, totals, seen = [], new_counts(), set()
     for _, path in walk_transcripts(roots):
         census["files_seen"] += 1
-        records = list(read_records(path))
+        records, status = read_transcript(path)
+        if status == "unreadable":
+            census["files_unreadable"] += 1
         if not records:
-            census["files_unreadable"] += 1        # genuinely could not be read
+            if status != "unreadable":
+                census["files_empty"] += 1         # opened fine, held nothing
             continue
         inside, _first, _last = _session_in_window(records, since, until)
         if not inside:
@@ -649,10 +738,12 @@ def main(argv=None):
     status = EXIT_FLAGGED if candidates else EXIT_CLEAN
     if args.verdicts:
         try:
-            verdicts = read_verdicts(args.verdicts)
+            verdicts, unparsed = read_verdicts(args.verdicts)
         except OSError as exc:
             print(f"cannot read verdicts file: {type(exc).__name__}", file=sys.stderr)
             return EXIT_CANNOT_RUN
+        for complaint in unparsed:
+            print(f"verdicts: {complaint}", file=sys.stderr)
         result = score(candidates, verdicts, report["counts"]["ended_by_speaker"])
         payload["verdicts"] = result
         status = EXIT_FLAGGED if result["unreviewed"] else EXIT_CLEAN
@@ -698,8 +789,8 @@ def _assistant(mid, text=None, tools=(), entrypoint="cli", session="s"):
     content = []
     if text is not None:
         content.append({"type": "text", "text": text})
-    for name, background in tools:
-        content.append({"type": "tool_use", "name": name,
+    for index, (name, background) in enumerate(tools):
+        content.append({"type": "tool_use", "id": f"{mid}-t{index}", "name": name,
                         "input": {"run_in_background": True} if background else {}})
     return {"type": "assistant", "isSidechain": False, "sessionId": session,
             "entrypoint": entrypoint, "timestamp": "2026-08-19T00:00:00Z",
@@ -779,10 +870,28 @@ def test_cli_root_beats_environment(tmp, monkeyenv):
 
 @selftest_case
 def test_redaction_collapses_home_before_replacing_account(tmp):
+    """Pins the ORDER, not just the outcome. An earlier version of this case
+    accepted either a tilde or a path placeholder, which meant it still passed
+    when the account rule was moved back to first - the exact defect it was
+    written to guard. Requiring the tilde is what makes it fail."""
     home = str(Path.home())
     out = redact(home + os.sep + "work" + os.sep + "f.txt")
-    assert out.startswith("~") or out.startswith("<path>"), f"home not collapsed: {out}"
+    assert out.startswith("~"), f"home not collapsed to a tilde: {out}"
+    assert out.endswith("work" + os.sep + "f.txt"), f"tail below home lost: {out}"
     assert Path.home().name.lower() not in out.lower()
+
+
+@selftest_case
+def test_redaction_leaves_the_rest_of_the_sentence_alone(tmp):
+    """The one-sided guard the other redaction cases lacked: they all assert
+    something vanished, none asserted the surrounding prose survived. A path
+    pattern that allowed spaces once ate the remainder of the sentence, which
+    silently emptied every candidate tail containing a path."""
+    probe = "I will run it on " + "D:" + "/data" + " now and report the counts."
+    out = redact(probe)
+    assert out.startswith("I will run it on "), out
+    assert out.endswith(" now and report the counts."), f"sentence tail eaten: {out}"
+    assert "data" not in out, f"path survived: {out}"
 
 
 @selftest_case
@@ -1048,8 +1157,9 @@ def test_turns_the_human_did_not_end_are_not_candidates(tmp):
 def test_verdicts_give_a_rate_and_a_precision(tmp):
     path = Path(tmp) / "v.txt"
     path.write_text("# a comment\naaa real\nbbb not-real\nccc real\n\n", encoding="utf-8")
-    verdicts = read_verdicts(path)
+    verdicts, unparsed = read_verdicts(path)
     assert verdicts == {"aaa": True, "bbb": False, "ccc": True}
+    assert unparsed == [], unparsed
     candidates = [Candidate(i, "t", "2026-08-19", "s") for i in ("aaa", "bbb", "ccc")]
     result = score(candidates, verdicts, turn_ends_total=1000)
     assert result["verified_real"] == 2
@@ -1062,7 +1172,8 @@ def test_verdicts_give_a_rate_and_a_precision(tmp):
 def test_unknown_verdict_ids_are_named_not_ignored(tmp):
     path = Path(tmp) / "v.txt"
     path.write_text("zzz real\n", encoding="utf-8")
-    result = score([Candidate("aaa", "t", "d", "s")], read_verdicts(path), 100)
+    verdicts, _ = read_verdicts(path)
+    result = score([Candidate("aaa", "t", "d", "s")], verdicts, 100)
     assert result["unknown_ids"] == ["zzz"]
     assert result["unreviewed"] == 1
 
@@ -1127,6 +1238,64 @@ def test_out_of_window_file_is_not_called_unreadable(tmp, monkeyenv):
     assert census["files_outside_window"] == 1, census
     assert census["files_unreadable"] == 0, census
     assert census["sessions"] == 0, "window did not scope the census"
+
+
+@selftest_case
+def test_unrecognised_prompt_source_falls_back_not_through(tmp):
+    """A source kind this script has not heard of must not silently close
+    nothing. Keying on the field being ABSENT rather than UNKNOWN absorbed the
+    previous turn and lost its closing message with no counter to show it."""
+    future = {"type": "user", "isSidechain": False, "promptSource": "voice",
+              "message": {"content": "do the thing"}}
+    assert prompt_source_kind(future) == "unrecognized"
+    assert is_human_prompt(future) is True, "unknown source swallowed a turn"
+    records = [_assistant("m1", text="Done. I'll run it now."), future,
+               _assistant("m2", text="Done. I'll run it now."), _typed()]
+    assert [e.message.message_id for e in turn_ends(records)] == ["m1", "m2"]
+
+
+@selftest_case
+def test_unrecognised_verdict_word_is_reported_not_counted(tmp):
+    """Folding anything-not-real into not-real meant a typo counted as a
+    reviewed negative and pulled precision down."""
+    path = Path(tmp) / "v.txt"
+    path.write_text("\n".join(("aaa real", "bbb rael", "ccc maybe", "")),
+                    encoding="utf-8")
+    verdicts, unparsed = read_verdicts(path)
+    assert verdicts == {"aaa": True}, verdicts
+    assert len(unparsed) == 2, unparsed
+    result = score([Candidate(i, "t", "d", "s") for i in ("aaa", "bbb", "ccc")],
+                   verdicts, 100)
+    assert result["precision_pct"] == 100.0, result
+    assert result["unreviewed"] == 2, result
+
+
+@selftest_case
+def test_empty_file_is_not_called_unreadable(tmp):
+    empty = Path(tmp) / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    blank = Path(tmp) / "blank.jsonl"
+    blank.write_text("\n".join(("", "", "  ", "")), encoding="utf-8")
+    good = write_fixture(tmp, "good.jsonl", [{"type": "assistant"}])
+    assert read_transcript(empty)[1] == "empty"
+    assert read_transcript(blank)[1] == "empty"
+    assert read_transcript(good)[1] == "ok"
+    assert read_transcript(Path(tmp) / "missing.jsonl")[1] == "unreadable"
+
+
+@selftest_case
+def test_a_subagent_that_returned_is_not_pending(tmp):
+    """Pending is about work still outstanding, not about a tool's name. A
+    dispatch that already came back leaves nothing to wait for."""
+    launched = _assistant("m1", tools=[("Task", False)])
+    result = {"type": "user", "isSidechain": False, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "m1-t0", "content": "done"}]}}
+    returned = turn_ends([launched, result,
+                          _assistant("m2", text="Done. I'll run it now."), _typed()])
+    assert returned[0].pending is False, "returned subagent still marked pending"
+    still_running = turn_ends([launched,
+                               _assistant("m2", text="Done. I'll run it now."), _typed()])
+    assert still_running[0].pending is True, "outstanding call not marked pending"
 
 
 def selftest():
