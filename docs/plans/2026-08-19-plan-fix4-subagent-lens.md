@@ -1,5 +1,10 @@
 # Fix 4 — a subagent lens: implementation plan
 
+> **Superseded 2026-08-20, never implemented.** Built from a spec section a
+> recount disproved. `docs/plans/2026-08-20-plan-subagent-lens-rebuild.md`
+> replaces it, and the corrections folded into that document replace parts of it
+> in turn. Kept as a record of what was disproved.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give every transcript four new mechanical-failure counters and add a

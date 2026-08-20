@@ -186,6 +186,15 @@ today.
 
 ## Fix 4 — a subagent lens
 
+> **Superseded 2026-08-20.** A recount against the corpus disproved this
+> section's two largest categories: the transcripts counted as returning
+> nothing had almost all answered through a structured-result call, and the
+> single workspace counter conflated a command naming a target outside the
+> workspace with the guard declining a command whose shape it could not verify.
+> The rebuilt categories, the counting rule, and the specificity checks are in
+> `docs/plans/2026-08-20-plan-subagent-lens-rebuild.md`. Read that instead; the
+> numbers below are kept only as a record of what was disproved.
+
 Subagent transcripts are 1,481 of the corpus and are currently treated as spend:
 excluded from ranking, excluded from moments, never read. Measured 2026-08-18,
 they carry a distinct and recurring failure profile that nothing looks at.

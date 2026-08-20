@@ -47,6 +47,59 @@ records what was disproved, and Task 5 marks the old section.
 
 ---
 
+## Corrections folded in at implementation
+
+An independent recount of the corpus disproved parts of this plan before it was
+built. The code is the current truth; this section records what changed and why,
+so the numbers below are read as the plan's state and not as the tool's.
+
+1. **Every share had the wrong denominator.** The plan divided each signal by
+   every subagent row. A workspace-guard refusal can only arise in a run that
+   had an isolated workspace - measured, 465 of 1,492 rows - so dividing it by
+   all of them states it at a third of its rate. That is the same defect this
+   rebuild exists to fix, with the sign flipped. Each row now carries an
+   `eligible` column naming the signals it could have produced, and the report
+   divides by that population and prints what the population is.
+2. **The failure-to-answer figure was 5 and is not.** Most of what it counted
+   were transcripts still being written, one of them belonging to the session
+   running the report. The report now drops the reporting session's rows, read
+   from the environment and never printed, and says how many it dropped. On the
+   run that verified this change the figure was 3, of which one was a
+   same-day transcript from another live session; the settled figure was 2.
+3. **The counts are not stable and this plan said they were.** They move
+   between runs because the corpus is appended to while it is read. The report
+   is stamped with the time it was taken and the rows it covers, and asserts no
+   stability. The paragraph below claiming the category columns are stable is
+   wrong and is marked so.
+4. **Concentration was hidden.** Two of the seven counts are mostly one
+   project: 77% of one and 61% of another come from a single project. A count
+   that is one workflow repeating itself is not a pattern, and a reader given
+   the count alone cannot tell. Each signal now reports the share of its
+   occurrences held by its largest single project. No project is named - both
+   constraints hold at once.
+5. **The specificity claim credited the wrong half of the rule.** Measured, 73
+   successful results contain one of these texts and **zero** start with one, so
+   the start-of-body anchor alone excludes every one and the error flag excludes
+   nothing the anchor has not. The gate is kept because it is the harness's own
+   record that a call failed; the code comments say that rather than crediting
+   it with specificity.
+6. **The text-versus-structured split turned on record ordering.** Under this
+   plan's rule, 43 rows that had handed a result back through a structured
+   call read as `text`, because their last record happened to carry prose. The
+   rule is now: a run that made a structured-result call at any point answered
+   structurally. It does not depend on order.
+7. **One category is real but not actionable.** `invalid_tool_input` is 23 of
+   28 a tool input that would not parse - no instruction and no schema reaches
+   it. It is kept, and the report marks per signal whether a person can act on
+   it, so nobody spends an instruction edit on the one that cannot move.
+
+Two smaller departures from the task list below: the primitives and the
+`measure()` change landed as one commit rather than two, so no commit leaves the
+tool unable to run; and the stale-ledger check inside `cmd_subagents` was not
+written, because the ledger now carries a schema version and `load_rows` already
+refuses a mismatched ledger with exit 2 - which was verified rather than assumed.
+
+
 ## What the first attempt got wrong
 
 Recorded so the same categories are not re-imported by accident. Each line was
@@ -99,7 +152,7 @@ ledger rows carrying at least one. Projects counts distinct project directories,
 as a concentration check — a signal confined to one project is one workflow's
 quirk, not a general phenomenon.
 
-| Column | Counted when | Occurrences | Transcripts | Share of 1,476 | Projects | Main-session occurrences |
+| Column | Counted when | Occurrences | Transcripts | Share of 1,476 (WRONG - correction 1) | Projects | Main-session occurrences |
 |---|---|---|---|---|---|---|
 | `workspace_shape_unverifiable` | body starts with the workspace-isolation sentence, does **not** mention the shared checkout, and says the effect could not be verified | 175 | 97 | 6.6% | 5 | 26 |
 | `schema_rejected` | `StructuredOutput`, body starts `Output does not match required schema` | 53 | 24 | 1.6% | 3 | 7 |
@@ -143,7 +196,8 @@ order. Measured over the 1,476 subagent rows:
 | `unanswered` | a tool call was issued and its result never arrived | 3 |
 | `silent` | stopped after a completed tool call without answering | 2 |
 
-**The honest count of "the agent failed to answer" is 5, not 155** — the
+**The count of "the agent failed to answer" given here as 5 is itself wrong —
+see correction 2.** It was — the
 `unanswered` and `silent` rows. `interrupted` is the caller's action, not the
 agent's mistake, and is reported separately rather than folded in. The two
 result-bearing tools are named in one constant so a third can be added when the
@@ -157,8 +211,10 @@ runs of the same oracle over the same corpus returned `silent=2 text=722`, then
 mid-write when the middle run read it. The seven category counts were identical
 across all three runs; only the endings and the turn quantiles moved. So:
 
-- The category columns are stable against an in-flight transcript. The `ending`
-  column and the turn distribution are not, and both are re-derived on the next
+- **This claim is false — see correction 3.** The category columns are not
+  stable against an in-flight transcript either; a recount of the same
+  population moved the largest signal. What is true is the second half: the
+  `ending` column and the turn distribution are re-derived on the next
   `extract` because the file's size and mtime move, which is what the extract
   fingerprint is for — that is cache invalidation, not dating a session.
 - Never read a one-run difference in `ending` as a change in behaviour. Compare
