@@ -79,25 +79,13 @@ COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls"
             "correction_turns", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
 
-# The subagent lens. Same ledger contract as COUNTERS - each name is a column,
-# and adding one means an extract --rebuild - but a separate list, so the pack's
-# trend table and per-session line, which iterate COUNTERS, are untouched.
-#
-# Every one of these was re-earned by counting the corpus, not carried over from
-# an earlier attempt whose categories a recount disproved. The measurement and
-# the checks each category had to pass are in
-# docs/plans/2026-08-20-plan-subagent-lens-rebuild.md.
-SUBAGENT_COUNTERS = ["schema_rejected", "unread_before_write",
-                     "missing_path_target", "invalid_tool_input",
-                     "search_pattern_rejected", "workspace_target_outside",
-                     "workspace_shape_unverifiable"]
-
 # How a run answered, in precedence order. One value per row, in the `ending`
 # column. The first two are a result delivered; only the last two are the agent
 # failing to answer, and `interrupted` is the caller's doing, not the agent's.
 ENDINGS = ("structured", "text", "interrupted", "unanswered", "silent")
 
-# The population each signal could have occurred in. A share divides by THIS,
+# The subagent lens: one entry per column, mapping the column to the population
+# each signal could have occurred in. A share divides by THIS,
 # never by every row. A workspace-guard refusal cannot arise in a run that had
 # no isolated workspace, and a schema rejection cannot arise in a run that never
 # made a structured-result call. Measured on the corpus: the workspace signals
@@ -118,6 +106,18 @@ SIGNAL_POPULATION = {
     "workspace_target_outside": ISOLATED_WORKSPACE,
     "workspace_shape_unverifiable": ISOLATED_WORKSPACE,
 }
+
+# Same ledger contract as COUNTERS - each name is a column, and adding one means
+# an extract --rebuild - but a separate list, so the pack's trend table and
+# per-session line, which iterate COUNTERS, are untouched. Derived from the map
+# above rather than written out again, so a column cannot exist with no
+# population to divide it by.
+#
+# Every one was re-earned by counting the corpus, not carried over from an
+# earlier attempt whose categories a recount disproved. The measurement and the
+# checks each category had to pass are in
+# docs/plans/2026-08-20-plan-subagent-lens-rebuild.md.
+SUBAGENT_COUNTERS = list(SIGNAL_POPULATION)
 
 # No "abandoned session" counter, deliberately. See the metric-definitions
 # section of docs/plans/2026-08-12-retro-design.md for the measurement that
@@ -1057,6 +1057,11 @@ SUBAGENT_SIGNALS = [
 # instructions at a signal instructions cannot move.
 UNACTIONABLE_NOTE = ("no instruction or schema edit reaches this one - the "
                      "call itself was malformed")
+
+# The table above and the schema list name the same seven columns. Keeping them
+# in step by hand is how a column quietly stops being reported, so a mismatch is
+# an error the first time the file is imported rather than a silent gap.
+assert {key for key, _, _, _ in SUBAGENT_SIGNALS} == set(SUBAGENT_COUNTERS)
 
 ENDING_MEANING = {
     "structured": "handed a result back through a structured-result call",
