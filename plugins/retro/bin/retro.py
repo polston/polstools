@@ -202,10 +202,24 @@ def parse_ts(value):
         return None
 
 
+class TranscriptUnreadable(Exception):
+    """The bytes could not be read.
+
+    Distinct from a file that read fine and holds no conversation: one is a
+    fault worth retrying, the other is a settled fact about the file. Reporting
+    both as "unreadable" is what put 22 workflow journals in that bucket.
+    """
+
+
 def read_records(path):
     """Yield parsed records, skipping malformed lines. A live session is being
     appended to while we read it; a truncated final line is normal, not an
-    error."""
+    error.
+
+    Raises TranscriptUnreadable if the file cannot be opened, or if reading
+    fails partway through. Returning an empty stream instead is what made a
+    read failure indistinguishable from a file with no conversation in it.
+    """
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -217,18 +231,29 @@ def read_records(path):
                     yield json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
-    except OSError:
-        return
+    except OSError as exc:
+        raise TranscriptUnreadable(path) from exc
+
+
+# The three ways a walked file can end up. `extract` prints them as three
+# separate counts, and they must sum to the number of files walked.
+MEASURED, NOT_TRANSCRIPT, UNREADABLE = "measured", "not-transcript", "unreadable"
 
 
 def measure(path):
-    """Reduce one transcript to a metrics row."""
+    """Reduce one transcript to a metrics row.
+
+    Returns None for a file that read fine and holds no conversation. Raises
+    TranscriptUnreadable for one whose bytes would not read. Callers wanting
+    the three outcomes as a single value call measure_outcome() instead.
+    """
     m = Counter()
     session_id = project = branch = version = None
     first_ts = last_ts = None
     seen_sigs = set()
     skills = set()
     prior_assistant_chars = 0
+    conversation = 0
     tokens_in = tokens_out = cache_read = 0
     prev_mode = None
     prev_skill = None
@@ -237,6 +262,11 @@ def measure(path):
         if not isinstance(rec, dict):
             continue
         rtype = rec.get("type")
+        # Structural test for "is this a transcript at all". Filenames would
+        # need a new rule for every sidecar format the CLI adds; record types
+        # do not.
+        if rtype in ("user", "assistant"):
+            conversation += 1
         ts = parse_ts(rec.get("timestamp"))
         if ts:
             first_ts = first_ts or ts
@@ -301,7 +331,7 @@ def measure(path):
         if rtype == "user" and is_error_record(rec):
             m["tool_errors"] += 1
 
-    if session_id is None and not m:
+    if not conversation:
         return None
 
     # Subagent transcripts live under <session>/subagents/ and carry the PARENT
@@ -331,6 +361,17 @@ def measure(path):
     return row
 
 
+def measure_outcome(path):
+    """One file's outcome: (MEASURED, row), (NOT_TRANSCRIPT, None) or
+    (UNREADABLE, None). Never raises for an unreadable file - the thread pool
+    in cmd_extract abandons its whole result stream on the first exception."""
+    try:
+        row = measure(path)
+    except TranscriptUnreadable:
+        return UNREADABLE, None
+    return (MEASURED, row) if row is not None else (NOT_TRANSCRIPT, None)
+
+
 # --- extract ---------------------------------------------------------------
 
 def load_state():
@@ -354,7 +395,8 @@ def cmd_extract(args):
 
     transcripts = sorted(PROJECTS_DIR.rglob("*.jsonl"))
     stale = []
-    skipped = 0
+    unchanged = 0
+    unreadable = 0
     for path in transcripts:
         try:
             stat = path.stat()
@@ -363,7 +405,7 @@ def cmd_extract(args):
         # A live session grows; re-measure when size or mtime moved.
         fingerprint = f"{stat.st_size}:{int(stat.st_mtime)}"
         if state.get(str(path)) == fingerprint:
-            skipped += 1
+            unchanged += 1
             continue
         stale.append((path, fingerprint))
 
@@ -372,15 +414,17 @@ def cmd_extract(args):
     # concurrent I/O. Warm the redaction patterns first so the cache is not
     # raced by the workers.
     _redaction_patterns()
-    processed = failed = 0
+    measured = not_transcripts = 0
     with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
-        for (path, fingerprint), row in zip(
-                stale, pool.map(lambda item: measure(item[0]), stale)):
-            if row is None:
-                failed += 1
-            else:
+        for (path, fingerprint), (outcome, row) in zip(
+                stale, pool.map(lambda item: measure_outcome(item[0]), stale)):
+            if outcome == MEASURED:
                 rows[row["transcript"]] = row
-                processed += 1
+                measured += 1
+            elif outcome == NOT_TRANSCRIPT:
+                not_transcripts += 1
+            else:
+                unreadable += 1
             state[str(path)] = fingerprint
 
     with open(METRICS_FILE, "w", encoding="utf-8") as fh:
@@ -388,8 +432,9 @@ def cmd_extract(args):
             fh.write(json.dumps(row) + "\n")
     STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
 
-    print(f"transcripts: {len(transcripts)}  measured: {processed}  "
-          f"unchanged: {skipped}  unreadable: {failed}")
+    print(f"transcripts: {len(transcripts)}  measured: {measured}  "
+          f"unchanged: {unchanged}  not-transcripts: {not_transcripts}  "
+          f"unreadable: {unreadable}")
     print(f"sessions in ledger: {len(rows)}")
     print(f"ledger: {METRICS_FILE}")
 
@@ -443,6 +488,16 @@ MOMENTS_PER_SESSION = 3
 
 
 def moments(row):
+    """Redacted evidence for one session, or nothing at all if its transcript
+    will not read. A pack covers hundreds of sessions and must not die because
+    one file went unreadable."""
+    try:
+        return _moments(row)
+    except TranscriptUnreadable:
+        return []
+
+
+def _moments(row):
     """Pull the user turns that scored this session as frictional, with the
     assistant text immediately before each. Redacted."""
     path = PROJECTS_DIR / row.get("transcript", "")
