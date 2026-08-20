@@ -78,8 +78,13 @@ def _redaction_patterns():
         (re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), "<mac>"),
         (re.compile(r"\b[A-Za-z0-9_-]{32,}\b"), "<long-token>"),
     ]
+    # The account-name rule goes LAST, and the position is load-bearing. Running
+    # it first rewrote the name inside the home path, after which neither
+    # home-path pattern could ever match: a path came back as drive + Users +
+    # placeholder + every directory below it, instead of collapsing to "~".
+    # Identity was removed, the directory structure was not.
     if len(user) > 2:
-        pats.insert(0, (re.compile(r"\b" + re.escape(user) + r"\b", re.I), "<user>"))
+        pats.append((re.compile(r"\b" + re.escape(user) + r"\b", re.I), "<user>"))
     return pats
 
 
