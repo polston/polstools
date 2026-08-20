@@ -197,6 +197,7 @@ data file records that date and the source URL so staleness is visible.
 | `claude-opus-4-8` | 5.00 | 6.25 | 10.00 | 0.50 |
 | `claude-opus-4-7` | 5.00 | 6.25 | 10.00 | 0.50 |
 | `claude-sonnet-5` | 2.00 | 2.50 | 4.00 | 0.20 |
+| `claude-sonnet-4-6` | 3.00 | 3.75 | 6.00 | 0.30 |
 | `claude-sonnet-4-5-20250929` | 3.00 | 3.75 | 6.00 | 0.30 |
 | `claude-haiku-4-5-20251001` | 1.00 | 1.25 | 2.00 | 0.10 |
 
@@ -246,19 +247,24 @@ the claim is withdrawn rather than asserted unmeasured.
 
 ## Deliverables
 
-### Script — `plugins/retro/bin/cache-ttl.py`
+### Script — `plugins/retro/bin/cache_ttl.py`
 
 Stdlib-only Python 3, matching `plugins/retro/bin/retro.py`'s conventions:
 guarded field access throughout, since transcript shape varies by CLI version.
 
-It **imports `retro.py`** and reuses `redact()`. An earlier draft claimed a
-hyphenated filename made this fragile; that was tested and is false — the hyphen
-is on the importing file, which is irrelevant to Python's import machinery, and
-`import retro` succeeds both from the directory and when invoked by absolute
-path. Note `retro.py` has three subcommands (`extract`, `pack`, `skills`), not
-two.
+It **imports `retro.py`** and reuses `parse_ts()`. Note `retro.py` has three
+subcommands (`extract`, `pack`, `skills`), not two.
 
-    cache-ttl.py report [--days N] [--project SUBSTR] [--json]
+The plan (`docs/plans/2026-08-20-cache-ttl-economics-plan.md`) overrode two
+details from an earlier version of this section, corrected here rather than
+left to drift: the filename is `cache_ttl.py`, with an underscore, so the test
+file can import the module directly instead of going through
+`importlib.util.spec_from_file_location`; and the reused sibling function is
+`parse_ts()`, not `redact()` — `redact()` was rejected because it rewrites the
+home path and username but passes other path segments through verbatim, so
+project labels are hashed instead (see Privacy below).
+
+    cache_ttl.py report [--days N] [--project SUBSTR] [--json]
 
 - `--days N` restricts to the last N days by UTC timestamp; default is the whole
   corpus. The whole corpus gives 1.33×; the last 30 days gives 1.42×, so the
