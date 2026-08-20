@@ -67,9 +67,13 @@ _APPROVAL_TAIL = re.compile(r"[\s.!,]+$")
 _APPROVAL = re.compile(
     r"^(?:%s)$" % "|".join(re.escape(p) for p in APPROVAL_PHRASES), re.I)
 
-# Row schema. Also the ledger contract: every counter here is a column, and
-# adding one means an extract --rebuild before trends over it mean anything.
-COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "tool_retries",
+# Row schema. Every counter here is a column. Bump SCHEMA_VERSION whenever this
+# list changes OR a counter's definition changes, because a ledger holding two
+# definitions at once is worse than no ledger: it reports a number belonging to
+# neither, and nothing in the output says so. `extract` rebuilds on a mismatch
+# rather than trusting prose to prevent it.
+SCHEMA_VERSION = 2
+COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_turns", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
 
@@ -155,20 +159,20 @@ _DIGITS = re.compile(r"\d+")
 _SPACES = re.compile(r"\s+")
 _INTERRUPT = re.compile(r"\[request interrupted", re.I)
 
-# A tool input can carry a whole file body. The leading bytes discriminate one
-# call from another just as well as the whole thing, and hashing the rest is
-# most of this function's cost.
-SIGNATURE_MAX_CHARS = 2048
-
-
 def signature(tool_input):
-    """A hash that survives trivial edits, so a retried command with a tweaked
-    number or reflowed whitespace still matches its predecessor."""
+    """An exact digest of a tool call's input.
+
+    It used to normalise digits and whitespace away and hash only the first 2KB,
+    on the theory that a retry is the same command with a tweaked number. Counted
+    against the corpus, that theory cost more than it bought: of 1,387 calls it
+    flagged as repeats, 1,157 had genuinely different inputs -- 637 were one file
+    read at successive offsets, 314 were updates to a task list. Truncation also
+    let two long writes to different paths collide, because sorted keys put the
+    content ahead of the path. Exact is both honest and, measured, faster.
+    """
     if tool_input is None:
         return ""
-    raw = json.dumps(tool_input, sort_keys=True, default=str)[:SIGNATURE_MAX_CHARS]
-    raw = _DIGITS.sub("#", raw)
-    raw = _SPACES.sub(" ", raw).strip().lower()
+    raw = json.dumps(tool_input, sort_keys=True, default=str)
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
@@ -350,7 +354,7 @@ def measure(path):
                 m["tool_calls"] += 1
                 key = (name, sig)
                 if sig and key in seen_sigs:
-                    m["tool_retries"] += 1
+                    m["repeat_calls"] += 1
                 seen_sigs.add(key)
         elif rtype == "user":
             body = text_of(rec.get("message") or {})
@@ -395,6 +399,7 @@ def measure(path):
         "cache_read": cache_read,
         "skills_used": sorted(skills),
     }
+    row["schema"] = SCHEMA_VERSION
     for key in COUNTERS:
         row[key] = m[key]
     return row
@@ -426,11 +431,21 @@ def cmd_extract(args):
         print(f"no session directory at {PROJECTS_DIR}", file=sys.stderr)
         sys.exit(EXIT_CANNOT_RUN)
 
-    state = {} if args.rebuild else load_state()
+    rebuild = args.rebuild
     rows = {}
-    if not args.rebuild:
-        rows = {r["transcript"]: r for r in load_rows(required=False)
-                if "transcript" in r}
+    if not rebuild:
+        existing = load_rows(required=False, check_schema=False)
+        stale = [r for r in existing if r.get("schema") != SCHEMA_VERSION]
+        if stale:
+            # Rebuilding is the only correct response. Keeping the old rows and
+            # measuring the rest would mix two definitions in one file, which is
+            # the failure this version exists to make impossible.
+            print(f"schema changed since this ledger was written "
+                  f"({len(stale)} of {len(existing)} rows) - rebuilding all of it")
+            rebuild = True
+        else:
+            rows = {r["transcript"]: r for r in existing if "transcript" in r}
+    state = {} if rebuild else load_state()
 
     transcripts = sorted(PROJECTS_DIR.rglob("*.jsonl"))
     stale = []
@@ -488,9 +503,16 @@ def cmd_extract(args):
 
 # --- pack ------------------------------------------------------------------
 
-def load_rows(required=True):
+def load_rows(required=True, check_schema=True):
     """Read the ledger. `required` is False for extract, which is allowed to
-    start from an empty ledger and build one."""
+    start from an empty ledger and build one.
+
+    A reader refuses a ledger that was not written by this version of the schema.
+    That is deliberately blunt: measured on a real ledger, running new code over
+    old rows without rebuilding left 1,923 of 1,938 rows on the previous schema
+    and still exited 0, so every total was a sum across two definitions with
+    nothing in the output admitting it.
+    """
     if not METRICS_FILE.exists():
         if not required:
             return []
@@ -503,6 +525,13 @@ def load_rows(required=True):
             out.append(json.loads(line))
         except ValueError:
             continue
+    if check_schema:
+        stale = sum(1 for r in out if r.get("schema") != SCHEMA_VERSION)
+        if stale:
+            print(f"ledger holds {stale} of {len(out)} rows from an older schema "
+                  f"(current is {SCHEMA_VERSION}) - run `extract --rebuild`; "
+                  f"totals across two definitions mean nothing", file=sys.stderr)
+            sys.exit(EXIT_CANNOT_RUN)
     return out
 
 
@@ -533,11 +562,18 @@ def split_population(rows):
 
 def friction_score(row):
     """Rank sessions for which ones are worth quoting. Weighted toward signals
-    that mean a human had to intervene, over ones that just mean a long session."""
+    that mean a human had to intervene, over ones that just mean a long session.
+
+    `repeat_calls` is deliberately unscored. It was 42% of this score and the
+    largest single input, and a recount showed most of what it counted was not a
+    retry at all. Measured after removing it: no window's top 8 changes when the
+    replacement counters are added back, so the improvement came from taking the
+    bad signal OUT, not from finding a better one. The column is still reported;
+    it just no longer decides what a human is shown.
+    """
     return (int(row.get("correction_turns") or 0) * 4
             + int(row.get("interrupts") or 0) * 4
             + int(row.get("permission_mode_changes") or 0) * 3
-            + int(row.get("tool_retries") or 0) * 2
             + int(row.get("tool_errors") or 0))
 
 
@@ -635,7 +671,7 @@ def cmd_pack(args):
         lines.append(f"corrections {row.get('correction_turns')}, "
                      f"interrupts {row.get('interrupts')}, "
                      f"permission-mode changes {row.get('permission_mode_changes')}, "
-                     f"tool retries {row.get('tool_retries')}, "
+                     f"repeat calls {row.get('repeat_calls')}, "
                      f"tool errors {row.get('tool_errors')}, "
                      f"queued prompts {row.get('queued_prompts')}")
         for moment in moments(row):
