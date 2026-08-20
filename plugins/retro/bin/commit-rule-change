@@ -35,9 +35,19 @@ esac
 
 TARGET="$1"
 command -v git >/dev/null 2>&1 || { echo "git not found" >&2; exit 2; }
-[ -e "$TARGET" ] || { echo "no such path: $TARGET" >&2; exit 2; }
 
+# A deleted rule file is a rule change like any other, so a missing path is only
+# an error if the repository has never heard of it either. Found by using this
+# script: it refused to record a deleted memory file, which is exactly the kind
+# of change someone would later want a date for.
 DIR=$(dirname "$TARGET")
+if [ ! -e "$TARGET" ]; then
+    git -C "$DIR" ls-files --error-unmatch -- "$TARGET" >/dev/null 2>&1 || {
+        echo "no such path, and not tracked: $TARGET" >&2
+        exit 2
+    }
+fi
+
 REPO=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || {
     echo "not inside a git repository: $TARGET" >&2
     echo "put it under version control, or its edits will have no date" >&2
@@ -54,15 +64,20 @@ if [ -z "$REL" ]; then
     exit 0
 fi
 
-# Nothing staged and nothing changed means the edit was a no-op, or something
-# else already committed it. Either way there is nothing to do.
-if git -C "$REPO" diff --quiet -- "$TARGET" && \
-   git -C "$REPO" diff --cached --quiet -- "$TARGET"; then
+NAME=$(basename "$TARGET")
+
+# Stage first, then ask whether anything landed. Testing for changes BEFORE
+# staging was wrong in both directions and both were found by running it: `git
+# diff` cannot see a file that is not tracked yet, so a brand new rule file was
+# silently skipped, and a deleted one never reached the staging call at all.
+# `add -A` on a single path covers all three cases -- added, modified, removed.
+git -C "$REPO" add -A -- "$TARGET" || { echo "could not stage $TARGET" >&2; exit 1; }
+
+# Nothing staged means the edit was a no-op, or something else already committed
+# it. Either way there is nothing to do, and that is not a failure.
+if git -C "$REPO" diff --cached --quiet -- "$TARGET"; then
     exit 0
 fi
-
-NAME=$(basename "$TARGET")
-git -C "$REPO" add -- "$TARGET" || { echo "could not stage $TARGET" >&2; exit 1; }
 
 # Message through a file, never an -m string: a rule file's name is data from
 # outside this script, and a backtick in a double-quoted shell string executes.
