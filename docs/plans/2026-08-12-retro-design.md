@@ -135,9 +135,18 @@ recorded because the wrong version of each is the obvious one.
 ## Redaction
 
 Anything quoted into a pack passes through `redact()` first: home directory
-prefix, account username, email addresses, IPv4 addresses, and long
+prefix, account username, email addresses, IPv4 and MAC addresses, and long
 credential-shaped tokens. Redaction happens at write time — a pack on disk must
 already be safe, because redacting at read time is too late.
+
+**Correction, 2026-08-20.** The home-directory half of that was not true when it
+was written. The account-name rule ran first and rewrote the name *inside* the
+home path, after which no home-path rule could match its own text: identity was
+stripped and the whole directory tree below home survived into packs. The
+verification row below recorded a pass because it searched for the account name,
+which was genuinely gone — it never checked that the path had collapsed. Fixed
+by moving the account rule last; the ordering is now load-bearing and commented
+as such in the code.
 
 The work directory (`~/.retro/`, overridable via `RETRO_HOME`) sits outside every
 git repository. Harvested session history never becomes a tracked file.
