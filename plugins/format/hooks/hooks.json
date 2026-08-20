@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/inject-spec.sh\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/inject-spec.sh\""
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/inject-reminder.sh\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/inject-reminder.sh\""
           }
         ]
       }

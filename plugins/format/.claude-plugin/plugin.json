@@ -1,8 +1,9 @@
 {
   "name": "format",
   "version": "0.1.0",
-  "description": "Enforces a fixed reply structure - FINDINGS, PROBLEMS, ASKS, then everything else below a rule - via session-start injection and a per-turn reminder.",
+  "description": "Fixed reply structure — findings, problems, asks, then everything else below a rule — injected at session start and reinforced every turn.",
   "author": {
     "name": "polston"
-  }
+  },
+  "keywords": ["format", "output-style", "hooks", "response-structure"]
 }

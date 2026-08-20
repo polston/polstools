@@ -45,7 +45,7 @@ embedded markdown-to-terminal renderer:
    consistency.
 2. "Begin the reply with the literal line `# FINDINGS`" — the vendor-endorsed
    anti-preamble device now that response prefill is unsupported.
-3. Fixed sections that are always present (`1. None.` when empty) —
+3. Fixed sections that are always present (`**1.** None.` when empty) —
    structural constraints are the best-followed constraint family in
    IFEval-style measurements; optional sections invite drift.
 4. Word caps ("at most 15 words") kept from the operator's spec but treated

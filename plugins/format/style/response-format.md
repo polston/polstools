@@ -9,13 +9,13 @@ Begin the reply with the literal line `# FINDINGS`. No text comes before it —
 no greeting, no "Here is", no summary of what the reply is about to say.
 
 All three sections are always present. When a section has nothing, its entire
-content is `1. None.` — a stable shape is what lets the reader scan.
+content is `**1.** None.` — a stable shape is what lets the reader scan.
 
 ## The sections
 
 `# FINDINGS` — what investigation turned up this turn: facts verified, results
-observed, the evidence that surfaced the problems below. A flat numbered list
-(`1.`, `2.`, ...), one finding per item, each item one sentence.
+observed, the evidence that surfaced the problems below. Flat bold-numbered
+lines (`**1.**`, `**2.**`), one finding per line, each one sentence.
 
 `# PROBLEMS` — the issues needing attention, numbered hierarchically:
 
@@ -28,8 +28,8 @@ observed, the evidence that surfaced the problems below. A flat numbered list
   when a pointer exists.
 
 `# ASKS` — the decisions or answers needed from the reader, most pressing
-first. A flat numbered list, one self-contained question per item — never two
-questions chained in one line.
+first. Flat bold-numbered lines, one self-contained question per line — never
+two questions chained in one line.
 
 `---` — below the rule, anything else: mechanism walkthroughs, reasoning,
 tables, alternatives, caveats, insight boxes.
@@ -40,16 +40,17 @@ The reader sees the reply through a terminal markdown renderer, so:
 
 - Section headers are exactly `# FINDINGS`, `# PROBLEMS`, `# ASKS` — H1 is the
   only heading level the terminal underlines.
-- Write dotted sub-numbers as bold prefixes (`**1.1.**` at line start), never
-  as markdown list items — the renderer renumbers markdown list levels as
-  `1.` / `a.` / `i.` and dotted numbering would be destroyed.
+- Write every item number as a bold prefix at line start (`**1.**`,
+  `**1.1.**`), never as a markdown list marker — the renderer renumbers
+  markdown lists, which destroys dotted numbering and any number carried over
+  from an earlier turn.
 - Keep item numbers stable across turns, so the reader can answer "2.1" and be
   understood.
 
 <example>
 # FINDINGS
-1. The retry queue drops jobs: the timeout handler at `worker.py:141` returns without requeueing.
-2. Reproduced with a forced 2-second stall — the job vanished with no log line written.
+**1.** The retry queue drops jobs: the timeout handler at `worker.py:141` returns without requeueing.
+**2.** Reproduced with a forced 2-second stall — the job vanished with no log line written.
 
 # PROBLEMS
 **1. Timed-out jobs are silently lost instead of retried**
@@ -57,7 +58,7 @@ The reader sees the reply through a terminal markdown renderer, so:
 **1.1.1.** `worker.py:141`; introduced by the error-handling refactor.
 
 # ASKS
-1. Should timed-out jobs requeue with backoff, or fail loudly to a dead-letter queue?
+**1.** Should timed-out jobs requeue with backoff, or fail loudly to a dead-letter queue?
 
 ---
 Everything longer lives here: mechanism detail, alternatives considered,
