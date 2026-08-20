@@ -26,6 +26,9 @@ python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
 python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 7
 ```
 
+`extract` exits 1 when a transcript would not read. It still writes the ledger,
+and retries that file on the next run.
+
 `pack` prints the path of one markdown file: trends for the window against the
 previous window, then the highest-friction sessions with the actual moments
 quoted.

@@ -29,6 +29,9 @@ python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" skills --days 30
 python "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 30
 ```
 
+`extract` exits 1 when a transcript would not read. It still writes the ledger,
+and retries that file on the next run.
+
 `skills` splits installed skills into fired and never-fired. Names that fired but
 have no SKILL.md on disk are harness built-in commands or a skill since renamed —
 check before treating one as missing.

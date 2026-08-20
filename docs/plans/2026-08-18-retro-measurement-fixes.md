@@ -260,6 +260,19 @@ expected not to move.
 | no-config behaviour | expect byte-identical to today |
 | docs made false | module docstring, the 2026-08-12 design's verification table, and the `extract` output described in it |
 
+### Fix 1 — measured after implementation
+
+Measured 2026-08-19 against the live corpus, read-only, from an isolated work
+directory. The corpus had grown to 1,925 files by then.
+
+| Check | Before | After |
+|---|---|---|
+| unreadable / not-transcript split | 22 / 0 | 0 / 22 |
+| counts sum to the file total | latent hole: a file whose `stat()` fails is in no bucket, and none currently does | they sum (1,903 + 0 + 22 + 0 = 1,925), and a synthetic `stat()` failure now counts as unreadable |
+| exit code with an unreadable file | 0 | 1, and the file is retried on the next run |
+| ledger rows | 1,903 | 1,903, identical for all 1,898 rows older than the current day |
+| full rebuild | 5.8 s over 1,925 files | 5.9 s |
+
 ## Non-goals
 
 No database, no daemon, no scheduler. No deduplication of sessions that appear

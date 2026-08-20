@@ -153,7 +153,7 @@ Measured on the live corpus, 2026-08-16, after the metric corrections above:
 
 | Check | Result |
 |---|---|
-| Full rebuild over 1,800 transcripts | 5.9 s, 1,778 rows, 22 unreadable |
+| Full rebuild over 1,800 transcripts | 5.9 s, 1,778 rows, 22 files that hold no conversation |
 | Immediate incremental re-run | 0.16 s |
 | Row split | 386 session rows, 1,392 subagent rows |
 | Ledger totals vs an independent probe | `permission_mode_changes` 68/68 — agree |
@@ -167,7 +167,10 @@ Measured on the live corpus, 2026-08-16, after the metric corrections above:
 
 Open:
 
-- The 22 unreadable transcripts are counted but not characterized.
+- The 22 files this table calls unreadable were measured on 2026-08-19: every
+  one opened and decoded cleanly and holds no record of type `user` or
+  `assistant`. `extract` now reports that outcome under its own name and keeps
+  `unreadable` for files whose bytes would not read.
 - `tool_retries` and `correction_turns` are heuristics with tunable thresholds
   and have not been validated against a hand-labelled sample. Their absolute
   values should not be trusted; their movement over time is the usable part.
