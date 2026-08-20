@@ -31,7 +31,11 @@ Windows, `~/.local/state` elsewhere). `/format:off` and `/format:on`
 flip the flag — the hook side reads the session id from the hook input JSON,
 the command side from `CLAUDE_CODE_SESSION_ID` (present in the tool
 environment). Unreadable hook input fails open to ON; flags older than 14
-days are pruned on every toggle.
+days are pruned on every toggle. A bad payload makes `gate` exit 1, not 2 —
+exit 2 from a UserPromptSubmit hook blocks processing and erases the user's
+prompt. One portability caveat: the wiring invokes `python`; on a host where
+only `python3` exists, hooks.json and both command files need that one-word
+swap.
 
 ## Renderer facts the format is built around
 

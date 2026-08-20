@@ -7,7 +7,9 @@ gate <payload>  hook entry: print <payload> unless this session is toggled
 off | on        toggle the current session (id from CLAUDE_CODE_SESSION_ID)
 status          print the current session's state
 
-Exit: 0 ran clean, 2 could not run.
+Exit: 0 ran clean; toggle subcommands exit 2 when they cannot run. gate exits
+1 on a bad payload instead — exit 2 from a UserPromptSubmit hook blocks
+processing and erases the user's prompt, which a broken payload must never do.
 """
 import json
 import os
@@ -59,7 +61,7 @@ def gate(payload):
             sys.stdout.write(f.read())
     except OSError as e:
         print("format-ctl: cannot read payload: %s" % e, file=sys.stderr)
-        sys.exit(2)
+        sys.exit(1)
 
 
 def main():

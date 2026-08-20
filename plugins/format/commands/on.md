@@ -1,5 +1,6 @@
 ---
 description: Re-enable the response format for this session
+allowed-tools: Bash(python "${CLAUDE_PLUGIN_ROOT}/bin/format-ctl" *)
 ---
 
 Run `python "${CLAUDE_PLUGIN_ROOT}/bin/format-ctl" on` now. Then confirm to

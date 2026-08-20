@@ -1,5 +1,5 @@
 {
-  "description": "Injects the response-format spec at session start and a short reminder every turn (per-turn reinjection counters within-session drift). The gate script prints plain stdout, which becomes context, unless the session is toggled off via /format:off; a missing payload surfaces as a failed hook.",
+  "description": "Injects the response-format spec at session start and a short reminder every turn (per-turn reinjection counters within-session drift). The gate script prints plain stdout, which becomes context, unless the session is toggled off via /format:off; a missing payload shows a hook error without blocking the prompt.",
   "hooks": {
     "SessionStart": [
       {
