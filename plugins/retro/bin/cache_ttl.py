@@ -47,10 +47,7 @@ def is_main_thread(path, projects_dir):
     positional; isSidechain confirms it but never contradicts it, because the
     flag is absent from every top-level file.
     """
-    try:
-        return path.parent.parent == projects_dir
-    except Exception:
-        return False
+    return path.parent.parent == projects_dir
 
 
 def _rows(path, main, skipped):
@@ -225,6 +222,23 @@ def band_table(paired):
     return table
 
 
+def _write_band_table(stream, bands):
+    """Render one gap-band table: a header row, then one row per non-empty
+    band. Shared by the subagent validation table and the main-thread gap
+    table, which differ only in which `band_table()` result they pass in."""
+    stream.write("  %-8s %9s %9s %12s %12s\n"
+                 % ("band", "requests", "zero read", "mean read", "mean write"))
+    for _, _, name in BANDS:
+        bucket = bands[name]
+        if not bucket["n"]:
+            continue
+        stream.write("  %-8s %9d %8.1f%% %12d %12d\n"
+                     % (name, bucket["n"],
+                        100.0 * bucket["zero_read"] / bucket["n"],
+                        bucket["read"] // bucket["n"],
+                        bucket["write"] // bucket["n"]))
+
+
 # USD per token, keyed by the exact message.model string in transcripts.
 # Read from the model pricing table on the page below. Re-check the date
 # before trusting a dollar figure: prices change and this table does not.
@@ -299,6 +313,18 @@ def evaluate(chained):
     return result
 
 
+def _project_dir_key(path, projects_dir):
+    """The first path segment of `path` relative to projects_dir.
+
+    That segment is the project directory a transcript lives under. Falls
+    back to "unknown" when `path` does not sit under `projects_dir` at all.
+    """
+    try:
+        return path.relative_to(projects_dir).parts[0]
+    except (ValueError, IndexError):
+        return "unknown"
+
+
 def project_label(path, projects_dir):
     """A stable, non-reversible label for a project directory.
 
@@ -309,10 +335,7 @@ def project_label(path, projects_dir):
     own, because it rewrites the home path and username but passes other
     path segments through verbatim.
     """
-    try:
-        raw = path.relative_to(projects_dir).parts[0]
-    except (ValueError, IndexError):
-        raw = "unknown"
+    raw = _project_dir_key(path, projects_dir)
     return "project-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
 
 
@@ -361,7 +384,32 @@ def _early_result(stream, days, as_json, reason, message, exit_code,
     return exit_code
 
 
-def report(projects_dir, days, project, as_json, stream):
+def _window_truncated_openers(unwindowed_requests, windowed_main_chains, days):
+    """Count chain openers created by the --days boundary, not a real gap.
+
+    `within_window` filters requests before chaining, so a request whose true
+    predecessor falls before the window is chained as if it were the first
+    request of its session -- gap_seconds correctly cannot see the missing
+    predecessor and reports None, and evaluate() correctly counts it as an
+    opener. But that undifferentiated total conflates two different things: a
+    session that genuinely started there, and a session that merely continues
+    outside the window. This counts only the second kind, one per transcript
+    whose windowed first request is not also its all-time first request.
+    """
+    if days is None:
+        return 0
+    full_chains = chains(unwindowed_requests, main_only=True)
+    truncated = 0
+    for source, windowed_chain in windowed_main_chains.items():
+        if not windowed_chain:
+            continue
+        full_chain = full_chains.get(source) or []
+        if full_chain and full_chain[0]["rid"] != windowed_chain[0]["rid"]:
+            truncated += 1
+    return truncated
+
+
+def report(projects_dir, days, project, as_json, stream, now=None):
     """Measure the corpus and print the verdict. Returns an exit code."""
     if not projects_dir.is_dir():
         return _early_result(
@@ -375,10 +423,11 @@ def report(projects_dir, days, project, as_json, stream):
             stream, days, as_json, "no_readable_transcripts",
             "cannot run: no readable transcripts\n", EXIT_CANNOT_RUN)
 
-    requests = within_window(requests, days)
     if project:
         requests = {rid: record for rid, record in requests.items()
                     if project in str(record["source"])}
+    unwindowed_requests = requests
+    requests = within_window(requests, days, now)
 
     main_chains = chains(requests, main_only=True)
     sub_chains = chains(requests, main_only=False)
@@ -432,6 +481,8 @@ def report(projects_dir, days, project, as_json, stream):
             message, EXIT_CLEAN, extra)
     keep_current = result["ratio"] >= 1.0
     verdict_code = EXIT_CLEAN if keep_current else EXIT_FLAGGED
+    window_truncated = _window_truncated_openers(
+        unwindowed_requests, main_chains, days)
 
     # Unpriced models are counted across BOTH splits, with token volume. The
     # cost model runs on main chains only, so a subagent-only unknown model
@@ -451,10 +502,7 @@ def report(projects_dir, days, project, as_json, stream):
     # Sensitivity 1: group gaps by project directory instead of by transcript.
     dir_chains = {}
     for record in main_records:
-        try:
-            key = record["source"].relative_to(projects_dir).parts[0]
-        except (ValueError, IndexError):
-            key = "unknown"
+        key = _project_dir_key(record["source"], projects_dir)
         dir_chains.setdefault(key, []).append(record)
     for rows in dir_chains.values():
         rows.sort(key=lambda item: item["start"])
@@ -495,10 +543,10 @@ def report(projects_dir, days, project, as_json, stream):
             "decisive_read_tokens": result["decisive_read"],
             "neutral_read_tokens": result["neutral_read"],
             "session_openers": result["openers"],
+            "session_openers_window_truncated": window_truncated,
             "unpriced_requests": dict(unpriced_all),
             "unpriced_tokens": dict(unpriced_tokens),
             "pinned_to_5m_models": sorted(pinned),
-            "requests_by_project": dict(by_project),
             "snapshot_earliest": min(r["start"] for r in main_records).isoformat(),
             "snapshot_latest": max(r["start"] for r in main_records).isoformat(),
             "sensitivity_ratio_grouped_by_directory": round(dir_result["ratio"], 3),
@@ -536,35 +584,15 @@ def report(projects_dir, days, project, as_json, stream):
 
     stream.write("validation: subagents run on the 5m TTL, so their gap bands\n")
     stream.write("show the counterfactual directly rather than modelled.\n")
-    stream.write("  %-8s %9s %9s %12s %12s\n"
-                 % ("band", "requests", "zero read", "mean read", "mean write"))
     sub_bands = band_table([pair for chain in sub_chains.values()
                             for pair in gap_seconds(chain)])
-    for _, _, name in BANDS:
-        bucket = sub_bands[name]
-        if not bucket["n"]:
-            continue
-        stream.write("  %-8s %9d %8.1f%% %12d %12d\n"
-                     % (name, bucket["n"],
-                        100.0 * bucket["zero_read"] / bucket["n"],
-                        bucket["read"] // bucket["n"],
-                        bucket["write"] // bucket["n"]))
+    _write_band_table(stream, sub_bands)
     stream.write("\n")
 
     stream.write("main-thread gap bands\n")
-    stream.write("  %-8s %9s %9s %12s %12s\n"
-                 % ("band", "requests", "zero read", "mean read", "mean write"))
     main_bands = band_table([pair for chain in main_chains.values()
                              for pair in gap_seconds(chain)])
-    for _, _, name in BANDS:
-        bucket = main_bands[name]
-        if not bucket["n"]:
-            continue
-        stream.write("  %-8s %9d %8.1f%% %12d %12d\n"
-                     % (name, bucket["n"],
-                        100.0 * bucket["zero_read"] / bucket["n"],
-                        bucket["read"] // bucket["n"],
-                        bucket["write"] // bucket["n"]))
+    _write_band_table(stream, main_bands)
     stream.write("\n")
 
     stream.write("cost, cache-related only (not total spend)\n")
@@ -578,8 +606,11 @@ def report(projects_dir, days, project, as_json, stream):
     stream.write("  their read tokens      %12d\n" % result["decisive_read"])
     stream.write("  reads costing the same %12d   (gaps under 5m)\n"
                  % result["neutral_read"])
-    stream.write("  session openers        %12d   (unchanged either way)\n\n"
+    stream.write("  session openers        %12d   (unchanged either way)\n"
                  % result["openers"])
+    stream.write("  window-truncated       %12d   (subset above; --days cut off\n"
+                 % window_truncated)
+    stream.write("                                       the true predecessor)\n\n")
 
     stream.write("requests by project (labels are hashes, never names)\n")
     for label, count in sorted(by_project.items()):

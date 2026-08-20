@@ -530,6 +530,10 @@ class TestPrivacyAndCli(unittest.TestCase):
                 "no main-thread requests in this window; nothing to decide\n")
 
     def test_json_output_carries_no_project_identifiers(self):
+        """Spec privacy rule 3: the --json payload carries no project
+        identifiers at all -- not even the hashed label rule 2 permits in
+        displayed output. No project field, and none of the directory name's
+        pieces, anywhere in the payload text."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixtures.build_corpus(root, [
@@ -544,14 +548,68 @@ class TestPrivacyAndCli(unittest.TestCase):
             self.assertNotIn("secretproject", payload)
             self.assertNotIn("someone", payload)
             self.assertNotIn("C--", payload)
-            # Asserting only absence passes even when no label is emitted at
-            # all, so it could never fail for the reason it names. Require the
-            # hashed label to be present, and to be this directory's hash.
             body = json.loads(payload)
+            self.assertNotIn("requests_by_project", body)
             expected = cache_ttl.project_label(
                 root / "C--Users-someone-git-secretproject" / "s.jsonl", root)
-            self.assertIn(expected, body["requests_by_project"])
-            self.assertEqual(body["requests_by_project"][expected], 2)
+            self.assertNotIn(expected, payload)
+
+    def test_plain_text_output_carries_the_hashed_project_label(self):
+        """Spec privacy rule 2: a hashed label is permitted in displayed
+        (plain-text) output. Require the correctly-hashed label to actually
+        be present -- asserting only the directory name's absence would pass
+        even if the label were dropped entirely."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "C--Users-someone-git-secretproject",
+                 "session": "s", "rows": [
+                     fixtures.usage_row("a", "claude-opus-5", 100, 5, 0, 1, T0),
+                     fixtures.usage_row("b", "claude-opus-5", 100, 5, 0, 1,
+                                        T0 + timedelta(seconds=600))]}])
+            stream = io.StringIO()
+            cache_ttl.report(root, None, None, False, stream)
+            text = stream.getvalue()
+            self.assertNotIn("secretproject", text)
+            self.assertNotIn("someone", text)
+            self.assertNotIn("C--", text)
+            expected = cache_ttl.project_label(
+                root / "C--Users-someone-git-secretproject" / "s.jsonl", root)
+            self.assertIn(expected, text)
+
+    def test_window_truncated_openers_are_counted_separately(self):
+        """A request whose true predecessor falls before the --days boundary
+        is chained as an opener by within_window's filter-before-chain side
+        effect, same as a request that genuinely starts a session. The
+        report must tell the two apart: one straddling session (window
+        truncation) and one session wholly inside the window (a genuine
+        opener)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = T0 + timedelta(days=10)
+            fixtures.build_corpus(root, [
+                # Straddles the boundary: "before" falls outside a 5-day
+                # window measured from `now`, "after" falls inside it. Its
+                # true predecessor is cut, so "after" becomes an opener by
+                # truncation rather than a real session start.
+                {"project": "p", "session": "straddles", "rows": [
+                    fixtures.usage_row("before", "claude-opus-5", 1000, 100,
+                                       0, 1, T0),
+                    fixtures.usage_row("after", "claude-opus-5", 1000, 100,
+                                       0, 1, now - timedelta(days=1)),
+                ]},
+                # Wholly inside the window: a genuine session start with no
+                # predecessor at all, inside or outside the window.
+                {"project": "p", "session": "genuine", "rows": [
+                    fixtures.usage_row("fresh", "claude-opus-5", 1000, 100,
+                                       0, 1, now - timedelta(hours=1)),
+                ]},
+            ])
+            stream = io.StringIO()
+            code = cache_ttl.report(root, 5, None, True, stream, now=now)
+            body = json.loads(stream.getvalue())
+            self.assertEqual(body["session_openers"], 2)
+            self.assertEqual(body["session_openers_window_truncated"], 1)
 
     def test_verdict_flags_when_the_counterfactual_is_cheaper(self):
         """All gaps under five minutes: nothing is ever rewritten, so the
