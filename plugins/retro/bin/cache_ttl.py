@@ -332,17 +332,48 @@ def _money(value):
     return "$%s" % format(round(value, 2), ",.2f")
 
 
+def _early_result(stream, days, as_json, reason, message, exit_code,
+                   extra=None):
+    """Emit one of the early, no-verdict outcomes in either output shape.
+
+    A caller passing --json must always get valid JSON back, including on
+    the "ordinary empty result" and "cannot run" paths -- an exit code
+    without parseable output on the machine-readable path is the same
+    silent-wrong-result failure this script exists to prevent. `reason` is
+    a stable machine-readable code; `message` is the plain-text sentence(s)
+    unchanged from before this existed. `keep_current_ttl` is always present
+    in the JSON payload, set to null, because no verdict was computed --
+    that is the same key a full report carries, just without a value to put
+    in it.
+    """
+    if as_json:
+        payload = {
+            "window_days": days,
+            "reason": reason,
+            "keep_current_ttl": None,
+        }
+        if extra:
+            payload.update(extra)
+        json.dump(payload, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    else:
+        stream.write(message)
+    return exit_code
+
+
 def report(projects_dir, days, project, as_json, stream):
     """Measure the corpus and print the verdict. Returns an exit code."""
     if not projects_dir.is_dir():
-        stream.write("cannot run: no session directory at %s\n"
-                     % projects_dir.name)
-        return EXIT_CANNOT_RUN
+        return _early_result(
+            stream, days, as_json, "no_session_directory",
+            "cannot run: no session directory at %s\n" % projects_dir.name,
+            EXIT_CANNOT_RUN)
 
     requests, skipped = collect(projects_dir)
     if not requests and not skipped:
-        stream.write("cannot run: no readable transcripts\n")
-        return EXIT_CANNOT_RUN
+        return _early_result(
+            stream, days, as_json, "no_readable_transcripts",
+            "cannot run: no readable transcripts\n", EXIT_CANNOT_RUN)
 
     requests = within_window(requests, days)
     if project:
@@ -358,8 +389,10 @@ def report(projects_dir, days, project, as_json, stream):
     if not main_records:
         # A window or project filter that matches nothing is an ordinary
         # result, not a failure. Exit code 2 is for absent input only.
-        stream.write("no main-thread requests in this window; nothing to decide\n")
-        return EXIT_CLEAN
+        return _early_result(
+            stream, days, as_json, "no_main_thread_requests",
+            "no main-thread requests in this window; nothing to decide\n",
+            EXIT_CLEAN)
     main_read = sum(r["read"] for r in main_records)
     sub_read = sum(r["read"] for r in sub_records)
     w1_total = sum(r["w1"] for r in main_records)
@@ -386,13 +419,17 @@ def report(projects_dir, days, project, as_json, stream):
         # zero when every main-thread model is missing from the price table,
         # and the ratio then reads 0.0, which renders as a confident "switch
         # the TTL" produced from no priced data at all.
-        stream.write("no priced main-thread requests in this window; "
-                     "nothing to decide\n")
+        message = ("no priced main-thread requests in this window; "
+                   "nothing to decide\n")
+        extra = None
         if result["unpriced"]:
-            stream.write("every main-thread request used a model with no "
-                         "price row: %s\n"
-                         % ", ".join(sorted(result["unpriced"])))
-        return EXIT_CLEAN
+            message += ("every main-thread request used a model with no "
+                        "price row: %s\n"
+                        % ", ".join(sorted(result["unpriced"])))
+            extra = {"unpriced_requests": dict(result["unpriced"])}
+        return _early_result(
+            stream, days, as_json, "no_priced_main_thread_requests",
+            message, EXIT_CLEAN, extra)
     keep_current = result["ratio"] >= 1.0
     verdict_code = EXIT_CLEAN if keep_current else EXIT_FLAGGED
 

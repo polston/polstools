@@ -517,8 +517,17 @@ class TestPrivacyAndCli(unittest.TestCase):
                 {"project": "p", "session": "s", "rows": [
                     fixtures.usage_row("old", "claude-opus-5", 1, 1, 0, 1,
                                        T0 - timedelta(days=900))]}])
-            code = cache_ttl.report(root, 1, None, False, io.StringIO())
+            stream = io.StringIO()
+            code = cache_ttl.report(root, 1, None, False, stream)
             self.assertEqual(code, cache_ttl.EXIT_CLEAN)
+            # Pinned to the exact sentence so this guard cannot be deleted
+            # silently: the observed<=0.0 guard below it would still catch
+            # this same empty case and keep the exit code green, but with a
+            # less accurate message ("no priced main-thread requests"
+            # instead of "no main-thread requests").
+            self.assertEqual(
+                stream.getvalue(),
+                "no main-thread requests in this window; nothing to decide\n")
 
     def test_json_output_carries_no_project_identifiers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -556,6 +565,69 @@ class TestPrivacyAndCli(unittest.TestCase):
                 {"project": "p", "session": "s", "rows": rows}])
             code = cache_ttl.report(root, None, None, False, io.StringIO())
             self.assertEqual(code, cache_ttl.EXIT_FLAGGED)
+
+
+class TestJsonOnEarlyReturns(unittest.TestCase):
+    """A --json caller must always get parseable JSON back, including on the
+    early, no-verdict return paths. Reported against commit 40bb59f: those
+    paths wrote a plain-English sentence and exited 0 regardless of
+    as_json, so `cache_ttl.py report --json` could exit clean with output
+    that fails json.loads -- exactly the silent-wrong-result failure this
+    tool exists to prevent. Every existing guard test before this class
+    passed as_json=False, which is why nothing caught it."""
+
+    def test_json_output_is_valid_when_no_main_thread_requests_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("a", "claude-opus-5", 100, 5, 0, 1, T0)]}])
+            stream = io.StringIO()
+            code = cache_ttl.report(root, None, "does-not-match-anything",
+                                    True, stream)
+            self.assertEqual(code, cache_ttl.EXIT_CLEAN)
+            body = json.loads(stream.getvalue())
+            self.assertEqual(body["reason"], "no_main_thread_requests")
+            self.assertIsNone(body["keep_current_ttl"])
+
+    def test_json_output_is_valid_when_every_main_thread_model_is_unpriced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": [
+                    fixtures.usage_row("x", "claude-zzz-unknown", 5, 1, 0, 1,
+                                       T0),
+                    fixtures.usage_row("y", "claude-zzz-unknown", 5, 1, 0, 1,
+                                       T0 + timedelta(seconds=30))]}])
+            stream = io.StringIO()
+            code = cache_ttl.report(root, None, None, True, stream)
+            self.assertEqual(code, cache_ttl.EXIT_CLEAN)
+            body = json.loads(stream.getvalue())
+            self.assertEqual(body["reason"], "no_priced_main_thread_requests")
+            self.assertIsNone(body["keep_current_ttl"])
+            self.assertIn("claude-zzz-unknown", body["unpriced_requests"])
+
+    def test_json_output_is_valid_when_the_projects_directory_is_missing(self):
+        """Lower severity than the exit-0 guards above -- exit 2 already
+        tells an automated caller something is wrong -- but a --json caller
+        should still get JSON rather than a sentence."""
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nope"
+            stream = io.StringIO()
+            code = cache_ttl.report(missing, None, None, True, stream)
+            self.assertEqual(code, cache_ttl.EXIT_CANNOT_RUN)
+            body = json.loads(stream.getvalue())
+            self.assertEqual(body["reason"], "no_session_directory")
+
+    def test_json_output_is_valid_when_there_are_no_readable_transcripts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "empty-project").mkdir()
+            stream = io.StringIO()
+            code = cache_ttl.report(root, None, None, True, stream)
+            self.assertEqual(code, cache_ttl.EXIT_CANNOT_RUN)
+            body = json.loads(stream.getvalue())
+            self.assertEqual(body["reason"], "no_readable_transcripts")
 
 
 if __name__ == "__main__":
