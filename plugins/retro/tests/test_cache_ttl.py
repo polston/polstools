@@ -173,5 +173,66 @@ class TestChains(unittest.TestCase):
             self.assertEqual(table[">60m"]["n"], 1)
 
 
+class TestCostModel(unittest.TestCase):
+    def _evaluate(self, offsets, read=1000, w1=100, w5=0,
+                  model="claude-opus-5"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [fixtures.usage_row("r%d" % i, model, read, w1, w5, 1,
+                                       T0 + timedelta(seconds=off))
+                    for i, off in enumerate(offsets)]
+            fixtures.build_corpus(root, [
+                {"project": "p", "session": "s", "rows": rows}])
+            requests, _ = cache_ttl.collect(root)
+            return cache_ttl.evaluate(cache_ttl.chains(requests))
+
+    def test_gap_under_five_minutes_costs_the_same_read_under_both_policies(self):
+        result = self._evaluate([0, 60])
+        # Second request: 1h policy pays 100 tokens at the 1h write rate plus
+        # 1000 read; 5m policy pays the same tokens at the 5m write rate.
+        expected_observed = (100 * 10.00e-6 + 1000 * 0.50e-6) * 2
+        expected_counter = (100 * 6.25e-6 + 1000 * 0.50e-6) * 2
+        self.assertAlmostEqual(result["observed"], expected_observed, places=9)
+        self.assertAlmostEqual(result["counterfactual"], expected_counter,
+                               places=9)
+        self.assertLess(result["ratio"], 1.0)
+
+    def test_gap_past_five_minutes_rewrites_the_prefix_under_the_counterfactual(self):
+        result = self._evaluate([0, 600])
+        opener_obs = 100 * 10.00e-6 + 1000 * 0.50e-6
+        opener_cf = 100 * 6.25e-6 + 1000 * 0.50e-6
+        # The missing request rewrites read + writes at the 5m rate, no read.
+        miss_cf = (1000 + 100) * 6.25e-6
+        self.assertAlmostEqual(result["counterfactual"], opener_cf + miss_cf,
+                               places=9)
+        self.assertAlmostEqual(result["observed"], opener_obs * 2, places=9)
+        self.assertGreater(result["ratio"], 1.0)
+        self.assertEqual(result["bands"]["5-60m"], 1)
+
+    def test_session_opener_takes_the_unchanged_branch(self):
+        result = self._evaluate([0])
+        self.assertEqual(result["openers"], 1)
+        self.assertEqual(sum(result["bands"].values()), 0)
+
+    def test_decisive_and_neutral_read_tokens_are_separated(self):
+        result = self._evaluate([0, 60, 600])
+        self.assertEqual(result["neutral_read"], 1000)
+        self.assertEqual(result["decisive_read"], 1000)
+
+    def test_unknown_model_is_reported_not_priced_at_a_default(self):
+        result = self._evaluate([0, 60], model="claude-unknown-9")
+        self.assertEqual(result["observed"], 0.0)
+        self.assertEqual(result["unpriced"]["claude-unknown-9"], 2)
+
+    def test_price_rows_hold_the_exact_published_multipliers(self):
+        """Every row is base x1.25 (5m), x2.0 (1h), x0.1 (read). Expressed
+        against the 5m write so no base column is needed: 1h is 1.6x the 5m
+        write and a read is 0.08x it. An ordering-only assertion would let a
+        tenfold typo through."""
+        for model, (w5, w1, read) in cache_ttl.PRICES.items():
+            self.assertAlmostEqual(w1, w5 * 1.6, places=12, msg=model)
+            self.assertAlmostEqual(read, w5 * 0.08, places=12, msg=model)
+
+
 if __name__ == "__main__":
     unittest.main()

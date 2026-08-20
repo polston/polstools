@@ -221,3 +221,77 @@ def band_table(paired):
         if record["read"] == 0:
             bucket["zero_read"] += 1
     return table
+
+
+# USD per token, keyed by the exact message.model string in transcripts.
+# Read from the model pricing table on the page below. Re-check the date
+# before trusting a dollar figure: prices change and this table does not.
+PRICES_VERIFIED_ON = "2026-08-19"
+PRICES_SOURCE = "https://platform.claude.com/docs/en/about-claude/pricing"
+PRICES = {
+    # model id:                    (write_5m,  write_1h,  read)
+    "claude-fable-5":              (12.50e-6, 20.00e-6, 1.00e-6),
+    "claude-opus-5":               (6.25e-6, 10.00e-6, 0.50e-6),
+    "claude-opus-4-8":             (6.25e-6, 10.00e-6, 0.50e-6),
+    "claude-opus-4-7":             (6.25e-6, 10.00e-6, 0.50e-6),
+    "claude-sonnet-5":             (2.50e-6, 4.00e-6, 0.20e-6),
+    "claude-sonnet-4-6":           (3.75e-6, 6.00e-6, 0.30e-6),
+    "claude-sonnet-4-5-20250929":  (3.75e-6, 6.00e-6, 0.30e-6),
+    "claude-haiku-4-5-20251001":   (1.25e-6, 2.00e-6, 0.10e-6),
+}
+
+
+def evaluate(chained):
+    """Price every request under the policy that ran and the counterfactual.
+
+    Observed policy, per request:
+        w1 * price_1h + w5 * price_5m + read * price_read
+
+    Counterfactual, forcing the five-minute TTL: every write becomes a
+    five-minute write, and whether the request still hits depends on the gap.
+    Within five minutes it hits and the read stands. Past five minutes the
+    prefix is gone, so the tokens it would have read are rewritten instead --
+    the rewrite subsumes both the read and the increment, which is why the
+    miss branch has no read term.
+
+    Session openers take the unchanged branch. A request whose model has no
+    price is counted into `unpriced` and contributes no cost, but stays in
+    the chain so it cannot invent a longer gap for its successor.
+    """
+    result = {
+        "observed": 0.0,
+        "counterfactual": 0.0,
+        "openers": 0,
+        "decisive_read": 0,
+        "neutral_read": 0,
+        "bands": Counter(),
+        "unpriced": Counter(),
+    }
+    for chain in chained.values():
+        for record, gap in gap_seconds(chain):
+            price = PRICES.get(record["model"])
+            if price is None:
+                result["unpriced"][record["model"]] += 1
+                continue
+            write_5m, write_1h, read_price = price
+            read, w1, w5 = record["read"], record["w1"], record["w5"]
+            result["observed"] += w1 * write_1h + w5 * write_5m + read * read_price
+            hit_cost = (w1 + w5) * write_5m + read * read_price
+            if gap is None:
+                result["openers"] += 1
+                result["counterfactual"] += hit_cost
+            elif gap <= FIVE_MINUTES:
+                result["counterfactual"] += hit_cost
+                result["neutral_read"] += read
+                result["bands"]["0-5m"] += 1
+            else:
+                result["counterfactual"] += (read + w1 + w5) * write_5m
+                if gap <= ONE_HOUR:
+                    result["bands"]["5-60m"] += 1
+                    result["decisive_read"] += read
+                else:
+                    result["bands"][">60m"] += 1
+    result["delta"] = result["counterfactual"] - result["observed"]
+    result["ratio"] = (result["counterfactual"] / result["observed"]
+                       if result["observed"] else 0.0)
+    return result
