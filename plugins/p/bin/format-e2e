@@ -20,8 +20,10 @@ def check(name, ok, detail=""):
     results.append((name, ok, detail))
 
 
-def run(cmd, stdin_text=None, env_extra=None, binary=False):
+def run(cmd, stdin_text=None, env_extra=None, env_remove=(), binary=False):
     env = dict(os.environ)
+    for name in env_remove:
+        env.pop(name, None)
     if env_extra:
         env.update(env_extra)
     kwargs = {} if binary else {"text": True, "encoding": "utf-8"}
@@ -68,14 +70,25 @@ if os.path.isfile(mk_path):
     pj = json.load(open(os.path.join(ROOT, ".claude-plugin", "plugin.json"),
                         encoding="utf-8"))
     mk = json.load(open(mk_path, encoding="utf-8"))
-    entry = [p for p in mk["plugins"] if p["name"] == "polstools"][0]
+    entry = [p for p in mk["plugins"] if p["name"] == "p"][0]
     check("marketplace/plugin.json version match", entry["version"] == pj["version"])
     check("marketplace/plugin.json description match",
           entry["description"] == pj["description"])
     check("marketplace/plugin.json keywords match",
           entry.get("keywords") == pj.get("keywords"))
 
-# 3. Both gates print their payload byte-exactly, exit 0
+# 3. Native format skills exist and the legacy commands are gone
+skill_scripts = {
+    mode: os.path.join(ROOT, "skills", "fmt-" + mode, "scripts", "toggle.py")
+    for mode in ("off", "on")
+}
+for mode, path in skill_scripts.items():
+    check("fmt-%s native skill script exists" % mode, os.path.isfile(path), path)
+check("legacy off/on commands are absent",
+      not os.path.exists(os.path.join(ROOT, "commands", "off.md"))
+      and not os.path.exists(os.path.join(ROOT, "commands", "on.md")))
+
+# 4. Both gates print their payload byte-exactly, exit 0
 for ev in ("SessionStart", "UserPromptSubmit"):
     want = open(payloads[ev], encoding="utf-8").read()
     r = run(hook_cmd(commands[ev]), stdin_text=json.dumps({"session_id": SID}))
@@ -84,7 +97,7 @@ for ev in ("SessionStart", "UserPromptSubmit"):
     check("%s gate prints full payload" % ev, r.stdout == want,
           "%d chars out" % len(r.stdout))
 
-# 4. Injected bytes are valid UTF-8 (piped stdout on Windows defaults to the
+# 5. Injected bytes are valid UTF-8 (piped stdout on Windows defaults to the
 #    ANSI code page without the reconfigure in format-ctl)
 r = run(hook_cmd(commands["UserPromptSubmit"]),
         stdin_text=json.dumps({"session_id": SID}), binary=True)
@@ -94,36 +107,51 @@ try:
 except UnicodeDecodeError as e:
     check("gate output is valid UTF-8", False, str(e))
 
-# 5. Toggle lifecycle: off silences both gates, status reports, on restores
+# 6. Claude Code lifecycle: native skills toggle, status reports, hooks follow
 ctl = [sys.executable, os.path.join(ROOT, "bin", "format-ctl")]
 env_sid = {"CLAUDE_CODE_SESSION_ID": SID}
-r = run(ctl + ["off"], env_extra=env_sid)
-check("off toggle exit 0", r.returncode == 0, r.stderr.strip())
+r = run([sys.executable, skill_scripts["off"]], env_extra=env_sid)
+check("Claude fmt-off skill exit 0", r.returncode == 0, r.stderr.strip())
 r = run(hook_cmd(commands["SessionStart"]), stdin_text=json.dumps({"session_id": SID}))
 check("gate silent when session off", r.returncode == 0 and r.stdout == "",
       "rc=%d, %d chars out" % (r.returncode, len(r.stdout)))
 r = run(ctl + ["status"], env_extra=env_sid)
 check("status reports OFF", "OFF" in r.stdout, r.stdout.strip())
-r = run(ctl + ["on"], env_extra=env_sid)
-check("on toggle exit 0", r.returncode == 0, r.stderr.strip())
+r = run([sys.executable, skill_scripts["on"]], env_extra=env_sid)
+check("Claude fmt-on skill exit 0", r.returncode == 0, r.stderr.strip())
 r = run(hook_cmd(commands["UserPromptSubmit"]), stdin_text=json.dumps({"session_id": SID}))
 check("gate prints again after on", r.returncode == 0 and r.stdout != "")
 
-# 6. Missing payload exits 1 with empty stdout (exit 2 from a UserPromptSubmit
+# 7. Codex lifecycle uses its native session id and the same skill scripts
+env_codex = {"CODEX_SESSION_ID": SID}
+remove_claude = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
+r = run([sys.executable, skill_scripts["off"]], env_extra=env_codex,
+        env_remove=remove_claude)
+check("Codex fmt-off skill exit 0", r.returncode == 0, r.stderr.strip())
+r = run(hook_cmd(commands["UserPromptSubmit"]),
+        stdin_text=json.dumps({"session_id": SID}))
+check("Codex-off gate is silent", r.returncode == 0 and r.stdout == "",
+      "rc=%d, %d chars out" % (r.returncode, len(r.stdout)))
+r = run([sys.executable, skill_scripts["on"]], env_extra=env_codex,
+        env_remove=remove_claude)
+check("Codex fmt-on skill exit 0", r.returncode == 0, r.stderr.strip())
+
+# 8. Missing payload exits 1 with empty stdout (exit 2 from a UserPromptSubmit
 #    hook would block processing and erase the user's prompt)
 r = run(ctl + ["gate", os.path.join(ROOT, "style", "no-such-file.md")],
         stdin_text=json.dumps({"session_id": SID}))
 check("missing payload exits 1 with empty stdout",
       r.returncode == 1 and r.stdout == "", "rc=%d" % r.returncode)
 
-# 7. Malformed stdin fails open (still prints payload)
+# 9. Malformed stdin fails open (still prints payload)
 want = open(payloads["SessionStart"], encoding="utf-8").read()
 r = run(hook_cmd(commands["SessionStart"]), stdin_text="not json at all")
 check("malformed stdin fails open", r.returncode == 0 and r.stdout == want)
 
-# 8. Toggle without a session id exits 2
+# 10. Toggle without a session id exits 2
 env_nosid = dict(os.environ)
-env_nosid.pop("CLAUDE_CODE_SESSION_ID", None)
+for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+    env_nosid.pop(name, None)
 r = subprocess.run(ctl + ["off"], capture_output=True, text=True,
                    encoding="utf-8", env=env_nosid)
 check("toggle without session id exits 2", r.returncode == 2, "rc=%d" % r.returncode)
@@ -132,7 +160,7 @@ check("toggle without session id exits 2", r.returncode == 2, "rc=%d" % r.return
 flag_dir = os.path.join(
     os.environ.get("LOCALAPPDATA")
     or os.path.join(os.path.expanduser("~"), ".local", "state"),
-    "claude-format-toggle")
+    "p-format-toggle")
 flag = os.path.join(flag_dir, SID + ".off")
 if os.path.exists(flag):
     os.unlink(flag)

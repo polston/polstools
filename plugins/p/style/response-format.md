@@ -12,7 +12,7 @@ All three sections are always present. When a section has nothing, its entire
 content is `**1.** None.` — a stable shape is what lets the reader scan.
 
 The reader can switch this format off for the current session with
-`/polstools:off`, and back on with `/polstools:on`.
+`/p:fmt-off`, and back on with `/p:fmt-on`.
 
 ## The sections
 

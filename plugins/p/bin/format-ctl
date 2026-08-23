@@ -4,7 +4,7 @@
 gate <payload>  hook entry: print <payload> unless this session is toggled
                 off (session id read from the hook JSON on stdin; unreadable
                 input fails open to ON)
-off | on        toggle the current session (id from CLAUDE_CODE_SESSION_ID)
+off | on        toggle the current session (id from the active harness)
 status          print the current session's state
 
 Exit: 0 ran clean; toggle subcommands exit 2 when they cannot run. gate exits
@@ -22,14 +22,19 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8")
 
-# Outside ~/.claude on purpose: that directory is often a git repo, and state
-# files must not show up as untracked noise in it.
+# Outside harness config directories on purpose: one may itself be a git repo,
+# and state files must not show up as untracked noise in it.
 FLAG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA")
     or os.path.join(os.path.expanduser("~"), ".local", "state"),
-    "claude-format-toggle",
+    "p-format-toggle",
 )
 STALE_SECONDS = 14 * 24 * 3600
+SESSION_ENV_VARS = (
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_THREAD_ID",
+)
 
 
 def flag_path(session_id):
@@ -47,11 +52,12 @@ def prune():
 
 
 def session_from_env():
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    if not sid:
-        print("CLAUDE_CODE_SESSION_ID is not set", file=sys.stderr)
-        sys.exit(2)
-    return sid
+    for name in SESSION_ENV_VARS:
+        sid = os.environ.get(name)
+        if sid:
+            return sid
+    print("no supported harness session id is set", file=sys.stderr)
+    sys.exit(2)
 
 
 def gate(payload):

@@ -12,7 +12,7 @@ identifiers are reduced to a stable hash before anything is printed.
 Stdlib only. Every field access is guarded: transcript shape varies by CLI
 version, and a KeyError partway through a 1GB corpus loses the whole run.
 
-Exit codes match the sibling scripts in plugins/polstools/bin:
+Exit codes match the sibling scripts in plugins/p/bin:
     0  ran clean, the TTL in force is the right one
     1  ran clean, the TTL should change
     2  could not run (no projects directory, no readable transcripts)

@@ -27,7 +27,7 @@ outside repositories rather than merely kept out of one.
 Stdlib only. Every field access is guarded: transcript shape varies by CLI
 version, and a KeyError partway through a 900MB corpus loses the whole run.
 
-Exit codes match the sibling scripts in plugins/polstools/bin:
+Exit codes match the sibling scripts in plugins/p/bin:
     0  ran clean, nothing flagged
     1  ran clean, something was flagged (a transcript that would not read,
        friction in the window, dormant skills)
@@ -182,9 +182,9 @@ def _redaction_patterns():
 
     THREE lists now hold redaction categories and none is a superset:
       - this one,
-      - plugins/polstools/bin/repo-privacy-audit (generic home-path forms this lacks,
+      - plugins/p/bin/repo-privacy-audit (generic home-path forms this lacks,
         private-range addresses only),
-      - plugins/polstools/bin/stopped-promises.py (adds absolute paths belonging to
+      - plugins/p/bin/stopped-promises.py (adds absolute paths belonging to
         anywhere else, which neither of the other two catch).
     Keep them in step deliberately rather than assuming they agree; the previous
     wording said "the two lists" and was already stale.
@@ -651,7 +651,7 @@ def read_records(path):
     fails partway through. Returning an empty stream instead is what made a
     read failure indistinguishable from a file with no conversation in it.
 
-    DUPLICATED, on purpose: plugins/polstools/bin/stopped-promises.py carries its own
+    DUPLICATED, on purpose: plugins/p/bin/stopped-promises.py carries its own
     copy of this reader rather than importing it, so a measurement tool's parser
     cannot shift underneath it while this file is being rewritten. A fix to the
     parsing rules here needs applying there too. That script also resolves its
@@ -1803,7 +1803,7 @@ Two ways to fix it, and the second is the one that lasts:
 
 1. Commit what is outstanding now. Each rule change wants its own commit -- a
    fortnight of edits in one commit is a single date for many decisions.
-2. Have the edits commit themselves. `plugins/polstools/bin/commit-rule-change`
+2. Have the edits commit themselves. `plugins/p/bin/commit-rule-change`
    takes an edited path and commits it to whichever repository owns it, honours
    that repository's ignore rules so an excluded credentials file stays
    excluded, touches only the path it was given, and never fails its caller.

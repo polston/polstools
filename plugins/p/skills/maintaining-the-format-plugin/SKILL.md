@@ -1,16 +1,16 @@
 ---
 name: maintaining-the-format-plugin
-description: Use when the polstools response format misbehaves — replies stop following FINDINGS/PROBLEMS/ASKS, injected text is missing or mangled, /polstools:off or /polstools:on seems stuck — or after editing its wiring or payloads.
+description: Use when the p response format misbehaves — replies stop following FINDINGS/PROBLEMS/ASKS, injected text is missing or mangled, /p:fmt-off or /p:fmt-on seems stuck — or after editing its wiring or payloads.
 ---
 
-# Maintaining the polstools response format
+# Maintaining the p response format
 
 ## Health check
 
 1. Run `<plugin-root>/bin/format-e2e`. Exit 0 = the wiring, gates,
    toggle, and catalogs all check out mechanically. Exit 1 names the failing
    check.
-2. The e2e cannot see live state. Check separately: is polstools enabled in
+2. The e2e cannot see live state. Check separately: is p enabled in
    the harness (it loads from the installed marketplace path, not from a repo
    worktree — a healthy repo copy proves nothing about live sessions)? Did
    this session actually receive the spec at start? Is there a stale off-flag
@@ -43,9 +43,9 @@ says otherwise.
 ## Removing the response format for good
 
 1. Remove the format hooks, commands, payloads, controller scripts, and this
-   maintenance skill from polstools. Do not uninstall the whole plugin unless
+   maintenance skill from p. Do not uninstall the whole plugin unless
    all of its other tools should disappear too.
-2. Delete the state dir `claude-format-toggle` (under `%LOCALAPPDATA%`, or
+2. Delete the state dir `p-format-toggle` (under `%LOCALAPPDATA%`, or
    `~/.local/state` elsewhere) — orphaned flags outlive the plugin.
 3. Remove any instruction-file carve-out that defers other formatting rules
    to this feature (grep the user/global instructions for `format`).

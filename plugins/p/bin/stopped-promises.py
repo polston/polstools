@@ -12,7 +12,7 @@ Three outputs, in increasing order of how much they can be trusted:
 Stdlib only, single file, read-only over transcripts. Message text leaves this
 script in one place - the candidates file - and only after redact().
 
-Exit codes match the sibling scripts in plugins/polstools/bin:
+Exit codes match the sibling scripts in plugins/p/bin:
     0  ran clean, nothing flagged
     1  ran clean, something was flagged (candidates awaiting a verdict)
     2  could not run

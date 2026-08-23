@@ -5,8 +5,9 @@ analysis, response formatting, code review, and platform-specific fixes.
 
 ```sh
 claude plugin marketplace add polston/polstools
-claude plugin install polstools@polstools --scope user
+claude plugin install p@polstools --scope user
 ```
 
-Commands and skills are namespaced under `polstools`, for example
-`/polstools:adequacy-review` and `/polstools:off`.
+Commands and skills use the `p` namespace. Toggle the response format with
+`/p:fmt-off` and `/p:fmt-on` in Claude Code, or `$p:fmt-off` and `$p:fmt-on`
+in Codex.

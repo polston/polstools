@@ -28,7 +28,7 @@ One deliberate exception: author identity metadata, including standard
 not to be scrubbed. The privacy scan treats those records as accepted metadata,
 not findings. Nothing else in this section has an exception.
 
-`plugins/polstools/bin/repo-privacy-audit` catches the mechanical cases. It cannot
+`plugins/p/bin/repo-privacy-audit` catches the mechanical cases. It cannot
 recognise a project name, so that half is on the writer.
 
 ## Commit messages never go through a double-quoted shell string
@@ -40,23 +40,23 @@ substitution is silent, and nobody re-reads metadata.
 
 ## Layout and conventions
 
-- `.claude-plugin/marketplace.json` lists the `polstools` plugin; its manifest is
-  `plugins/polstools/.claude-plugin/plugin.json`. Both must stay in step.
-- `plugins/polstools/skills/<skill>/SKILL.md` — one directory per skill.
-- `plugins/polstools/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
+- `.claude-plugin/marketplace.json` lists the `p` plugin; its manifest is
+  `plugins/p/.claude-plugin/plugin.json`. Both must stay in step.
+- `plugins/p/skills/<skill>/SKILL.md` — one directory per skill.
+- `plugins/p/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
   dependencies, no compiled artifacts.
-- `plugins/polstools/hooks/hooks.json` — hook wiring for session events;
+- `plugins/p/hooks/hooks.json` — hook wiring for session events;
   commands reference plugin files via `${CLAUDE_PLUGIN_ROOT}` (the format hooks
   print payload files kept under `style/`).
-- `plugins/polstools/commands/<command>.md` — one file per slash command,
-  namespaced as `/polstools:<command>`. Refer to files inside the plugin as
+- `plugins/p/commands/<command>.md` — one file per slash command,
+  namespaced as `/p:<command>`. Refer to files inside the plugin as
   `${CLAUDE_PLUGIN_ROOT}/…`, never by a path under the author's home directory.
-- `plugins/polstools/workflows/` — deterministic multi-agent workflow scripts,
+- `plugins/p/workflows/` — deterministic multi-agent workflow scripts,
   run by the harness rather than executed directly. A command invokes one
   instead of restating its recipe in prose, so the procedure cannot drift from
   one model reading it to the next.
-- `plugins/polstools/tests/` — stdlib `unittest`, no runner or dependency. Run
-  with `python -m unittest discover -s plugins/polstools/tests -t plugins/polstools/tests`.
+- `plugins/p/tests/` — stdlib `unittest`, no runner or dependency. Run
+  with `python -m unittest discover -s plugins/p/tests -t plugins/p/tests`.
 - `docs/plans/` — design documents, filename dated.
 
 Scripts in any `bin/` share one exit-code convention: `0` ran clean and flagged
