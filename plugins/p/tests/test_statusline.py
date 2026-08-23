@@ -1,14 +1,18 @@
 import importlib.machinery
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
+import time
 import unittest
+from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -77,7 +81,28 @@ class StatuslineUnitTests(unittest.TestCase):
             ],
         )
 
-    @unittest.skipUnless(os.name == "nt", "PowerShell renderer is Windows-specific")
+    def test_claude_provider_recognizes_only_direct_ccstatusline(self):
+        desired = {"type": "command", "command": "bundled"}
+        self.assertEqual(self.ctl.claude_provider(desired, desired), "bundled")
+        self.assertEqual(self.ctl.claude_provider(None, desired), "missing")
+        self.assertEqual(
+            self.ctl.claude_provider(
+                {"type": "command", "command": "/usr/local/bin/ccstatusline"},
+                desired,
+            ),
+            "ccstatusline",
+        )
+        self.assertEqual(
+            self.ctl.claude_provider(
+                {"type": "command", "command": "npx ccstatusline"}, desired
+            ),
+            "external",
+        )
+
+    @unittest.skipUnless(
+        shutil.which("powershell" if os.name == "nt" else "pwsh"),
+        "PowerShell is unavailable",
+    )
     def test_powershell_renderer_matches_percent_left_semantics(self):
         sample = {
             "model": {"display_name": "Example Model"},
@@ -92,13 +117,28 @@ class StatuslineUnitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ)
             env["LOCALAPPDATA"] = tmp
-            env["USERPROFILE"] = str(Path(tmp) / "no-credentials")
+            env["HOME"] = str(Path(tmp) / "no-credentials")
+            if os.name == "nt":
+                env["USERPROFILE"] = env["HOME"]
+            else:
+                env.pop("USERPROFILE", None)
+            cache_dir = Path(tmp) / "claude-statusline"
+            cache_dir.mkdir()
+            (cache_dir / "usage-cache.json").write_text(
+                json.dumps(
+                    {
+                        "at": int(time.time() * 1000),
+                        "label": "model-week",
+                        "percent": 12,
+                    }
+                ),
+                encoding="utf-8",
+            )
             result = subprocess.run(
                 [
-                    "powershell",
+                    "powershell" if os.name == "nt" else "pwsh",
                     "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
+                    *(["-ExecutionPolicy", "Bypass"] if os.name == "nt" else []),
                     "-File",
                     str(PLUGIN_ROOT / "renderer" / "claude-statusline.ps1"),
                 ],
@@ -116,9 +156,15 @@ class StatuslineUnitTests(unittest.TestCase):
         self.assertIn("64% left", plain)
         self.assertIn("wk", plain)
         self.assertIn("81% left", plain)
+        self.assertIn("model-week", plain)
+        self.assertIn("88% left", plain)
 
 
 class StatuslineCliTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.ctl = load_ctl()
+
     def make_env(self, root):
         env = dict(os.environ)
         env.update(
@@ -150,7 +196,6 @@ class StatuslineCliTests(unittest.TestCase):
             claude_original = {
                 "theme": "dark",
                 private_key: "sentinel-private-value",
-                "statusLine": {"type": "command", "command": "old-renderer"},
             }
             codex_original = (
                 'model = "example"\n\n'
@@ -183,19 +228,19 @@ class StatuslineCliTests(unittest.TestCase):
             claude_now = json.loads(first_claude)
             self.assertEqual(claude_now["theme"], "dark")
             self.assertEqual(claude_now[private_key], "sentinel-private-value")
-            codex_now = tomllib.loads(first_codex.decode("utf-8"))
-            self.assertTrue(codex_now["plugins"]["keep"]["enabled"])
-            self.assertEqual(codex_now["tui"]["theme"], "ansi")
+            codex_now = first_codex.decode("utf-8")
+            self.assertIn('[plugins."keep"]\nenabled = true', codex_now)
+            self.assertIn('[tui]\ntheme = "ansi"', codex_now)
             self.assertEqual(
-                codex_now["tui"]["status_line"],
-                [
+                self.ctl.read_codex_status(codex_now),
+                (
                     "model-with-reasoning",
                     "current-dir",
                     "git-branch",
                     "context-remaining",
                     "five-hour-limit",
                     "weekly-limit",
-                ],
+                ),
             )
             rollback = (root / "state" / "rollback-v1.json").read_text(
                 encoding="utf-8"
@@ -216,6 +261,125 @@ class StatuslineCliTests(unittest.TestCase):
                 Path(env["STATUSLINE_CODEX_CONFIG"]).read_text("utf-8"),
                 codex_original,
             )
+
+    def test_apply_restores_both_configs_after_each_simulated_write_failure(self):
+        for fail_on in range(1, 5):
+            with self.subTest(fail_on=fail_on), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.make_env(root)
+                claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+                codex_path = Path(env["STATUSLINE_CODEX_CONFIG"])
+                claude_original = b'{"theme": "dark"}\n'
+                codex_original = b'[tui]\nstatus_line = ["model"]\n'
+                claude_path.write_bytes(claude_original)
+                codex_path.write_bytes(codex_original)
+                real_replace = self.ctl.os.replace
+                calls = 0
+
+                def fail_once(source, destination):
+                    nonlocal calls
+                    calls += 1
+                    if calls == fail_on:
+                        raise OSError("simulated replace failure")
+                    return real_replace(source, destination)
+
+                with mock.patch.dict(os.environ, env), mock.patch.object(
+                    self.ctl.os, "replace", side_effect=fail_once
+                ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    self.assertEqual(self.ctl.main(["apply"]), 2)
+
+                self.assertEqual(claude_path.read_bytes(), claude_original)
+                self.assertEqual(codex_path.read_bytes(), codex_original)
+                self.assertFalse((root / "state" / "rollback-v1.json").exists())
+                self.assertFalse((root / "install" / "claude-statusline.ps1").exists())
+                self.assertFalse(list(root.rglob("*.tmp")))
+
+    def test_sync_repairs_safe_drift_then_becomes_a_no_op(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+            Path(env["STATUSLINE_CODEX_CONFIG"]).write_text("[tui]\n", "utf-8")
+
+            first = self.run_ctl("sync", env)
+            self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+            self.assertIn("applied:", first.stdout)
+            self.assertIn("aligned:", first.stdout)
+            first_claude = Path(env["STATUSLINE_CLAUDE_SETTINGS"]).read_bytes()
+            first_codex = Path(env["STATUSLINE_CODEX_CONFIG"]).read_bytes()
+
+            second = self.run_ctl("sync", env)
+            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            self.assertNotIn("applied:", second.stdout)
+            self.assertEqual(
+                Path(env["STATUSLINE_CLAUDE_SETTINGS"]).read_bytes(), first_claude
+            )
+            self.assertEqual(
+                Path(env["STATUSLINE_CODEX_CONFIG"]).read_bytes(), first_codex
+            )
+
+    def test_apply_preserves_ccstatusline_and_only_manages_codex(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            codex_path = Path(env["STATUSLINE_CODEX_CONFIG"])
+            claude_original = {
+                "theme": "dark",
+                "statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"},
+            }
+            codex_original = '[tui]\nstatus_line = ["model"]\n'
+            claude_path.write_text(json.dumps(claude_original, indent=2) + "\n", "utf-8")
+            codex_path.write_text(codex_original, "utf-8")
+            claude_bytes = claude_path.read_bytes()
+
+            applied = self.run_ctl("apply", env)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("ccstatusline preserved", applied.stdout)
+            self.assertEqual(claude_path.read_bytes(), claude_bytes)
+            self.assertFalse(Path(env["STATUSLINE_INSTALL_DIR"]).exists())
+            rollback = json.loads(
+                (root / "state" / "rollback-v1.json").read_text("utf-8")
+            )
+            self.assertFalse(rollback["managed"]["claude"])
+            self.assertIsNone(rollback["applied"]["claude"])
+            self.assertIsNone(rollback["previous"]["claude"])
+
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertIn("compatible: Claude ccstatusline preserved", checked.stdout)
+
+            restored = self.run_ctl("restore", env)
+            self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+            self.assertEqual(claude_path.read_bytes(), claude_bytes)
+            self.assertEqual(codex_path.read_text("utf-8"), codex_original)
+
+    def test_apply_refuses_unknown_external_claude_renderer_without_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            codex_path = Path(env["STATUSLINE_CODEX_CONFIG"])
+            claude_path.write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "custom-renderer"}}),
+                "utf-8",
+            )
+            codex_path.write_text('[tui]\nstatus_line = ["model"]\n', "utf-8")
+            before = (claude_path.read_bytes(), codex_path.read_bytes())
+
+            applied = self.run_ctl("apply", env)
+            self.assertEqual(applied.returncode, 1)
+            self.assertIn("externally managed", applied.stdout)
+            self.assertEqual(before, (claude_path.read_bytes(), codex_path.read_bytes()))
+            self.assertFalse((root / "state").exists())
+
+            synced = self.run_ctl("sync", env)
+            self.assertEqual(synced.returncode, 1)
+            self.assertIn("externally managed", synced.stdout)
+            self.assertEqual(before, (claude_path.read_bytes(), codex_path.read_bytes()))
+            self.assertFalse((root / "state").exists())
 
     def test_restore_does_not_overwrite_later_owned_setting_edits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -239,9 +403,30 @@ class StatuslineCliTests(unittest.TestCase):
                 "later-edit",
             )
             self.assertEqual(
-                tomllib.loads(codex_path.read_text("utf-8"))["tui"]["status_line"],
-                ["model"],
+                self.ctl.read_codex_status(codex_path.read_text("utf-8")),
+                ("model",),
             )
+
+    def test_status_parser_accepts_toml_string_array_syntax(self):
+        value = self.ctl.read_codex_status(
+            "[tui]\n"
+            "status_line = [\n"
+            "  'model', # literal string\n"
+            '  "context\\u002dremaining",\n'
+            "]\n"
+        )
+        self.assertEqual(value, ("model", "context-remaining"))
+
+    def test_status_parser_rejects_unsafe_target_shapes(self):
+        samples = (
+            '[tui]\nstatus_line = ["model", 1]\n',
+            '[tui]\nstatus_line = ["model"]\nstatus_line = ["branch"]\n',
+            '[tui]\nstatus_line = ["model"]\n[tui]\n',
+        )
+        for sample in samples:
+            with self.subTest(sample=sample):
+                with self.assertRaises(ValueError):
+                    self.ctl.read_codex_status(sample)
 
     def test_preview_is_representative_and_privacy_safe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -278,6 +463,14 @@ class PackagingTests(unittest.TestCase):
             is_text = path.suffix in {".json", ".md", ".ps1"} or path.name == "statusline-ctl"
             if path.is_file() and "tests" not in path.parts and is_text:
                 self.assertIsNone(pattern.search(path.read_text("utf-8")), str(path))
+
+    def test_skill_defaults_to_sync_and_documents_transactional_rollback(self):
+        skill = (PLUGIN_ROOT / "skills" / "aligning-statuslines" / "SKILL.md").read_text(
+            "utf-8"
+        )
+        self.assertIn("run `statusline-ctl sync`", skill)
+        self.assertIn("restores all earlier targets", skill)
+        self.assertIn("without changing\neither settings file", skill)
 
 
 if __name__ == "__main__":

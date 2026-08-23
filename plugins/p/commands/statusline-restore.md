@@ -1,5 +1,5 @@
 ---
-description: Restore the prior owned Claude and Codex statusline settings
+description: Restore statusline settings changed by the last apply
 ---
 
 Resolve Python and the plugin root as described by the `aligning-statuslines`

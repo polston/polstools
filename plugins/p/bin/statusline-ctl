@@ -2,13 +2,14 @@
 """Align Claude Code and Codex CLI status information.
 
 Subcommands:
-  check    report whether the owned settings and installed renderer align
+  sync     check, apply safe drift, and verify the resulting alignment
+  check    report whether supported Claude and Codex settings align
   preview  print representative Claude and Codex status lines
-  apply    install the renderer and atomically update only owned settings
-  restore  restore prior owned settings when they have not since been edited
+  apply    preserve ccstatusline or install fallback, then align Codex
+  restore  restore settings changed by apply when untouched afterwards
 
 Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
-not run. Rollback metadata contains only the two owned settings.
+not run. Rollback metadata contains only settings managed by apply.
 """
 
 from __future__ import annotations
@@ -19,10 +20,15 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import sys
 import tempfile
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.9 and 3.10
+    tomllib = None
 
 
 for _stream in (sys.stdin, sys.stdout, sys.stderr):
@@ -151,7 +157,7 @@ def paths():
     }
 
 
-def atomic_write(path, data):
+def _stage_write(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = data.encode("utf-8") if isinstance(data, str) else data
     descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
@@ -162,6 +168,18 @@ def atomic_write(path, data):
             os.fsync(handle.fileno())
         if path.exists():
             shutil.copymode(path, temporary)
+        return Path(temporary)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write(path, data):
+    temporary = _stage_write(path, data)
+    try:
         os.replace(temporary, path)
     except Exception:
         try:
@@ -169,6 +187,69 @@ def atomic_write(path, data):
         except OSError:
             pass
         raise
+
+
+def atomic_write_many(changes):
+    """Stage all writes, then restore every committed target after any failure."""
+    prepared = []
+    seen = set()
+    try:
+        for path, data in changes:
+            path = Path(path)
+            if path in seen:
+                raise ValueError("transaction contains a duplicate target")
+            seen.add(path)
+            payload = data.encode("utf-8") if isinstance(data, str) else data
+            existed = path.exists()
+            original = path.read_bytes() if existed else None
+            if original == payload:
+                continue
+            item = {
+                "path": path,
+                "existed": existed,
+                "original": original,
+                "new": None,
+                "rollback": None,
+            }
+            prepared.append(item)
+            item["new"] = _stage_write(path, payload)
+            if existed:
+                item["rollback"] = _stage_write(path, original)
+
+        committed = []
+        try:
+            for item in prepared:
+                path = item["path"]
+                current_exists = path.exists()
+                current = path.read_bytes() if current_exists else None
+                if current_exists != item["existed"] or current != item["original"]:
+                    raise OSError("configuration changed while statusline apply was running")
+                os.replace(item["new"], path)
+                item["new"] = None
+                committed.append(item)
+        except Exception as error:
+            rollback_failed = False
+            for item in reversed(committed):
+                try:
+                    if item["existed"]:
+                        os.replace(item["rollback"], item["path"])
+                        item["rollback"] = None
+                    elif item["path"].exists():
+                        os.unlink(item["path"])
+                except Exception:
+                    rollback_failed = True
+            if rollback_failed:
+                raise OSError("statusline apply failed and could not restore every target") from error
+            raise
+    finally:
+        for item in prepared:
+            for key in ("new", "rollback"):
+                temporary = item.get(key)
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary)
+                    except OSError:
+                        pass
 
 
 def load_claude(path):
@@ -194,8 +275,133 @@ def desired_claude(renderer_path):
     return value
 
 
+def claude_provider(current, desired):
+    """Classify the configured Claude renderer without executing it."""
+    if current == desired:
+        return "bundled"
+    if current is None:
+        return "missing"
+    if not isinstance(current, dict) or current.get("type") != "command":
+        return "external"
+    command = current.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return "external"
+    try:
+        argv = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return "external"
+    executable = Path(argv[0].strip('"')).name.lower() if argv else ""
+    return "ccstatusline" if executable in {"ccstatusline", "ccstatusline.exe"} else "external"
+
+
 _SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
 _STATUS_RE = re.compile(r"^\s*status_line\s*=")
+
+
+_BASIC_ESCAPES = {
+    '"': '"',
+    "\\": "\\",
+    "b": "\b",
+    "t": "\t",
+    "n": "\n",
+    "f": "\f",
+    "r": "\r",
+}
+
+
+def _skip_array_space(source, index):
+    while index < len(source):
+        if source[index] in " \t\r\n":
+            index += 1
+        elif source[index] == "#":
+            newline = source.find("\n", index)
+            index = len(source) if newline < 0 else newline + 1
+        else:
+            break
+    return index
+
+
+def _parse_basic_string(source, index):
+    if source.startswith('"""', index):
+        raise ValueError("multiline strings are unsupported in Codex tui.status_line")
+    index += 1
+    value = []
+    while index < len(source):
+        char = source[index]
+        if char == '"':
+            return "".join(value), index + 1
+        if char == "\\":
+            index += 1
+            if index >= len(source):
+                break
+            escape = source[index]
+            if escape in _BASIC_ESCAPES:
+                value.append(_BASIC_ESCAPES[escape])
+                index += 1
+                continue
+            if escape in ("u", "U"):
+                width = 4 if escape == "u" else 8
+                digits = source[index + 1:index + 1 + width]
+                if len(digits) != width or not re.fullmatch(r"[0-9A-Fa-f]+", digits):
+                    raise ValueError("invalid Unicode escape in Codex tui.status_line")
+                codepoint = int(digits, 16)
+                if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                    raise ValueError("invalid Unicode escape in Codex tui.status_line")
+                value.append(chr(codepoint))
+                index += width + 1
+                continue
+            raise ValueError("invalid escape in Codex tui.status_line")
+        if ord(char) < 0x20 and char != "\t":
+            raise ValueError("control character in Codex tui.status_line")
+        value.append(char)
+        index += 1
+    raise ValueError("unterminated string in Codex tui.status_line")
+
+
+def _parse_literal_string(source, index):
+    if source.startswith("'''", index):
+        raise ValueError("multiline strings are unsupported in Codex tui.status_line")
+    end = source.find("'", index + 1)
+    if end < 0:
+        raise ValueError("unterminated string in Codex tui.status_line")
+    value = source[index + 1:end]
+    if any(ord(char) < 0x20 and char != "\t" for char in value):
+        raise ValueError("control character in Codex tui.status_line")
+    return value, end + 1
+
+
+def _parse_status_array(source):
+    """Parse the TOML string-array subset accepted by Codex status_line."""
+    index = _skip_array_space(source, 0)
+    if index >= len(source) or source[index] != "[":
+        raise ValueError("Codex tui.status_line must be a string array or null")
+    index = _skip_array_space(source, index + 1)
+    values = []
+    while index < len(source) and source[index] != "]":
+        if source[index] == '"':
+            value, index = _parse_basic_string(source, index)
+        elif source[index] == "'":
+            value, index = _parse_literal_string(source, index)
+        else:
+            raise ValueError("Codex tui.status_line must contain only strings")
+        values.append(value)
+        index = _skip_array_space(source, index)
+        if index < len(source) and source[index] == ",":
+            index = _skip_array_space(source, index + 1)
+            continue
+        if index >= len(source) or source[index] != "]":
+            raise ValueError("invalid Codex tui.status_line string array")
+    if index >= len(source):
+        raise ValueError("unterminated Codex tui.status_line string array")
+    index = _skip_array_space(source, index + 1)
+    if index != len(source):
+        raise ValueError("unexpected content after Codex tui.status_line")
+    return tuple(values)
+
+
+def _validate_toml(text):
+    if tomllib is not None and text.strip():
+        tomllib.loads(text)
 
 
 def _toml_lines(text):
@@ -217,10 +423,14 @@ def _sections(lines):
 
 def _tui_bounds(lines):
     sections = _sections(lines)
-    for pos, (name, start) in enumerate(sections):
-        if name == "tui":
-            end = sections[pos + 1][1] if pos + 1 < len(sections) else len(lines)
-            return start, end
+    matches = [pos for pos, (name, _) in enumerate(sections) if name == "tui"]
+    if len(matches) > 1:
+        raise ValueError("Codex config contains duplicate [tui] sections")
+    if matches:
+        pos = matches[0]
+        start = sections[pos][1]
+        end = sections[pos + 1][1] if pos + 1 < len(sections) else len(lines)
+        return start, end
     return None
 
 
@@ -252,6 +462,7 @@ def _status_bounds(lines, section):
         return None
     _, end = section
     start = section[0] + 1
+    found = []
     for index in range(start, end):
         line = lines[index]
         if not _STATUS_RE.match(line):
@@ -261,27 +472,32 @@ def _status_bounds(lines, section):
         while balance > 0 and stop < end:
             balance += _array_balance(lines[stop])
             stop += 1
-        return index, stop
-    return None
+        found.append((index, stop))
+    if len(found) > 1:
+        raise ValueError("Codex config contains duplicate tui.status_line settings")
+    return found[0] if found else None
+
+
+def _status_value(lines, bounds):
+    assignment = "".join(lines[bounds[0]:bounds[1]])
+    return _parse_status_array(assignment.split("=", 1)[1])
 
 
 def read_codex_status(text):
-    parsed = tomllib.loads(text) if text.strip() else {}
-    value = (parsed.get("tui") or {}).get("status_line")
-    if value is None:
-        return None
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError("Codex tui.status_line must be a string array or null")
-    return tuple(value)
+    _validate_toml(text)
+    lines = _toml_lines(text)
+    bounds = _status_bounds(lines, _tui_bounds(lines))
+    return _status_value(lines, bounds) if bounds else None
 
 
 def set_codex_status(text, items):
-    if text.strip():
-        tomllib.loads(text)
+    _validate_toml(text)
     lines = _toml_lines(text)
     newline = _newline(text)
     section = _tui_bounds(lines)
     bounds = _status_bounds(lines, section)
+    if bounds:
+        _status_value(lines, bounds)
     previous = {
         "present": bounds is not None,
         "raw": "".join(lines[bounds[0]:bounds[1]]) if bounds else None,
@@ -302,7 +518,8 @@ def set_codex_status(text, items):
             lines.append(newline)
         lines.extend(["[tui]" + newline, literal])
     updated = "".join(lines)
-    tomllib.loads(updated)
+    _validate_toml(updated)
+    read_codex_status(updated)
     return updated, previous
 
 
@@ -326,8 +543,9 @@ def restore_codex_status(text, previous):
                 if all(not line.strip() or line.lstrip().startswith("#") for line in body):
                     del lines[section[0]:section[1]]
     restored = "".join(lines)
-    if restored.strip():
-        tomllib.loads(restored)
+    _validate_toml(restored)
+    if previous.get("present"):
+        read_codex_status(restored)
     return restored
 
 
@@ -343,43 +561,58 @@ def load_rollback(path):
 
 def apply_config():
     target = paths()
-    if not RENDERER_SOURCE.is_file():
-        raise FileNotFoundError("bundled Claude renderer is missing")
     claude = load_claude(target["claude"])
     codex_text = target["codex"].read_text(encoding="utf-8-sig") if target["codex"].exists() else ""
     codex_current = read_codex_status(codex_text)
     desired_c = desired_claude(target["renderer"])
+    current_claude = claude.get("statusLine")
+    provider = claude_provider(current_claude, desired_c)
+    if provider == "external":
+        print("not applied: Claude statusLine is externally managed; no settings changed")
+        return 1
+    manage_claude = provider != "ccstatusline"
+    if manage_claude and not RENDERER_SOURCE.is_file():
+        raise FileNotFoundError("bundled Claude renderer is missing")
     previous_rollback = load_rollback(target["rollback"])
 
     codex_updated, codex_previous = set_codex_status(codex_text, CODEX_STATUS_LINE)
-    current_claude = claude.get("statusLine")
-    claude_previous = {"present": "statusLine" in claude, "value": current_claude}
+    claude_previous = (
+        {"present": "statusLine" in claude, "value": current_claude}
+        if manage_claude else None
+    )
 
-    if previous_rollback and current_claude == desired_c:
+    if manage_claude and previous_rollback and current_claude == desired_c:
         claude_previous = previous_rollback["previous"]["claude"]
     if previous_rollback and codex_current == CODEX_STATUS_LINE:
         codex_previous = previous_rollback["previous"]["codex"]
 
     rollback = {
         "schema": 1,
-        "applied": {"claude": desired_c, "codex": list(CODEX_STATUS_LINE)},
+        "managed": {"claude": manage_claude, "codex": True},
+        "applied": {
+            "claude": desired_c if manage_claude else None,
+            "codex": list(CODEX_STATUS_LINE),
+        },
         "previous": {"claude": claude_previous, "codex": codex_previous},
     }
     rollback_text = json.dumps(rollback, indent=2, ensure_ascii=False) + "\n"
-    existing_rollback = target["rollback"].read_text("utf-8") if target["rollback"].exists() else None
-    if rollback_text != existing_rollback:
-        atomic_write(target["rollback"], rollback_text)
-
-    source_bytes = RENDERER_SOURCE.read_bytes()
-    if not target["renderer"].exists() or target["renderer"].read_bytes() != source_bytes:
-        atomic_write(target["renderer"], source_bytes)
-
-    if current_claude != desired_c:
-        claude["statusLine"] = desired_c
-        atomic_write(target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
+    changes = [(target["rollback"], rollback_text)]
+    if manage_claude:
+        source_bytes = RENDERER_SOURCE.read_bytes()
+        if not target["renderer"].exists() or target["renderer"].read_bytes() != source_bytes:
+            changes.append((target["renderer"], source_bytes))
     if codex_text != codex_updated:
-        atomic_write(target["codex"], codex_updated)
-    print("applied: Claude statusLine and Codex tui.status_line aligned")
+        changes.append((target["codex"], codex_updated))
+    if manage_claude and current_claude != desired_c:
+        claude["statusLine"] = desired_c
+        changes.append(
+            (target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
+        )
+    atomic_write_many(changes)
+    if manage_claude:
+        print("applied: Claude statusLine and Codex tui.status_line aligned")
+    else:
+        print("applied: Claude ccstatusline preserved; Codex tui.status_line aligned")
     return 0
 
 
@@ -389,21 +622,36 @@ def check_config():
     try:
         desired_c = desired_claude(target["renderer"])
         claude = load_claude(target["claude"])
-        if claude.get("statusLine") != desired_c:
+        provider = claude_provider(claude.get("statusLine"), desired_c)
+        if provider not in {"bundled", "ccstatusline"}:
             drift.append("Claude setting")
         codex_text = target["codex"].read_text(encoding="utf-8-sig") if target["codex"].exists() else ""
         if read_codex_status(codex_text) != CODEX_STATUS_LINE:
             drift.append("Codex setting")
-        if not target["renderer"].is_file() or target["renderer"].read_bytes() != RENDERER_SOURCE.read_bytes():
+        if provider == "bundled" and (
+            not target["renderer"].is_file()
+            or target["renderer"].read_bytes() != RENDERER_SOURCE.read_bytes()
+        ):
             drift.append("Claude renderer")
-    except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+    except (OSError, ValueError, json.JSONDecodeError) as error:
         print("cannot check: " + str(error), file=sys.stderr)
         return 2
     if drift:
         print("drift: " + ", ".join(drift))
         return 1
-    print("aligned: Claude and Codex status lines match aligned-v1")
+    if provider == "ccstatusline":
+        print("compatible: Claude ccstatusline preserved; Codex matches aligned-v1")
+    else:
+        print("aligned: Claude and Codex status lines match aligned-v1")
     return 0
+
+
+def sync_config():
+    checked = check_config()
+    if checked != 1:
+        return checked
+    applied = apply_config()
+    return check_config() if applied == 0 else applied
 
 
 def restore_config():
@@ -416,15 +664,17 @@ def restore_config():
         claude = load_claude(target["claude"])
         codex_text = target["codex"].read_text(encoding="utf-8-sig") if target["codex"].exists() else ""
         skipped = []
-        if claude.get("statusLine") == rollback["applied"]["claude"]:
-            previous = rollback["previous"]["claude"]
-            if previous.get("present"):
-                claude["statusLine"] = previous.get("value")
+        manage_claude = rollback.get("managed", {}).get("claude", True)
+        if manage_claude:
+            if claude.get("statusLine") == rollback["applied"]["claude"]:
+                previous = rollback["previous"]["claude"]
+                if previous.get("present"):
+                    claude["statusLine"] = previous.get("value")
+                else:
+                    claude.pop("statusLine", None)
+                atomic_write(target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
             else:
-                claude.pop("statusLine", None)
-            atomic_write(target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
-        else:
-            skipped.append("Claude setting changed after apply")
+                skipped.append("Claude setting changed after apply")
 
         if read_codex_status(codex_text) == tuple(rollback["applied"]["codex"]):
             atomic_write(target["codex"], restore_codex_status(codex_text, rollback["previous"]["codex"]))
@@ -433,9 +683,9 @@ def restore_config():
         if skipped:
             print("not restored: " + "; ".join(skipped))
             return 1
-        print("restored: prior Claude and Codex owned settings")
+        print("restored: prior managed statusline settings")
         return 0
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         print("cannot restore: " + str(error), file=sys.stderr)
         return 2
 
@@ -463,11 +713,19 @@ def preview():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "preview", "apply", "restore"))
+    parser.add_argument(
+        "command", choices=("sync", "check", "preview", "apply", "restore")
+    )
     args = parser.parse_args(argv)
     try:
-        return {"check": check_config, "preview": preview, "apply": apply_config, "restore": restore_config}[args.command]()
-    except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+        return {
+            "sync": sync_config,
+            "check": check_config,
+            "preview": preview,
+            "apply": apply_config,
+            "restore": restore_config,
+        }[args.command]()
+    except (OSError, ValueError, json.JSONDecodeError) as error:
         print("statusline-ctl: cannot run: " + str(error), file=sys.stderr)
         return 2
 

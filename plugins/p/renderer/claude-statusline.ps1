@@ -88,13 +88,28 @@ $cache = $null
 if (Test-Path -LiteralPath $cachePath) { $cache = Get-Content -LiteralPath $cachePath -Raw | ConvertFrom-Json }
 $lastAttempt = 0
 try { if (Test-Path -LiteralPath $attemptPath) { $lastAttempt = [long](Get-Content -LiteralPath $attemptPath -Raw) } } catch {}
+
+function Get-ClaudeCredential {
+    if ($IsMacOS -and (Get-Command security -ErrorAction SilentlyContinue)) {
+        try {
+            $raw = & security find-generic-password -s 'Claude Code-credentials' -w 2>$null
+            if ($LASTEXITCODE -eq 0 -and $raw) { return (($raw | Out-String) | ConvertFrom-Json) }
+        } catch {}
+    }
+    $profileRoot = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($HOME) { $HOME } else { $null }
+    if (-not $profileRoot) { return $null }
+    try {
+        $credentialPath = Join-Path $profileRoot '.claude/.credentials.json'
+        return (Get-Content -LiteralPath $credentialPath -Raw -ErrorAction Stop | ConvertFrom-Json)
+    } catch { return $null }
+}
+
 if ((-not $cache -or ($nowMs - $cache.at) -gt 60000) -and ($nowMs - $lastAttempt) -gt 30000) {
     try {
         if (-not (Test-Path -LiteralPath $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
         "$nowMs" | Out-File -FilePath $attemptPath -Encoding ascii
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $credentialPath = Join-Path $env:USERPROFILE '.claude/.credentials.json'
-        $credential = Get-Content -LiteralPath $credentialPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $credential = Get-ClaudeCredential
         if ($credential.claudeAiOauth.accessToken -and $credential.claudeAiOauth.expiresAt -gt $nowMs) {
             $headers = @{ 'Authorization' = "Bearer $($credential.claudeAiOauth.accessToken)"; 'anthropic-beta' = 'oauth-2025-04-20' }
             $usage = Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -Headers $headers -Method Get -TimeoutSec 3 -ErrorAction Stop
