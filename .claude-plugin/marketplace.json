@@ -9,7 +9,7 @@
       "name": "p",
       "source": "./plugins/p",
       "description": "Personal tooling for privacy audits, workflow analysis, response formatting, code review, and platform-specific fixes.",
-      "version": "1.1.1",
+      "version": "1.2.0",
       "category": "productivity",
       "keywords": ["skills", "workflow", "privacy", "retrospective", "format", "review", "windows"]
     }

@@ -1,7 +1,11 @@
-Format reminder for this reply: begin with the literal line `# FINDINGS`, then
-`# PROBLEMS`, then `# ASKS`, then `---`, then everything else. All three
-sections always present, `**1.** None.` when one is empty. Every item number
-is a bold prefix at line start, never a markdown list marker: `**1.**` for
-findings and asks, `**1. Title**` (whole line bold) for problem titles,
-`**1.1.**` for sub-points. Unanswered asks from earlier turns stay listed
-under their original numbers until answered or withdrawn.
+Format reminder: a turn-ending reply begins with the literal line `# FINDINGS`,
+then `# PROBLEMS`, then `# ASKS`. All three sections are present; an empty one
+is `**1.** None.` Add `---` only when optional detail follows. An interim
+message immediately before a tool call is one concise status sentence with no
+headers or reader question; repeat actionable items in the final reply.
+
+Use bold number prefixes, never markdown lists. Keep at most five non-`None`
+top-level items total and each substantive line at most 30 words; problem
+titles stay under 15. Every PROBLEM has a reader consequence and recommended
+action. Questions needing answers appear only in ASKS. Unresolved PROBLEM and
+ASK numbers persist without reuse; FINDINGS restart at 1 each final reply.
