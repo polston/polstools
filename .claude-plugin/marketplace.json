@@ -8,10 +8,10 @@
     {
       "name": "p",
       "source": "./plugins/p",
-      "description": "Personal tooling for privacy audits, workflow analysis, response formatting, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
-      "version": "1.3.0",
+      "description": "Personal tooling for privacy audits, workflow analysis, change-explicit response formatting, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
+      "version": "1.4.0",
       "category": "productivity",
-      "keywords": ["skills", "workflow", "privacy", "retrospective", "format", "review", "statusline", "claude-code", "codex", "windows"]
+      "keywords": ["skills", "workflow", "privacy", "retrospective", "format", "review", "statusline", "ccstatusline", "claude-code", "codex", "windows"]
     }
   ]
 }
