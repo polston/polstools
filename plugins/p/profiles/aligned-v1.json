@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "codexStatusLine": [
+    "model-with-reasoning",
+    "current-dir",
+    "git-branch",
+    "context-remaining",
+    "five-hour-limit",
+    "weekly-limit"
+  ],
+  "claudeRenderer": "renderer/claude-statusline.ps1",
+  "claudeSettings": {
+    "type": "command"
+  }
+}

@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""Align Claude Code and Codex CLI status information.
+
+Subcommands:
+  check    report whether the owned settings and installed renderer align
+  preview  print representative Claude and Codex status lines
+  apply    install the renderer and atomically update only owned settings
+  restore  restore prior owned settings when they have not since been edited
+
+Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
+not run. Rollback metadata contains only the two owned settings.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sys
+import tempfile
+import tomllib
+
+
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PROFILE_PATH = PLUGIN_ROOT / "profiles" / "aligned-v1.json"
+RENDERER_SOURCE = PLUGIN_ROOT / "renderer" / "claude-statusline.ps1"
+ROLLBACK_NAME = "rollback-v1.json"
+
+
+def load_profile():
+    with PROFILE_PATH.open(encoding="utf-8") as handle:
+        profile = json.load(handle)
+    if profile.get("version") != 1:
+        raise ValueError("unsupported profile version")
+    items = profile.get("codexStatusLine")
+    if not isinstance(items, list) or not all(isinstance(x, str) and x for x in items):
+        raise ValueError("profile codexStatusLine must be a string array")
+    return profile
+
+
+PROFILE = load_profile()
+CODEX_STATUS_LINE = tuple(PROFILE["codexStatusLine"])
+
+
+def percent_left(used):
+    if used is None:
+        return None
+    return 100 - max(0, min(100, float(used)))
+
+
+def _display_percent(value):
+    value = float(value)
+    return str(int(round(value))) if value == round(value) else ("%.1f" % value).rstrip("0").rstrip(".")
+
+
+def _bar(left, color):
+    slots = 10
+    filled = int(round(max(0, min(100, float(left))) / 100 * slots))
+    body = "█" * filled + "░" * (slots - filled)
+    if not color:
+        return body
+    used = 100 - float(left)
+    tone = "\x1b[31m" if used >= 80 else "\x1b[33m" if used >= 60 else "\x1b[32m"
+    return tone + body + "\x1b[0m"
+
+
+def render_claude(data, *, color=True):
+    """Pure renderer used by preview/tests; the installed PowerShell matches it."""
+    esc = "\x1b["
+    reset = esc + "0m" if color else ""
+    dim = esc + "2m" if color else ""
+    cyan = esc + "2;36m" if color else ""
+    yellow = esc + "2;33m" if color else ""
+    magenta = esc + "35m" if color else ""
+
+    model = ((data.get("model") or {}).get("display_name") or "").strip()
+    effort = ((data.get("effort") or {}).get("level") or "").strip()
+    workspace = data.get("workspace") or {}
+    cwd = (workspace.get("current_dir") or data.get("cwd") or "").strip()
+    branch = (workspace.get("git_branch") or "").strip()
+    remaining = (data.get("context_window") or {}).get("remaining_percentage")
+
+    parts = []
+    if model:
+        parts.append(cyan + model + reset)
+    if effort:
+        parts.append(dim + "eff" + reset + " " + magenta + effort + reset)
+    if cwd:
+        parts.append(dim + cwd + reset)
+    if branch:
+        parts.append(yellow + branch + reset)
+    if remaining is not None:
+        left = max(0, min(100, float(remaining)))
+        parts.append(_bar(left, color) + " " + _display_percent(left) + "% left")
+
+    limits = []
+    rate_limits = data.get("rate_limits") or {}
+    for label, key in (("5h", "five_hour"), ("wk", "seven_day")):
+        used = (rate_limits.get(key) or {}).get("used_percentage")
+        left = percent_left(used)
+        if left is not None:
+            limits.append(
+                dim + label + reset + " " + _bar(left, color) + " "
+                + _display_percent(left) + "% left"
+            )
+    scoped = data.get("model_weekly") or {}
+    scoped_left = percent_left(scoped.get("used_percentage"))
+    scoped_label = str(scoped.get("label") or "").strip()
+    if scoped_label and scoped_left is not None:
+        limits.append(
+            dim + scoped_label + reset + " " + _bar(scoped_left, color) + " "
+            + _display_percent(scoped_left) + "% left"
+        )
+
+    sep = " " + dim + "|" + reset + " "
+    lines = []
+    if parts:
+        lines.append(sep.join(parts))
+    if limits:
+        lines.append(sep.join(limits))
+    return lines
+
+
+def _default_state_dir():
+    if os.environ.get("STATUSLINE_STATE_DIR"):
+        return Path(os.environ["STATUSLINE_STATE_DIR"])
+    if os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "polstools" / "statusline"
+    state_home = os.environ.get("XDG_STATE_HOME")
+    return Path(state_home) / "polstools" / "statusline" if state_home else Path.home() / ".local" / "state" / "polstools" / "statusline"
+
+
+def paths():
+    state_dir = _default_state_dir()
+    install_dir = Path(os.environ.get("STATUSLINE_INSTALL_DIR") or state_dir / "installed-v1")
+    return {
+        "claude": Path(os.environ.get("STATUSLINE_CLAUDE_SETTINGS") or Path.home() / ".claude" / "settings.json"),
+        "codex": Path(os.environ.get("STATUSLINE_CODEX_CONFIG") or Path.home() / ".codex" / "config.toml"),
+        "state": state_dir,
+        "rollback": state_dir / ROLLBACK_NAME,
+        "renderer": install_dir / "claude-statusline.ps1",
+    }
+
+
+def atomic_write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = data.encode("utf-8") if isinstance(data, str) else data
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            shutil.copymode(path, temporary)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def load_claude(path):
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8-sig") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError("Claude settings must contain a JSON object")
+    return value
+
+
+def renderer_command(renderer_path):
+    normalized = renderer_path.resolve().as_posix()
+    if os.name == "nt":
+        return 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + normalized + '"'
+    return 'pwsh -NoProfile -File "' + normalized + '"'
+
+
+def desired_claude(renderer_path):
+    value = copy.deepcopy(PROFILE["claudeSettings"])
+    value["command"] = renderer_command(renderer_path)
+    return value
+
+
+_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
+_STATUS_RE = re.compile(r"^\s*status_line\s*=")
+
+
+def _toml_lines(text):
+    return text.splitlines(keepends=True)
+
+
+def _newline(text):
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def _sections(lines):
+    found = []
+    for index, line in enumerate(lines):
+        match = _SECTION_RE.match(line.rstrip("\r\n"))
+        if match:
+            found.append((match.group(1).strip(), index))
+    return found
+
+
+def _tui_bounds(lines):
+    sections = _sections(lines)
+    for pos, (name, start) in enumerate(sections):
+        if name == "tui":
+            end = sections[pos + 1][1] if pos + 1 < len(sections) else len(lines)
+            return start, end
+    return None
+
+
+def _array_balance(fragment):
+    balance = 0
+    quote = None
+    escaped = False
+    for char in fragment:
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in ('"', "'"):
+            quote = char
+        elif char == "#":
+            break
+        elif char == "[":
+            balance += 1
+        elif char == "]":
+            balance -= 1
+    return balance
+
+
+def _status_bounds(lines, section):
+    if section is None:
+        return None
+    _, end = section
+    start = section[0] + 1
+    for index in range(start, end):
+        line = lines[index]
+        if not _STATUS_RE.match(line):
+            continue
+        balance = _array_balance(line.split("=", 1)[1])
+        stop = index + 1
+        while balance > 0 and stop < end:
+            balance += _array_balance(lines[stop])
+            stop += 1
+        return index, stop
+    return None
+
+
+def read_codex_status(text):
+    parsed = tomllib.loads(text) if text.strip() else {}
+    value = (parsed.get("tui") or {}).get("status_line")
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("Codex tui.status_line must be a string array or null")
+    return tuple(value)
+
+
+def set_codex_status(text, items):
+    if text.strip():
+        tomllib.loads(text)
+    lines = _toml_lines(text)
+    newline = _newline(text)
+    section = _tui_bounds(lines)
+    bounds = _status_bounds(lines, section)
+    previous = {
+        "present": bounds is not None,
+        "raw": "".join(lines[bounds[0]:bounds[1]]) if bounds else None,
+        "sectionPresent": section is not None,
+    }
+    literal = "status_line = [" + ", ".join(json.dumps(item) for item in items) + "]" + newline
+    if bounds:
+        lines[bounds[0]:bounds[1]] = [literal]
+    elif section:
+        insert_at = section[1]
+        if insert_at > 0 and lines[insert_at - 1] and not lines[insert_at - 1].endswith(("\n", "\r")):
+            lines[insert_at - 1] += newline
+        lines.insert(insert_at, literal)
+    else:
+        if lines and lines[-1].strip():
+            if not lines[-1].endswith(("\n", "\r")):
+                lines[-1] += newline
+            lines.append(newline)
+        lines.extend(["[tui]" + newline, literal])
+    updated = "".join(lines)
+    tomllib.loads(updated)
+    return updated, previous
+
+
+def restore_codex_status(text, previous):
+    lines = _toml_lines(text)
+    section = _tui_bounds(lines)
+    bounds = _status_bounds(lines, section)
+    if not bounds:
+        raise ValueError("Codex status line is missing during restore")
+    if previous.get("present"):
+        raw = previous.get("raw")
+        if not isinstance(raw, str):
+            raise ValueError("rollback metadata is missing the prior Codex setting")
+        lines[bounds[0]:bounds[1]] = _toml_lines(raw)
+    else:
+        del lines[bounds[0]:bounds[1]]
+        if not previous.get("sectionPresent"):
+            section = _tui_bounds(lines)
+            if section:
+                body = lines[section[0] + 1:section[1]]
+                if all(not line.strip() or line.lstrip().startswith("#") for line in body):
+                    del lines[section[0]:section[1]]
+    restored = "".join(lines)
+    if restored.strip():
+        tomllib.loads(restored)
+    return restored
+
+
+def load_rollback(path):
+    if not path.exists():
+        return None
+    with path.open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict) or value.get("schema") != 1:
+        raise ValueError("rollback metadata has an unsupported shape")
+    return value
+
+
+def apply_config():
+    target = paths()
+    if not RENDERER_SOURCE.is_file():
+        raise FileNotFoundError("bundled Claude renderer is missing")
+    claude = load_claude(target["claude"])
+    codex_text = target["codex"].read_text(encoding="utf-8-sig") if target["codex"].exists() else ""
+    codex_current = read_codex_status(codex_text)
+    desired_c = desired_claude(target["renderer"])
+    previous_rollback = load_rollback(target["rollback"])
+
+    codex_updated, codex_previous = set_codex_status(codex_text, CODEX_STATUS_LINE)
+    current_claude = claude.get("statusLine")
+    claude_previous = {"present": "statusLine" in claude, "value": current_claude}
+
+    if previous_rollback and current_claude == desired_c:
+        claude_previous = previous_rollback["previous"]["claude"]
+    if previous_rollback and codex_current == CODEX_STATUS_LINE:
+        codex_previous = previous_rollback["previous"]["codex"]
+
+    rollback = {
+        "schema": 1,
+        "applied": {"claude": desired_c, "codex": list(CODEX_STATUS_LINE)},
+        "previous": {"claude": claude_previous, "codex": codex_previous},
+    }
+    rollback_text = json.dumps(rollback, indent=2, ensure_ascii=False) + "\n"
+    existing_rollback = target["rollback"].read_text("utf-8") if target["rollback"].exists() else None
+    if rollback_text != existing_rollback:
+        atomic_write(target["rollback"], rollback_text)
+
+    source_bytes = RENDERER_SOURCE.read_bytes()
+    if not target["renderer"].exists() or target["renderer"].read_bytes() != source_bytes:
+        atomic_write(target["renderer"], source_bytes)
+
+    if current_claude != desired_c:
+        claude["statusLine"] = desired_c
+        atomic_write(target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
+    if codex_text != codex_updated:
+        atomic_write(target["codex"], codex_updated)
+    print("applied: Claude statusLine and Codex tui.status_line aligned")
+    return 0
+
+
+def check_config():
+    target = paths()
+    drift = []
+    try:
+        desired_c = desired_claude(target["renderer"])
+        claude = load_claude(target["claude"])
+        if claude.get("statusLine") != desired_c:
+            drift.append("Claude setting")
+        codex_text = target["codex"].read_text(encoding="utf-8-sig") if target["codex"].exists() else ""
+        if read_codex_status(codex_text) != CODEX_STATUS_LINE:
+            drift.append("Codex setting")
+        if not target["renderer"].is_file() or target["renderer"].read_bytes() != RENDERER_SOURCE.read_bytes():
+            drift.append("Claude renderer")
+    except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+        print("cannot check: " + str(error), file=sys.stderr)
+        return 2
+    if drift:
+        print("drift: " + ", ".join(drift))
+        return 1
+    print("aligned: Claude and Codex status lines match aligned-v1")
+    return 0
+
+
+def restore_config():
+    target = paths()
+    try:
+        rollback = load_rollback(target["rollback"])
+        if rollback is None:
+            print("cannot restore: no rollback metadata", file=sys.stderr)
+            return 2
+        claude = load_claude(target["claude"])
+        codex_text = target["codex"].read_text(encoding="utf-8-sig") if target["codex"].exists() else ""
+        skipped = []
+        if claude.get("statusLine") == rollback["applied"]["claude"]:
+            previous = rollback["previous"]["claude"]
+            if previous.get("present"):
+                claude["statusLine"] = previous.get("value")
+            else:
+                claude.pop("statusLine", None)
+            atomic_write(target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
+        else:
+            skipped.append("Claude setting changed after apply")
+
+        if read_codex_status(codex_text) == tuple(rollback["applied"]["codex"]):
+            atomic_write(target["codex"], restore_codex_status(codex_text, rollback["previous"]["codex"]))
+        else:
+            skipped.append("Codex setting changed after apply")
+        if skipped:
+            print("not restored: " + "; ".join(skipped))
+            return 1
+        print("restored: prior Claude and Codex owned settings")
+        return 0
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+        print("cannot restore: " + str(error), file=sys.stderr)
+        return 2
+
+
+def preview():
+    sample = {
+        "model": {"display_name": "model"},
+        "effort": {"level": "high"},
+        "workspace": {"current_dir": "project", "git_branch": "main"},
+        "context_window": {"remaining_percentage": 72},
+        "rate_limits": {
+            "five_hour": {"used_percentage": 36},
+            "seven_day": {"used_percentage": 19},
+        },
+        "model_weekly": {"label": "model-week", "used_percentage": 12},
+    }
+    print("Claude (two lines)")
+    for line in render_claude(sample, color=sys.stdout.isatty()):
+        print(line)
+    print("Codex (native footer)")
+    print("model high | project | main | 72% left | 64% left | 81% left")
+    print("Codex identifiers: " + ", ".join(CODEX_STATUS_LINE))
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("check", "preview", "apply", "restore"))
+    args = parser.parse_args(argv)
+    try:
+        return {"check": check_config, "preview": preview, "apply": apply_config, "restore": restore_config}[args.command]()
+    except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+        print("statusline-ctl: cannot run: " + str(error), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
