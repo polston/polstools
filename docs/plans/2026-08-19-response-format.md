@@ -3,7 +3,8 @@
 2026-08-19, updated 2026-08-23. The `p` plugin makes every turn-ending reply
 open with a fixed triage block — FINDINGS, PROBLEMS, ASKS. Interim tool progress
 is one concise sentence instead. A horizontal rule separates optional detail
-only when such detail follows.
+only when such detail follows. An unimplemented material proposal expands its
+recommendation with ADD, CHANGE, REMOVE, and PRESERVE subpoints above that rule.
 
 ## Mechanism: why hooks, not an output style or instruction-file prose
 
@@ -77,6 +78,10 @@ embedded markdown-to-terminal renderer:
 7. Every problem carries reader impact and a recommended action, and every
    answer-requiring question lives in ASKS. Unresolved problem and ask numbers
    persist across turns; turn-local findings restart at 1.
+8. Material proposals expose their complete change surface before a decision:
+   ADD, CHANGE, REMOVE, and PRESERVE are all explicit, including `None.`. The
+   expansion is proposal-only so completed work and read-only findings stay
+   compact.
 
 Sources: Anthropic prompt-engineering documentation (output consistency,
 examples, long-context tips); IFEval and successors; CFBench; RECAP; "Let Me

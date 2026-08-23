@@ -51,6 +51,17 @@ class FormatContractTests(unittest.TestCase):
         self.assertIn("Every PROBLEM has a reader consequence and recommended", self.reminder)
         self.assertIn("Questions needing answers appear only in ASKS", self.reminder)
 
+    def test_material_proposals_disclose_the_complete_change_surface(self):
+        labels = ("ADD", "CHANGE", "REMOVE", "PRESERVE")
+        for index, label in enumerate(labels, 1):
+            self.assertIn(f"`**N.2.{index}. {label}**`", self.spec)
+            self.assertIn(label, self.reminder)
+        self.assertIn("current state → proposed state", self.spec)
+        self.assertIn("current → proposed plus mechanism", self.reminder)
+        self.assertIn("write `None.` for an empty", self.spec)
+        self.assertIn("Keep them above the rule", self.reminder)
+        self.assertIn("Omit it for completed work", self.spec)
+
     def test_only_open_problem_and_ask_numbers_persist(self):
         self.assertIn("Unresolved PROBLEMS and ASKS retain their numbers", self.spec)
         self.assertIn(
@@ -74,6 +85,16 @@ class FormatContractTests(unittest.TestCase):
             for line in problems
             if (match := re.fullmatch(r"\*\*\d+\.\d+\.\*\* (.+)", line))
         ]
+        proposal_parts = [
+            (match.group(1), match.group(2))
+            for line in problems
+            if (
+                match := re.fullmatch(
+                    r"\*\*\d+\.\d+\.\d+\. (ADD|CHANGE|REMOVE|PRESERVE)\*\* (.+)",
+                    line,
+                )
+            )
+        ]
         ask_items = self._flat_items(asks)
 
         self.assertLessEqual(
@@ -82,6 +103,11 @@ class FormatContractTests(unittest.TestCase):
         self.assertTrue(all(self._words(item) <= 30 for item in finding_items))
         self.assertTrue(all(self._words(item) <= 15 for item in problem_titles))
         self.assertTrue(all(self._words(item) <= 30 for item in problem_subpoints))
+        self.assertEqual(
+            [label for label, _ in proposal_parts],
+            ["ADD", "CHANGE", "REMOVE", "PRESERVE"],
+        )
+        self.assertTrue(all(self._words(item) <= 30 for _, item in proposal_parts))
         self.assertTrue(all(self._words(item) <= 30 for item in ask_items))
         self.assertTrue(all("?" not in line for line in findings + problems))
         self.assertTrue(all("?" in item for item in ask_items))

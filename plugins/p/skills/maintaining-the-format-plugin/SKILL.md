@@ -27,7 +27,8 @@ models follow it. For a history audit:
    be one concise status sentence; only turn-ending replies use the full triage
    block.
 3. Measure the exact opener, section order, bold-number shape, top-level item
-   count, line lengths, above-fold size, and open PROBLEM/ASK continuity.
+   count, line lengths, above-fold size, proposal-delta completeness, and open
+   PROBLEM/ASK continuity.
 4. Do not infer Claude noncompliance unless the transcript postdates the
    installed plugin. Claude history does not persist hook-added context, so an
    old unformatted reply is not evidence that a current hook failed.
@@ -63,6 +64,7 @@ says otherwise.
 | Spec text duplicated in miniature in `turn-reminder.md` | Per-turn reinjection is the measured drift antidote; the repetition is the feature |
 | Interim tool progress has no triage headers | The full contract is reserved for turn-ending replies; the final reply repeats every actionable item |
 | A turn-ending reply can omit `---` | The separator exists only when optional detail follows the triage block |
+| Completed work lacks ADD/CHANGE/REMOVE/PRESERVE | Proposal deltas describe unimplemented material changes; FINDINGS report completed work |
 
 ## Removing the response format for good
 

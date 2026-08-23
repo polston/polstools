@@ -9,3 +9,7 @@ top-level items total and each substantive line at most 30 words; problem
 titles stay under 15. Every PROBLEM has a reader consequence and recommended
 action. Questions needing answers appear only in ASKS. Unresolved PROBLEM and
 ASK numbers persist without reuse; FINDINGS restart at 1 each final reply.
+
+For an unimplemented material proposal, follow its recommendation with required
+ADD, CHANGE, REMOVE, and PRESERVE subpoints; state `None.` when empty, and say
+current → proposed plus mechanism under CHANGE. Keep them above the rule.

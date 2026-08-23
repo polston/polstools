@@ -41,6 +41,20 @@ this turn.
 - `**N.2.** Recommendation` — plain text, at most 30 words, naming the next
   action. When the reader must decide, point to the matching ASK.
 
+When `N.2` proposes a material change that has not been implemented, put its
+complete change surface immediately below the recommendation:
+
+- `**N.2.1. ADD**` — new files, behavior, data, or dependencies.
+- `**N.2.2. CHANGE**` — current state → proposed state, plus how it changes.
+- `**N.2.3. REMOVE**` — deleted, disabled, disconnected, or superseded items.
+- `**N.2.4. PRESERVE**` — adjacent behavior, data, configuration, or scope that
+  remains untouched.
+
+All four lines are required for such a proposal; write `None.` for an empty
+category. Each line is at most 30 words. Keep this change surface above the
+horizontal rule because the reader needs it to evaluate the recommendation.
+Omit it for completed work, read-only findings, and non-mutating advice.
+
 `# ASKS` — the only place for questions that need a reader answer, most
 pressing first. Flat numbered lines, one self-contained question of at most 30
 words per line — never two questions chained in one line. Each ask states the
@@ -82,6 +96,10 @@ The reader sees the reply through a terminal markdown renderer, so:
 **1.1.** A job that stalls once disappears without a log entry, so the reader cannot recover or diagnose it.
 **1.1.1.** `worker.py:141`; origin: timeout refactor
 **1.2.** Requeue timed-out jobs with exponential backoff; decision needed — see ASK 1.
+**1.2.1. ADD** A capped retry counter and dead-letter fallback.
+**1.2.2. CHANGE** Timeout handling: return immediately → requeue with exponential backoff.
+**1.2.3. REMOVE** Silent loss after a timeout.
+**1.2.4. PRESERVE** Existing success handling and log format.
 
 # ASKS
 **1.** Should timed-out jobs requeue with backoff? Recommended: yes, with a retry cap and dead-letter fallback.
