@@ -1,0 +1,17 @@
+{
+  "name": "polstools",
+  "description": "Personal tooling for privacy audits, workflow analysis, response formatting, code review, and platform-specific fixes.",
+  "version": "1.0.0",
+  "author": {
+    "name": "polston"
+  },
+  "keywords": [
+    "skills",
+    "workflow",
+    "privacy",
+    "retrospective",
+    "format",
+    "review",
+    "windows"
+  ]
+}

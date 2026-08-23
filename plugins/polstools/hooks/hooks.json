@@ -1,0 +1,25 @@
+{
+  "description": "Injects the response-format spec at session start and a short reminder every turn (per-turn reinjection counters within-session drift). The gate script prints plain stdout, which becomes context, unless the session is toggled off via /polstools:off; a missing payload shows a hook error without blocking the prompt.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate \"${CLAUDE_PLUGIN_ROOT}/style/response-format.md\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate \"${CLAUDE_PLUGIN_ROOT}/style/turn-reminder.md\""
+          }
+        ]
+      }
+    ]
+  }
+}

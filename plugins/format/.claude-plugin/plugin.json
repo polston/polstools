@@ -1,9 +1,0 @@
-{
-  "name": "format",
-  "version": "0.1.0",
-  "description": "Fixed reply structure — findings, problems, asks, then everything else below a rule — injected at session start, reinforced every turn, and toggleable per session with /format:off.",
-  "author": {
-    "name": "polston"
-  },
-  "keywords": ["format", "output-style", "hooks", "response-structure"]
-}

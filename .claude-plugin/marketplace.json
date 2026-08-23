@@ -6,44 +6,12 @@
   },
   "plugins": [
     {
-      "name": "core",
-      "source": "./plugins/core",
-      "description": "Cross-harness working skills: design-fork judgment, goal conditions, doc-drift detection, repo privacy auditing, and branch-base checking.",
-      "version": "0.2.0",
+      "name": "polstools",
+      "source": "./plugins/polstools",
+      "description": "Personal tooling for privacy audits, workflow analysis, response formatting, code review, and platform-specific fixes.",
+      "version": "1.0.0",
       "category": "productivity",
-      "keywords": ["skills", "workflow", "cross-runtime", "git", "privacy"]
-    },
-    {
-      "name": "windows",
-      "source": "./plugins/windows",
-      "description": "Windows-specific fixes and reference: terminal keybindings and other host quirks that only apply on Windows.",
-      "version": "0.1.0",
-      "category": "productivity",
-      "keywords": ["windows", "terminal", "platform"]
-    },
-    {
-      "name": "retro",
-      "source": "./plugins/retro",
-      "description": "Retrospectives from measured session history: find recurring friction, audit which standing rules and skills actually do anything, scout tooling against named seams, count stopped promises where a turn ended on an announced action that never ran, check whether a rule change moved what it was aimed at, and decide harness settings such as the prompt-cache TTL from what the machine did.",
-      "version": "0.4.0",
-      "category": "productivity",
-      "keywords": ["retrospective", "workflow", "session-history", "metrics", "follow-through", "cost", "rule-effect"]
-    },
-    {
-      "name": "format",
-      "source": "./plugins/format",
-      "description": "Fixed reply structure — findings, problems, asks, then everything else below a rule — injected at session start, reinforced every turn, and toggleable per session with /format:off.",
-      "version": "0.1.0",
-      "category": "productivity",
-      "keywords": ["format", "output-style", "hooks", "response-structure"]
-    },
-    {
-      "name": "review",
-      "source": "./plugins/review",
-      "description": "Workflow-backed code review: a blinded, grounded, ensemble pass that catches reinvention, over-complex choices, subtle spec-mismatch bugs, and doc drift a surface read misses. Distills to ensemble-stable findings plus a contested bucket.",
-      "version": "0.1.0",
-      "category": "productivity",
-      "keywords": ["review", "workflow", "ensemble", "code-quality"]
+      "keywords": ["skills", "workflow", "privacy", "retrospective", "format", "review", "windows"]
     }
   ]
 }
