@@ -1,8 +1,9 @@
-# Response-format plugin — design record
+# Response-format feature — design record
 
-2026-08-19. The `format` plugin makes every assistant reply open with a fixed
-triage block — FINDINGS, PROBLEMS, ASKS — followed by a horizontal rule, with
-everything else below the rule as optional reading.
+2026-08-19, updated 2026-08-23. The `p` plugin makes every turn-ending reply
+open with a fixed triage block — FINDINGS, PROBLEMS, ASKS. Interim tool progress
+is one concise sentence instead. A horizontal rule separates optional detail
+only when such detail follows.
 
 ## Mechanism: why hooks, not an output style or instruction-file prose
 
@@ -16,9 +17,10 @@ everything else below the rule as optional reading.
    degradation ~39% on average; drift observable within ~8 turns). The
    measured antidote is re-injecting the rules late in context — RECAP-style
    re-injection lifted format adherence by ~16 points in benchmarks — so the
-   plugin adds a UserPromptSubmit hook that repeats a four-line reminder every
-   turn. In-prompt self-check instructions alone underperform: models restate
-   constraints while violating them.
+   plugin adds a UserPromptSubmit hook that repeats a compact reminder every
+   turn. The reminder distinguishes interim progress from a turn-ending reply;
+   in-prompt self-check instructions alone underperform because models can
+   restate constraints while violating them.
 
 Both hooks emit plain stdout (appended to context for SessionStart and
 UserPromptSubmit); no JSON envelope is needed, so the payloads stay as
@@ -26,16 +28,14 @@ readable markdown files under `style/`.
 
 The injection is toggleable per session: both hooks route through
 `bin/format-ctl gate`, which prints the payload unless a per-session flag
-file exists in a state directory outside any repo (`%LOCALAPPDATA%` on
-Windows, `~/.local/state` elsewhere). `/format:off` and `/format:on`
-flip the flag — the hook side reads the session id from the hook input JSON,
-the command side from `CLAUDE_CODE_SESSION_ID` (present in the tool
-environment). Unreadable hook input fails open to ON; flags older than 14
-days are pruned on every toggle. A bad payload makes `gate` exit 1, not 2 —
-exit 2 from a UserPromptSubmit hook blocks processing and erases the user's
-prompt. One portability caveat: the wiring invokes `python`; on a host where
-only `python3` exists, hooks.json and both command files need that one-word
-swap.
+file exists under the operating-system temp directory. `/p:fmt-off` and
+`/p:fmt-on` are native skills that flip the flag — the hook side reads the
+session id from hook input JSON, while the skill side accepts the native Claude
+Code or Codex session environment. Unreadable hook input fails open to ON;
+flags older than 14 days are pruned on every toggle. A bad payload makes `gate`
+exit 1, not 2 — exit 2 from a UserPromptSubmit hook blocks processing and
+erases the user's prompt. Hook commands execute the controller directly through
+its Python 3 shebang.
 
 ## Renderer facts the format is built around
 
@@ -56,21 +56,27 @@ embedded markdown-to-terminal renderer:
 1. Skeleton plus one filled `<example>` rather than prose rules alone —
    vendor-doc guidance; examples outperform abstract instructions for output
    consistency.
-2. "Begin the reply with the literal line `# FINDINGS`" — the vendor-endorsed
-   anti-preamble device now that response prefill is unsupported.
-3. Fixed sections that are always present (`**1.** None.` when empty) —
+2. "Begin a turn-ending reply with the literal line `# FINDINGS`" — the
+   vendor-endorsed anti-preamble device now that response prefill is
+   unsupported. Interim tool progress is explicitly exempt.
+3. Fixed sections in turn-ending replies (`**1.** None.` when empty) —
    structural constraints are the best-followed constraint family in
-   IFEval-style measurements; optional sections invite drift.
-4. Word caps ("at most 15 words") kept from the operator's spec but treated
-   as soft targets — measured compliance with numeric length caps is only
-   approximate (40–88% under perturbation), and length is the worst-followed
-   constraint family.
+   IFEval-style measurements; optional final sections invite drift.
+4. Five top-level items across the whole triage block, 30-word substantive
+   lines, and 15-word problem titles reflect repeated history evidence. Numeric
+   length compliance remains approximate, so excess detail has a sanctioned
+   home below the rule rather than being silently discarded.
 5. Plain register, positive framing, no CAPS/IMPORTANT inflation — current
    models overtrigger on aggressive wording; emphasis is reserved for
    nothing here.
 6. The free-form zone below the rule is deliberate: measured results show
    over-strict output formats degrade reasoning quality, so the structured
-   block stays minimal and everything else has somewhere sanctioned to go.
+   block stays minimal and everything else has somewhere sanctioned to go. The
+   separator is conditional because a rule with no following detail separates
+   nothing.
+7. Every problem carries reader impact and a recommended action, and every
+   answer-requiring question lives in ASKS. Unresolved problem and ask numbers
+   persist across turns; turn-local findings restart at 1.
 
 Sources: Anthropic prompt-engineering documentation (output consistency,
 examples, long-context tips); IFEval and successors; CFBench; RECAP; "Let Me
@@ -80,18 +86,20 @@ relied on above.
 
 ## Layout
 
-- `plugins/format/hooks/hooks.json` — registers both hooks; each command runs
+- `plugins/p/hooks/hooks.json` — registers both hooks; each command runs
   `bin/format-ctl gate`, which prints its payload unless the session is
   toggled off. A missing payload still surfaces as a failed hook.
-- `plugins/format/bin/format-ctl` — the gate plus the `off`/`on`/`status`
+- `plugins/p/bin/format-ctl` — the gate plus the `off`/`on`/`status`
   toggle (stdlib Python 3). Reconfigures stdio to UTF-8 first: piped stdout
   on Windows defaults to the ANSI code page and mangles non-ASCII payload
   bytes (caught by running the gate, invisible in file reads).
-- `plugins/format/bin/format-e2e` — 19-check end-to-end verifier: wiring,
+- `plugins/p/bin/format-e2e` — 25-check end-to-end verifier: wiring,
   gates byte-exact, UTF-8 validity, toggle lifecycle, exit-code contract,
   catalog sync.
-- `plugins/format/skills/maintaining-the-format-plugin/` — health check,
-  repair direction, deliberate-choices table, and full-removal checklist.
-- `plugins/format/commands/` — `/format:off` and `/format:on`.
-- `plugins/format/style/` — the payloads; editing the format means editing
-  these two files only.
+- `plugins/p/skills/maintaining-the-format-plugin/` — mechanical and
+  behavioral health checks, repair direction, deliberate-choices table, and
+  full-removal checklist.
+- `plugins/p/skills/fmt-off/` and `plugins/p/skills/fmt-on/` — native
+  `/p:fmt-off` and `/p:fmt-on` toggles for Claude Code and Codex sessions.
+- `plugins/p/style/` — the full and per-turn payloads; semantic contract tests
+  keep their duplicated rules aligned.

@@ -1,6 +1,6 @@
 ---
 name: maintaining-the-format-plugin
-description: Use when the p response format misbehaves — replies stop following FINDINGS/PROBLEMS/ASKS, injected text is missing or mangled, /p:fmt-off or /p:fmt-on seems stuck — or after editing its wiring or payloads.
+description: Use when the p response format misbehaves, when auditing its usefulness or compliance across Claude Code and Codex histories, or after editing its wiring or payloads. Separate interim from turn-ending replies and mechanical health from behavioral evidence.
 ---
 
 # Maintaining the p response format
@@ -16,6 +16,28 @@ description: Use when the p response format misbehaves — replies stop followin
    this session actually receive the spec at start? Is there a stale off-flag
    for the current session (`format-ctl status`)? A missing injection with a
    passing e2e is almost always one of these three.
+
+## Behavioral health check
+
+Mechanical health does not show whether the format remains useful or whether
+models follow it. For a history audit:
+
+1. Exclude the running audit session and deliberately toggled-off intervals.
+2. Report interim and turn-ending messages separately. Interim messages should
+   be one concise status sentence; only turn-ending replies use the full triage
+   block.
+3. Measure the exact opener, section order, bold-number shape, top-level item
+   count, line lengths, above-fold size, and open PROBLEM/ASK continuity.
+4. Do not infer Claude noncompliance unless the transcript postdates the
+   installed plugin. Claude history does not persist hook-added context, so an
+   old unformatted reply is not evidence that a current hook failed.
+5. Keep transcript text, project identifiers, paths, session identifiers, and
+   raw audit ledgers outside repositories. A report committed here may contain
+   aggregate counts only.
+
+There is not yet one cross-harness history parser. State which harness produced
+each denominator and treat a small or inferred cohort as illustrative rather
+than general evidence.
 
 ## Repairing — committed state is canonical
 
@@ -39,11 +61,13 @@ says otherwise.
 | Flag dir sits under the OS temp directory | Both harness sandboxes permit temp writes; config paths may be blocked or may themselves be repositories |
 | stdin/stdout reconfigured to UTF-8 at the top of `format-ctl` | Piped stdout on Windows defaults to the ANSI code page and mangles non-ASCII payload bytes |
 | Spec text duplicated in miniature in `turn-reminder.md` | Per-turn reinjection is the measured drift antidote; the repetition is the feature |
+| Interim tool progress has no triage headers | The full contract is reserved for turn-ending replies; the final reply repeats every actionable item |
+| A turn-ending reply can omit `---` | The separator exists only when optional detail follows the triage block |
 
 ## Removing the response format for good
 
-1. Remove the format hooks, commands, payloads, controller scripts, and this
-   maintenance skill from p. Do not uninstall the whole plugin unless
+1. Remove the format hooks, toggle skills, payloads, controller scripts, and
+   this maintenance skill from p. Do not uninstall the whole plugin unless
    all of its other tools should disappear too.
 2. Delete the `p-format-toggle` directory under the OS temp directory —
    orphaned flags can outlive the plugin until normal temp cleanup removes them.
@@ -61,3 +85,5 @@ says otherwise.
 - Declaring the plugin healthy from file reads alone — only running the hook
   commands catches execution-level defects (the UTF-8 mangling was invisible
   in every file read and caught only by running the gate).
+- Combining interim and turn-ending replies into one adherence rate — a valid
+  one-sentence progress update then looks like a missing triage block.
