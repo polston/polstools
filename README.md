@@ -4,7 +4,7 @@ Personal tooling bundled as one Claude Code plugin: privacy auditing, workflow
 analysis, response formatting, code review, and platform-specific fixes.
 
 ```sh
-claude plugin marketplace add .
+claude plugin marketplace add polston/polstools
 claude plugin install polstools@polstools --scope user
 ```
 

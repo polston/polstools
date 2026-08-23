@@ -1,6 +1,6 @@
 # polstools
 
-A single plugin distributed through a local marketplace: skills, commands, and
+A single plugin distributed through its marketplace: skills, commands, and
 scripts shared across AI coding harnesses from one repository. Everything
 committed here is published to a git remote — write accordingly.
 
