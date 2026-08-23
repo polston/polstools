@@ -14,6 +14,7 @@ processing and erases the user's prompt, which a broken payload must never do.
 import json
 import os
 import sys
+import tempfile
 import time
 
 # The harness reads hook stdout as UTF-8, but on Windows a piped stdout
@@ -22,12 +23,10 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8")
 
-# Outside harness config directories on purpose: one may itself be a git repo,
-# and state files must not show up as untracked noise in it.
-FLAG_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA")
-    or os.path.join(os.path.expanduser("~"), ".local", "state"),
-    "p-format-toggle",
+# The flags are disposable session state. The OS temp directory is writable in
+# both harness sandboxes and keeps the files out of repositories and config.
+FLAG_DIR = os.environ.get("P_FORMAT_STATE_DIR") or os.path.join(
+    tempfile.gettempdir(), "p-format-toggle"
 )
 STALE_SECONDS = 14 * 24 * 3600
 SESSION_ENV_VARS = (

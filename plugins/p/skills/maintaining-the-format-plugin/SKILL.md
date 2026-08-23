@@ -36,7 +36,7 @@ says otherwise.
 | Looks wrong | Why it is right |
 |---|---|
 | `gate` exits 1 on a bad payload while the toggles exit 2 | Exit 2 from a UserPromptSubmit hook blocks processing and erases the user's prompt |
-| Flag dir sits outside the home config dir | That dir is often itself a git repo; state files would show up as untracked noise |
+| Flag dir sits under the OS temp directory | Both harness sandboxes permit temp writes; config paths may be blocked or may themselves be repositories |
 | stdin/stdout reconfigured to UTF-8 at the top of `format-ctl` | Piped stdout on Windows defaults to the ANSI code page and mangles non-ASCII payload bytes |
 | Spec text duplicated in miniature in `turn-reminder.md` | Per-turn reinjection is the measured drift antidote; the repetition is the feature |
 
@@ -45,8 +45,8 @@ says otherwise.
 1. Remove the format hooks, commands, payloads, controller scripts, and this
    maintenance skill from p. Do not uninstall the whole plugin unless
    all of its other tools should disappear too.
-2. Delete the state dir `p-format-toggle` (under `%LOCALAPPDATA%`, or
-   `~/.local/state` elsewhere) — orphaned flags outlive the plugin.
+2. Delete the `p-format-toggle` directory under the OS temp directory —
+   orphaned flags can outlive the plugin until normal temp cleanup removes them.
 3. Remove any instruction-file carve-out that defers other formatting rules
    to this feature (grep the user/global instructions for `format`).
 4. Verify: a fresh session shows no FINDINGS/PROBLEMS/ASKS injection and no

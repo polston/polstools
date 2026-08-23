@@ -10,6 +10,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SID = "format-e2e-test-session"
@@ -158,9 +159,8 @@ check("toggle without session id exits 2", r.returncode == 2, "rc=%d" % r.return
 
 # cleanup: remove the test flag if any state remains
 flag_dir = os.path.join(
-    os.environ.get("LOCALAPPDATA")
-    or os.path.join(os.path.expanduser("~"), ".local", "state"),
-    "p-format-toggle")
+    tempfile.gettempdir(), "p-format-toggle")
+flag_dir = os.environ.get("P_FORMAT_STATE_DIR") or flag_dir
 flag = os.path.join(flag_dir, SID + ".off")
 if os.path.exists(flag):
     os.unlink(flag)
