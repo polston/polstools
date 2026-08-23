@@ -54,6 +54,30 @@ PROJECTS_DIR = CLAUDE_DIR / "projects"
 WORK_DIR = Path(os.environ.get("RETRO_HOME", HOME / ".retro"))
 METRICS_FILE = WORK_DIR / "metrics.jsonl"
 STATE_FILE = WORK_DIR / "state.json"
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+
+from retro_eval.catalog import ensure_rubric_use, load_rubric_catalogue
+
+RUBRICS_FILE = PLUGIN_ROOT / "rubrics" / "rubrics.json"
+LEGACY_TURN_RUBRIC = "turn_friction_legacy"
+LEGACY_TURN_COUNTERS = frozenset(("correction_candidates", "interrupts"))
+
+
+@lru_cache(maxsize=None)
+def legacy_turn_labels_allow(use):
+    """Resolve the legacy classifier's allowed output roles from catalogue data."""
+    catalogue = load_rubric_catalogue(RUBRICS_FILE)
+    rubric = next((item for item in catalogue.rubrics
+                   if item.id == LEGACY_TURN_RUBRIC), None)
+    if rubric is None:
+        return False
+    try:
+        ensure_rubric_use(rubric, use)
+    except ValueError:
+        return False
+    return True
 
 # --- Tuning constants ------------------------------------------------------
 # These define what counts as friction. They are the knobs worth arguing about;
@@ -1055,8 +1079,10 @@ def split_population(rows):
 
 
 def friction_score(row):
-    """Rank sessions for which ones are worth quoting. Weighted toward signals
-    that mean a human had to intervene, over ones that just mean a long session.
+    """Rank sessions using only signals permitted for decision support.
+
+    Legacy turn guesses remain available to sample review moments but do not
+    affect this score while their rubric is candidate-sampler-only.
 
     `repeat_calls` is deliberately unscored. It was 42% of this score and the
     largest single input, and a recount showed most of what it counted was not a
@@ -1065,10 +1091,12 @@ def friction_score(row):
     bad signal OUT, not from finding a better one. The column is still reported;
     it just no longer decides what a human is shown.
     """
-    return (int(row.get("correction_candidates") or 0) * 4
-            + int(row.get("interrupts") or 0) * 4
-            + int(row.get("permission_mode_changes") or 0) * 3
-            + int(row.get("tool_errors") or 0))
+    score = (int(row.get("permission_mode_changes") or 0) * 3
+             + int(row.get("tool_errors") or 0))
+    if legacy_turn_labels_allow("decision_support"):
+        score += (int(row.get("correction_candidates") or 0) * 4
+                  + int(row.get("interrupts") or 0) * 4)
+    return score
 
 
 MOMENTS_PER_SESSION = 3
@@ -1137,12 +1165,16 @@ def cmd_pack(args):
              "Main sessions only. Subagent transcripts are spend and are "
              "reported under the table — every rate here divides one "
              "population by itself.", "",
+             "Legacy correction and interrupt labels are candidate-sampler "
+             "output only. They do not affect ranking and cannot justify a "
+             "prompt, skill, rule, hook, agent, or process change.", "",
              "| signal | this window | prior | delta |", "|---|---|---|---|"]
     table = [("sessions", len(main), len(prior_main))]
     table += [(key, now_t[key], prev_t[key]) for key in ["tokens_out"] + COUNTERS]
     for key, a, b in table:
         delta = "n/a" if not b else f"{(a - b) / b * 100:+.0f}%"
-        lines.append(f"| {key} | {a} | {b} | {delta} |")
+        label = key + " (candidate only)" if key in LEGACY_TURN_COUNTERS else key
+        lines.append(f"| {label} | {a} | {b} | {delta} |")
 
     lines.append("")
     if main:
@@ -1153,7 +1185,7 @@ def cmd_pack(args):
                  f"(prior window: {len(prior_sub)}), no per-session rate: "
                  + ", ".join(f"{key} {now_s[key]}"
                              for key in ["tokens_out"] + COUNTERS))
-    lines += ["", "## Moments", ""]
+    lines += ["", "## Candidate moments", ""]
 
     ranked = sorted(main, key=friction_score, reverse=True)[:args.sessions]
     if not ranked:
@@ -1164,8 +1196,8 @@ def cmd_pack(args):
             continue
         lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
                      f"branch `{row.get('git_branch') or '-'}` · score {score}")
-        lines.append(f"corrections {row.get('correction_candidates')}, "
-                     f"interrupts {row.get('interrupts')}, "
+        lines.append(f"correction candidates {row.get('correction_candidates')}, "
+                     f"interrupt candidates {row.get('interrupts')}, "
                      f"permission-mode changes {row.get('permission_mode_changes')}, "
                      f"repeat calls {row.get('repeat_calls')}, "
                      f"tool errors {row.get('tool_errors')}, "
@@ -1646,7 +1678,10 @@ def report_labels(samples):
           f"prior >= {CORRECTION_MIN_PRIOR_CHARS})\n")
     print("| class | precision | recall | corpus turns |")
     print("|---|---|---|---|")
-    for cls, (p, r, n) in _weighted(turns, lambda s: s["predicted"]).items():
+    for cls, (p, r, n) in _weighted(
+        turns,
+        lambda s: _predict_at(s, CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS),
+    ).items():
         print(f"| {cls} | {p:.2f} | {r:.2f} | {n:.0f} |")
 
     print("\n## Threshold sweep, correction class\n")
@@ -1918,10 +1953,16 @@ def cmd_effect(args):
     # question and the first is telling you sessions changed shape.
     turns_b, turns_a = max(b["turns"], 1), max(a["turns"], 1)
     print("Main-session rows only, one population throughout.\n")
+    if not legacy_turn_labels_allow("decision_support"):
+        print("Legacy correction and interrupt guesses are omitted: their "
+              "rubric allows candidate sampling, not decision support.\n")
     print("| signal | /session before | after | /100 turns before | after | change |")
     print("|---|---|---|---|---|---|")
     for key in COUNTERS + ["tokens_out"]:
         if key == "turns":
+            continue
+        if key in LEGACY_TURN_COUNTERS \
+                and not legacy_turn_labels_allow("decision_support"):
             continue
         sb, sa = b[key] / len(before), a[key] / len(after)
         tb, ta = b[key] / turns_b * 100, a[key] / turns_a * 100

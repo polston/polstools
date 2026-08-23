@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "status": "provisional",
+  "scorers": [
+    {
+      "id": "skill_invocation_rate",
+      "module": "retro_eval.deterministic_scorers",
+      "class": "SkillLifecycleScorer",
+      "options": {"minimum_n": 20, "max_evidence_refs": 20}
+    },
+    {
+      "id": "repeated_call_rate",
+      "module": "retro_eval.deterministic_scorers",
+      "class": "RepeatedCallScorer",
+      "options": {"minimum_n": 30, "max_evidence_refs": 20}
+    },
+    {
+      "id": "verified_outcome_rate",
+      "module": "retro_eval.deterministic_scorers",
+      "class": "VerifiedOutcomeScorer",
+      "options": {"minimum_n": 20, "max_evidence_refs": 20}
+    },
+    {
+      "id": "tool_failure_rate",
+      "module": "retro_eval.deterministic_scorers",
+      "class": "ToolFailureScorer",
+      "options": {"minimum_n": 30, "max_evidence_refs": 20}
+    },
+    {
+      "id": "input_tokens_per_verified_outcome",
+      "module": "retro_eval.deterministic_scorers",
+      "class": "InputTokensPerOutcomeScorer",
+      "options": {
+        "minimum_n": 20,
+        "max_evidence_refs": 20,
+        "confidence": 0.95,
+        "seed": 20260822,
+        "interval_backend": {
+          "module": "retro_eval.scipy_statistics",
+          "class": "ScipyBcaBackend",
+          "options": {"resamples": 9999}
+        }
+      }
+    }
+  ]
+}

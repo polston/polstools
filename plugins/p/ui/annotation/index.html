@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Retro · Human review</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">Retro / Human review</p>
+        <h1>Review the evidence</h1>
+        <p id="taskInstruction" class="task-instruction"></p>
+      </div>
+      <div class="progress-block">
+        <p id="progressText" aria-live="polite">Loading cases…</p>
+        <div class="progress-track" role="progressbar" aria-label="Annotation progress"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="progressBar"></span>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace" hidden>
+      <section class="case-desk" aria-labelledby="casePosition">
+        <div class="case-meta">
+          <p id="casePosition">Case 1 of 40</p>
+          <p id="sourceBadge">Source</p>
+        </div>
+        <article class="transcript context-panel">
+          <p class="speaker">Preceding assistant context</p>
+          <div id="contextText" class="transcript-text"></div>
+        </article>
+        <div class="turn-divider" aria-hidden="true"><span>then</span></div>
+        <article class="transcript user-panel">
+          <p class="speaker">User reply</p>
+          <div id="userText" class="transcript-text user-text" tabindex="-1"></div>
+        </article>
+
+        <div class="notes-row">
+          <label for="notes">Optional note</label>
+          <textarea id="notes" rows="2" maxlength="2000"
+                    placeholder="Record why only when the edge case matters."></textarea>
+        </div>
+
+        <nav class="case-nav" aria-label="Cases">
+          <button id="previousCase" class="quiet-button" type="button">← Previous</button>
+          <button id="clearLabel" class="quiet-button" type="button">Clear label</button>
+          <button id="nextCase" class="quiet-button" type="button">Next →</button>
+        </nav>
+      </section>
+
+      <aside class="decision-rail" aria-labelledby="decisionTitle">
+        <div class="rail-heading">
+          <p class="eyebrow">Classification</p>
+          <h2 id="decisionTitle">Choose one label</h2>
+          <p>Use the numbered shortcut shown. The choice saves immediately.</p>
+        </div>
+        <div id="proposalPanel" class="rule-card" hidden>
+          <p class="eyebrow">Rule-based scorer proposal</p>
+          <h3 id="proposalLabel"></h3>
+          <p id="proposalReason"></p>
+        </div>
+        <div id="assessmentControls" class="label-stack" role="group"
+             aria-label="Assess the proposed diagnosis" hidden>
+          <button id="assessmentCorrect" type="button"><span><strong>Correct</strong><small>The proposed diagnosis and reason fit.</small></span></button>
+          <button id="assessmentIncorrect" type="button"><span><strong>Incorrect</strong><small>Choose the better label below.</small></span></button>
+          <button id="assessmentUnsure" type="button"><span><strong>Unsure</strong><small>The evidence is not enough to judge.</small></span></button>
+        </div>
+        <div id="labelStack" class="label-stack" role="group" aria-label="Classification labels"></div>
+        <div class="rule-card">
+          <p class="eyebrow">When labels overlap</p>
+          <ol id="tieBreaks"></ol>
+        </div>
+        <p id="saveStatus" class="save-status" aria-live="polite">Ready</p>
+      </aside>
+    </main>
+
+    <section id="errorPanel" class="error-panel" hidden>
+      <h2>Review could not load</h2>
+      <p id="errorMessage"></p>
+      <button id="retry" type="button">Try again</button>
+    </section>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

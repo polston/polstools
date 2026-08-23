@@ -1,0 +1,4 @@
+# Optional, dependency-isolated analytical environment. Core extraction remains stdlib-only.
+duckdb==1.4.1
+numpy==2.5.2
+scipy==1.16.1

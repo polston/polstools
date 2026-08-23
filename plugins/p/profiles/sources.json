@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "claude",
+      "module": "retro_eval.adapters.claude",
+      "class": "ClaudeAdapter",
+      "glob": "*.jsonl",
+      "options": {
+        "direct_prompt_sources": ["typed", "queued", "suggestion_accepted"],
+        "capabilities": {
+          "human_provenance": {"state": "available"},
+          "subagent_identity": {"state": "available"},
+          "skill_attribution": {"state": "version_floor", "reason": "attributionSkill is absent from older transcripts", "version_floor": "source dependent"},
+          "skill_lifecycle": {"state": "version_floor", "reason": "only explicit attribution boundaries are normalized; terminal outcomes require a source field", "version_floor": "adapter v3"},
+          "skill_chaining": {"state": "unavailable", "reason": "declared chain identifiers are absent from current source records"},
+          "skill_opportunities": {"state": "unavailable", "reason": "trigger opportunities and missed triggers require a separately calibrated classifier"},
+          "tool_trajectory": {"state": "available"},
+          "tool_result_status": {"state": "available"},
+          "usage": {"state": "available"},
+          "cache_usage": {"state": "available"},
+          "handoffs": {"state": "unavailable", "reason": "adapter does not yet normalize parent-child dispatch links"},
+          "agent_prompt_structure": {"state": "unavailable", "reason": "normalized traces intentionally omit prompt content"},
+          "outcomes": {"state": "available"},
+          "instruction_provenance": {"state": "unavailable", "reason": "active instruction versions are not emitted authoritatively"},
+          "permissions": {"state": "unavailable", "reason": "adapter does not normalize permission-control events"},
+          "hooks": {"state": "unavailable", "reason": "hook opportunity and result events are not emitted authoritatively"},
+          "privacy_scan": {"state": "unavailable", "reason": "privacy audit results are external evaluation evidence"}
+        }
+      }
+    },
+    {
+      "name": "codex",
+      "module": "retro_eval.adapters.codex",
+      "class": "CodexAdapter",
+      "glob": "rollout-*.jsonl",
+      "options": {
+        "handoff_tools": ["spawn_agent", "followup_task", "send_message", "interrupt_agent"],
+        "capabilities": {
+          "human_provenance": {"state": "available"},
+          "subagent_identity": {"state": "available"},
+          "skill_attribution": {"state": "unavailable", "reason": "rollouts do not emit an authoritative skill attribution field"},
+          "skill_lifecycle": {"state": "unavailable", "reason": "rollouts do not emit authoritative skill lifecycle events"},
+          "skill_chaining": {"state": "unavailable", "reason": "skill invocation and chain events are not emitted authoritatively"},
+          "skill_opportunities": {"state": "unavailable", "reason": "trigger opportunities and missed triggers require a separately calibrated classifier"},
+          "tool_trajectory": {"state": "available"},
+          "tool_result_status": {"state": "unavailable", "reason": "rollout tool outputs lack a uniform authoritative status field"},
+          "usage": {"state": "available"},
+          "cache_usage": {"state": "available"},
+          "handoffs": {"state": "available"},
+          "agent_prompt_structure": {"state": "unavailable", "reason": "normalized traces intentionally omit prompt content"},
+          "outcomes": {"state": "available"},
+          "instruction_provenance": {"state": "unavailable", "reason": "active instruction versions are not emitted authoritatively"},
+          "permissions": {"state": "unavailable", "reason": "adapter does not normalize permission-control events"},
+          "hooks": {"state": "unavailable", "reason": "hook opportunity and result events are not emitted authoritatively"},
+          "privacy_scan": {"state": "unavailable", "reason": "privacy audit results are external evaluation evidence"}
+        }
+      }
+    }
+  ]
+}

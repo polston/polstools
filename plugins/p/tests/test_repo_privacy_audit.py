@@ -38,8 +38,11 @@ class RepoPrivacyAuditTests(unittest.TestCase):
         self.run_git("commit", "-q", "-m", message)
 
     def audit(self):
+        command = [str(AUDITOR)]
+        if os.name == "nt":
+            command.insert(0, "sh")
         return subprocess.run(
-            [str(AUDITOR)],
+            command,
             cwd=self.repo,
             capture_output=True,
             text=True,

@@ -11,8 +11,10 @@ Exit: 0 ran clean; toggle subcommands exit 2 when they cannot run. gate exits
 1 on a bad payload instead — exit 2 from a UserPromptSubmit hook blocks
 processing and erases the user's prompt, which a broken payload must never do.
 """
+import hashlib
 import json
 import os
+import secrets
 import sys
 import tempfile
 import time
@@ -59,27 +61,97 @@ def session_from_env():
     sys.exit(2)
 
 
-def gate(payload):
+def _telemetry_path():
+    root = os.environ.get("RETRO_HOME")
+    if not root:
+        return ""
+    root = os.path.abspath(root)
+    current = root
+    while True:
+        if os.path.isdir(os.path.join(current, ".git")):
+            return ""
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return os.path.join(root, "telemetry", "owned-hook-events.jsonl")
+
+
+def _emit_hook_event(base, event, **values):
+    path = _telemetry_path()
+    if not path:
+        return
+    payload = {**base, "event": event, "observed_at_ns": time.time_ns(), **values}
+    data = (json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            + "\n").encode("utf-8")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(descriptor, data)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        pass
+
+
+def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
+    started = time.perf_counter_ns()
+    base = {
+        "schema_version": 1,
+        "source": "polstools.format",
+        "hook_id": hook_id,
+        "hook_version": hook_version,
+        "trigger_kind": trigger_kind,
+        "invocation_id": secrets.token_hex(12),
+    }
+    _emit_hook_event(base, "opportunity")
+    _emit_hook_event(base, "start")
     sid = None
     try:
         sid = json.load(sys.stdin).get("session_id")
     except (json.JSONDecodeError, OSError, ValueError):
         pass
     if sid and os.path.exists(flag_path(sid)):
-        return
+        _emit_hook_event(
+            base, "end", status="disabled", latency_ms=max(
+                0, (time.perf_counter_ns() - started) // 1_000_000),
+            injected_bytes=0, content_sha256=hashlib.sha256(b"").hexdigest())
+        return 0
     try:
         with open(payload, encoding="utf-8") as f:
-            sys.stdout.write(f.read())
+            content = f.read()
+        sys.stdout.write(content)
     except OSError as e:
         print("format-ctl: cannot read payload: %s" % e, file=sys.stderr)
-        sys.exit(1)
+        _emit_hook_event(
+            base, "end", status="missing_payload", latency_ms=max(
+                0, (time.perf_counter_ns() - started) // 1_000_000),
+            injected_bytes=0, content_sha256=hashlib.sha256(b"").hexdigest())
+        return 1
+    encoded = content.encode("utf-8")
+    _emit_hook_event(
+        base, "end", status="ok", latency_ms=max(
+            0, (time.perf_counter_ns() - started) // 1_000_000),
+        injected_bytes=len(encoded),
+        content_sha256=hashlib.sha256(encoded).hexdigest())
+    return 0
 
 
 def main():
     args = sys.argv[1:]
-    if args and args[0] == "gate" and len(args) == 2:
-        gate(args[1])
-        return
+    if args and args[0] == "gate":
+        if len(args) not in {2, 8}:
+            print(__doc__, file=sys.stderr)
+            sys.exit(2)
+        options = dict(zip(args[2::2], args[3::2]))
+        if set(options) - {"--hook-id", "--hook-version", "--trigger-kind"}:
+            print(__doc__, file=sys.stderr)
+            sys.exit(2)
+        sys.exit(gate(
+            args[1], hook_id=options.get("--hook-id", ""),
+            hook_version=options.get("--hook-version", ""),
+            trigger_kind=options.get("--trigger-kind", "")))
     if len(args) != 1 or args[0] not in ("off", "on", "status"):
         print(__doc__, file=sys.stderr)
         sys.exit(2)
