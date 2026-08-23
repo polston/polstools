@@ -1,7 +1,7 @@
 {
   "name": "p",
-  "description": "Personal tooling for privacy audits, workflow analysis, response formatting, code review, and platform-specific fixes.",
-  "version": "1.2.0",
+  "description": "Personal tooling for privacy audits, workflow analysis, response formatting, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
+  "version": "1.3.0",
   "author": {
     "name": "polston"
   },
@@ -12,6 +12,9 @@
     "retrospective",
     "format",
     "review",
+    "statusline",
+    "claude-code",
+    "codex",
     "windows"
   ]
 }
