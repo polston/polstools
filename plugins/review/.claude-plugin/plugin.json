@@ -1,9 +1,0 @@
-{
-  "name": "review",
-  "description": "Workflow-backed code review: a blinded, grounded, ensemble pass that catches reinvention, over-complex choices, subtle spec-mismatch bugs, and doc drift a surface read misses. Distills to ensemble-stable findings plus a contested bucket.",
-  "version": "0.1.0",
-  "author": {
-    "name": "polston"
-  },
-  "keywords": ["review", "workflow", "ensemble", "code-quality"]
-}

@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""End-to-end check of the format plugin: parse hooks.json, run the exact
+hook commands with CLAUDE_PLUGIN_ROOT substituted, exercise the toggle, and
+verify the injected bytes are valid UTF-8.
+
+Exit: 0 every check passed, 1 at least one check failed, 2 could not run.
+"""
+import json
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SID = "format-e2e-test-session"
+results = []
+
+
+def check(name, ok, detail=""):
+    results.append((name, ok, detail))
+
+
+def run(cmd, stdin_text=None, env_extra=None, env_remove=(), binary=False):
+    env = dict(os.environ)
+    for name in env_remove:
+        env.pop(name, None)
+    if env_extra:
+        env.update(env_extra)
+    kwargs = {} if binary else {"text": True, "encoding": "utf-8"}
+    data = stdin_text
+    if binary and data is not None:
+        data = data.encode("utf-8")
+    return subprocess.run(cmd, input=data, capture_output=True, env=env, **kwargs)
+
+
+def hook_cmd(raw):
+    """Substitute the plugin-root variable and split like a shell would."""
+    return shlex.split(raw.replace("${CLAUDE_PLUGIN_ROOT}", ROOT.replace("\\", "/")))
+
+
+try:
+    hooks = json.load(open(os.path.join(ROOT, "hooks", "hooks.json"), encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as e:
+    print("format-e2e: cannot load hooks.json: %s" % e, file=sys.stderr)
+    sys.exit(2)
+
+# 1. hooks.json shape and every referenced payload file exists
+events = hooks["hooks"]
+check("hooks.json has SessionStart + UserPromptSubmit",
+      set(events) == {"SessionStart", "UserPromptSubmit"}, str(set(events)))
+commands = {ev: events[ev][0]["hooks"][0]["command"] for ev in events}
+payloads = {}
+for ev, raw in commands.items():
+    argv = hook_cmd(raw)
+    payloads[ev] = argv[-1]
+    check("payload exists for %s" % ev, os.path.isfile(argv[-1]), argv[-1])
+
+if not all(os.path.isfile(p) for p in payloads.values()):
+    # Bail before the byte-comparison sections traceback on the missing file.
+    for name, ok, detail in results:
+        print("%s  %s%s" % ("PASS" if ok else "FAIL", name,
+                            ("  [%s]" % detail) if detail else ""))
+    print("\naborted: missing payload; %d checks ran" % len(results))
+    sys.exit(1)
+
+# 2. Catalogs in step (only checkable in the repo layout, not an install copy)
+mk_path = os.path.join(os.path.dirname(os.path.dirname(ROOT)),
+                       ".claude-plugin", "marketplace.json")
+if os.path.isfile(mk_path):
+    pj = json.load(open(os.path.join(ROOT, ".claude-plugin", "plugin.json"),
+                        encoding="utf-8"))
+    mk = json.load(open(mk_path, encoding="utf-8"))
+    entry = [p for p in mk["plugins"] if p["name"] == "p"][0]
+    check("marketplace/plugin.json version match", entry["version"] == pj["version"])
+    check("marketplace/plugin.json description match",
+          entry["description"] == pj["description"])
+    check("marketplace/plugin.json keywords match",
+          entry.get("keywords") == pj.get("keywords"))
+
+# 3. Native format skills exist and the legacy commands are gone
+skill_scripts = {
+    mode: os.path.join(ROOT, "skills", "fmt-" + mode, "scripts", "toggle.py")
+    for mode in ("off", "on")
+}
+for mode, path in skill_scripts.items():
+    check("fmt-%s native skill script exists" % mode, os.path.isfile(path), path)
+check("legacy off/on commands are absent",
+      not os.path.exists(os.path.join(ROOT, "commands", "off.md"))
+      and not os.path.exists(os.path.join(ROOT, "commands", "on.md")))
+
+# 4. Both gates print their payload byte-exactly, exit 0
+for ev in ("SessionStart", "UserPromptSubmit"):
+    want = open(payloads[ev], encoding="utf-8").read()
+    r = run(hook_cmd(commands[ev]), stdin_text=json.dumps({"session_id": SID}))
+    check("%s gate exit 0" % ev, r.returncode == 0,
+          "rc=%d %s" % (r.returncode, r.stderr.strip()))
+    check("%s gate prints full payload" % ev, r.stdout == want,
+          "%d chars out" % len(r.stdout))
+
+# 5. Injected bytes are valid UTF-8 (piped stdout on Windows defaults to the
+#    ANSI code page without the reconfigure in format-ctl)
+r = run(hook_cmd(commands["UserPromptSubmit"]),
+        stdin_text=json.dumps({"session_id": SID}), binary=True)
+try:
+    r.stdout.decode("utf-8")
+    check("gate output is valid UTF-8", True)
+except UnicodeDecodeError as e:
+    check("gate output is valid UTF-8", False, str(e))
+
+# 6. Claude Code lifecycle: native skills toggle, status reports, hooks follow
+ctl = [sys.executable, os.path.join(ROOT, "bin", "format-ctl")]
+env_sid = {"CLAUDE_CODE_SESSION_ID": SID}
+r = run([sys.executable, skill_scripts["off"]], env_extra=env_sid)
+check("Claude fmt-off skill exit 0", r.returncode == 0, r.stderr.strip())
+r = run(hook_cmd(commands["SessionStart"]), stdin_text=json.dumps({"session_id": SID}))
+check("gate silent when session off", r.returncode == 0 and r.stdout == "",
+      "rc=%d, %d chars out" % (r.returncode, len(r.stdout)))
+r = run(ctl + ["status"], env_extra=env_sid)
+check("status reports OFF", "OFF" in r.stdout, r.stdout.strip())
+r = run([sys.executable, skill_scripts["on"]], env_extra=env_sid)
+check("Claude fmt-on skill exit 0", r.returncode == 0, r.stderr.strip())
+r = run(hook_cmd(commands["UserPromptSubmit"]), stdin_text=json.dumps({"session_id": SID}))
+check("gate prints again after on", r.returncode == 0 and r.stdout != "")
+
+# 7. Codex lifecycle uses its native session id and the same skill scripts
+env_codex = {"CODEX_SESSION_ID": SID}
+remove_claude = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
+r = run([sys.executable, skill_scripts["off"]], env_extra=env_codex,
+        env_remove=remove_claude)
+check("Codex fmt-off skill exit 0", r.returncode == 0, r.stderr.strip())
+r = run(hook_cmd(commands["UserPromptSubmit"]),
+        stdin_text=json.dumps({"session_id": SID}))
+check("Codex-off gate is silent", r.returncode == 0 and r.stdout == "",
+      "rc=%d, %d chars out" % (r.returncode, len(r.stdout)))
+r = run([sys.executable, skill_scripts["on"]], env_extra=env_codex,
+        env_remove=remove_claude)
+check("Codex fmt-on skill exit 0", r.returncode == 0, r.stderr.strip())
+
+# 8. Missing payload exits 1 with empty stdout (exit 2 from a UserPromptSubmit
+#    hook would block processing and erase the user's prompt)
+r = run(ctl + ["gate", os.path.join(ROOT, "style", "no-such-file.md")],
+        stdin_text=json.dumps({"session_id": SID}))
+check("missing payload exits 1 with empty stdout",
+      r.returncode == 1 and r.stdout == "", "rc=%d" % r.returncode)
+
+# 9. Malformed stdin fails open (still prints payload)
+want = open(payloads["SessionStart"], encoding="utf-8").read()
+r = run(hook_cmd(commands["SessionStart"]), stdin_text="not json at all")
+check("malformed stdin fails open", r.returncode == 0 and r.stdout == want)
+
+# 10. Toggle without a session id exits 2
+env_nosid = dict(os.environ)
+for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+    env_nosid.pop(name, None)
+r = subprocess.run(ctl + ["off"], capture_output=True, text=True,
+                   encoding="utf-8", env=env_nosid)
+check("toggle without session id exits 2", r.returncode == 2, "rc=%d" % r.returncode)
+
+# cleanup: remove the test flag if any state remains
+flag_dir = os.path.join(
+    tempfile.gettempdir(), "p-format-toggle")
+flag_dir = os.environ.get("P_FORMAT_STATE_DIR") or flag_dir
+flag = os.path.join(flag_dir, SID + ".off")
+if os.path.exists(flag):
+    os.unlink(flag)
+
+failed = [x for x in results if not x[1]]
+for name, ok, detail in results:
+    print("%s  %s%s" % ("PASS" if ok else "FAIL", name,
+                        ("  [%s]" % detail) if detail else ""))
+print("\n%d/%d passed" % (len(results) - len(failed), len(results)))
+sys.exit(1 if failed else 0)
