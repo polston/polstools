@@ -36,7 +36,14 @@ def run(cmd, stdin_text=None, env_extra=None, env_remove=(), binary=False):
 
 def hook_cmd(raw):
     """Substitute the plugin-root variable and split like a shell would."""
-    return shlex.split(raw.replace("${CLAUDE_PLUGIN_ROOT}", ROOT.replace("\\", "/")))
+    argv = shlex.split(raw.replace(
+        "${CLAUDE_PLUGIN_ROOT}", ROOT.replace("\\", "/")))
+    # The harness executes hook commands through a POSIX-compatible command
+    # runner. Native Windows subprocess does not honor a Python shebang, so use
+    # the same interpreter explicitly while preserving every hook argument.
+    if os.name == "nt" and os.path.basename(argv[0]) == "format-ctl":
+        argv.insert(0, sys.executable)
+    return argv
 
 
 try:
@@ -53,8 +60,9 @@ commands = {ev: events[ev][0]["hooks"][0]["command"] for ev in events}
 payloads = {}
 for ev, raw in commands.items():
     argv = hook_cmd(raw)
-    payloads[ev] = argv[-1]
-    check("payload exists for %s" % ev, os.path.isfile(argv[-1]), argv[-1])
+    payloads[ev] = argv[argv.index("gate") + 1]
+    check("payload exists for %s" % ev,
+          os.path.isfile(payloads[ev]), payloads[ev])
 
 if not all(os.path.isfile(p) for p in payloads.values()):
     # Bail before the byte-comparison sections traceback on the missing file.
@@ -97,6 +105,36 @@ for ev in ("SessionStart", "UserPromptSubmit"):
           "rc=%d %s" % (r.returncode, r.stderr.strip()))
     check("%s gate prints full payload" % ev, r.stdout == want,
           "%d chars out" % len(r.stdout))
+
+# 4a. Repository-owned hook lifecycle telemetry is content-free, external,
+# and complete. It records only invocations this exact wrapper executes.
+with tempfile.TemporaryDirectory() as telemetry_home:
+    r = run(hook_cmd(commands["UserPromptSubmit"]),
+            stdin_text=json.dumps({"session_id": SID}),
+            env_extra={"RETRO_HOME": telemetry_home})
+    telemetry_path = os.path.join(
+        telemetry_home, "telemetry", "owned-hook-events.jsonl")
+    check("owned hook telemetry file exists", os.path.isfile(telemetry_path),
+          telemetry_path)
+    telemetry = []
+    if os.path.isfile(telemetry_path):
+        with open(telemetry_path, encoding="utf-8") as handle:
+            telemetry = [json.loads(line) for line in handle if line.strip()]
+    check("owned hook lifecycle has opportunity start end",
+          [item.get("event") for item in telemetry]
+          == ["opportunity", "start", "end"], str(telemetry))
+    check("owned hook lifecycle shares one invocation id",
+          len({item.get("invocation_id") for item in telemetry}) == 1
+          if telemetry else False)
+    serialized = json.dumps(telemetry, sort_keys=True)
+    check("owned hook telemetry omits session and machine paths",
+          SID not in serialized and ROOT not in serialized)
+    terminal = telemetry[-1] if telemetry else {}
+    check("owned hook terminal reports normalized measurements",
+          terminal.get("status") == "ok"
+          and terminal.get("injected_bytes") == len(r.stdout.encode("utf-8"))
+          and len(str(terminal.get("content_sha256") or "")) == 64
+          and isinstance(terminal.get("latency_ms"), int), str(terminal))
 
 # 5. Injected bytes are valid UTF-8 (piped stdout on Windows defaults to the
 #    ANSI code page without the reconfigure in format-ctl)

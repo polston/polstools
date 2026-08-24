@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "status": "provisional",
+  "dataset": {"calibration_share": 70},
+  "proposals": {
+    "minimum_sessions": 2,
+    "minimum_independent_units": 2,
+    "minimum_evidence_refs": 2,
+    "rank_by": [["confidence", "desc"], ["avoidable_cost", "desc"]]
+  }
+}

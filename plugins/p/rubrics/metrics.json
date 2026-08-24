@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "status": "provisional",
+  "metrics": [
+    {
+      "id": "skill_invocation_rate", "version": 2, "domain": "skills", "unit": "rate", "direction": "contextual",
+      "numerator": "traces with an explicit normalized skill start", "denominator": "eligible direct-user traces", "eligible_population": "traces from source versions that emit explicit skill attribution boundaries",
+      "source_capabilities": ["skill_lifecycle"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "skill-lifecycle-v2",
+      "known_biases": ["invocation does not prove the skill helped", "outcomes remain not_observable without an explicit terminal field"], "retirement_rule": "replace when every adapter emits invocation outcomes"
+    },
+    {
+      "id": "missed_skill_opportunity_rate", "version": 1, "domain": "skills", "unit": "rate", "direction": "lower", "numerator": "eligible traces labelled missed opportunity", "denominator": "eligible traces reviewed for skill opportunity", "eligible_population": "direct-user traces with sufficient task text and installed-skill catalogue",
+      "source_capabilities": ["skill_opportunities"], "version_floor": "calibrated classifier required", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "skill-trigger-v1",
+      "known_biases": ["installed skill descriptions can be incomplete"], "retirement_rule": "retire if opportunity labels cannot reach target agreement"
+    },
+    {
+      "id": "skill_chain_completion_rate", "version": 1, "domain": "skills", "unit": "rate", "direction": "higher", "numerator": "observed chains completing all required ordered steps", "denominator": "eligible traces with a declared multi-skill chain", "eligible_population": "traces whose source observes each chain step",
+      "source_capabilities": ["skill_chaining"], "version_floor": "adapter declared", "minimum_n": 10, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "skill-chain-v1",
+      "known_biases": ["implicit skill use is not observable"], "retirement_rule": "replace when chain execution has a native event"
+    },
+    {
+      "id": "instruction_context_share", "version": 1, "domain": "prompts_rules_hooks", "unit": "rate", "direction": "lower when outcomes hold", "numerator": "tokens attributable to standing instructions, skill bodies, and hook injections", "denominator": "observable input tokens", "eligible_population": "model calls with token usage and separable instruction inputs",
+      "source_capabilities": ["usage", "instruction_provenance"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "paired BCa bootstrap 95% interval", "validation_dataset": "context-cost-v1",
+      "known_biases": ["provider token accounting may group cached and new instructions"], "retirement_rule": "replace when providers expose authoritative segment usage"
+    },
+    {
+      "id": "prompt_contract_gap_rate", "version": 1, "domain": "prompts_rules_hooks", "unit": "rate", "direction": "lower", "numerator": "eligible direct-human prompts labelled with a material contract gap", "denominator": "eligible direct-human prompts independently reviewed for contract quality", "eligible_population": "direct-human prompts with private local evidence for task context and the resulting clarification or correction",
+      "source_capabilities": ["human_provenance"], "version_floor": "none", "minimum_n": 50, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "prompt-contract-v1",
+      "known_biases": ["short prompts can be complete when shared context already fixes the contract", "later failure can arise from execution rather than prompt quality"], "retirement_rule": "retire or narrow any label that misses held-out agreement target"
+    },
+    {
+      "id": "rule_compliance_rate", "version": 1, "domain": "prompts_rules_hooks", "unit": "rate", "direction": "higher", "numerator": "applicable rule opportunities satisfied", "denominator": "labelled applicable rule opportunities", "eligible_population": "traces with versioned active rules and observable behavior",
+      "source_capabilities": ["instruction_provenance"], "version_floor": "none", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "rule-compliance-v1",
+      "known_biases": ["applicability often requires human judgment"], "retirement_rule": "retire rules with no observable opportunities in two closed windows"
+    },
+    {
+      "id": "hook_failure_rate", "version": 1, "domain": "prompts_rules_hooks", "unit": "rate", "direction": "lower", "numerator": "hook executions ending in error or invalid output", "denominator": "observable hook executions", "eligible_population": "traces whose source emits hook results",
+      "source_capabilities": ["hooks"], "version_floor": "adapter declared", "minimum_n": 10, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "hook-events-v1",
+      "known_biases": ["silent hook non-firing is absent without a declared opportunity"], "retirement_rule": "replace when hook runtime supplies its own health metric"
+    },
+    {
+      "id": "agent_prompt_contract_rate", "version": 1, "domain": "agent_orchestration", "unit": "rate", "direction": "higher", "numerator": "agent prompts labelled complete contract", "denominator": "eligible dispatched agent prompts", "eligible_population": "handoffs with observable dispatched prompt structure and recoverable parent contract",
+      "source_capabilities": ["subagent_identity", "agent_prompt_structure"], "version_floor": "adapter declared", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "agent-prompt-v1",
+      "known_biases": ["a complete prompt contract does not prove the delegated work was useful"], "retirement_rule": "replace when the orchestration runtime emits a native task-contract verdict"
+    },
+    {
+      "id": "subagent_result_use_rate", "version": 1, "domain": "agent_orchestration", "unit": "rate", "direction": "higher", "numerator": "completed subagent results referenced or incorporated by the parent", "denominator": "completed subagent results delivered to a parent", "eligible_population": "parent-child traces with observable result delivery and later parent activity",
+      "source_capabilities": ["subagent_identity", "handoffs"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "orchestration-v1",
+      "known_biases": ["semantic use can occur without textual overlap"], "retirement_rule": "replace when parent acknowledgment is emitted natively"
+    },
+    {
+      "id": "duplicated_delegation_rate", "version": 1, "domain": "agent_orchestration", "unit": "rate", "direction": "lower", "numerator": "delegations labelled materially duplicate", "denominator": "eligible sibling delegations", "eligible_population": "parent traces with at least two comparable child tasks",
+      "source_capabilities": ["subagent_identity", "handoffs"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "orchestration-v1",
+      "known_biases": ["independent replication can be intentional review"], "retirement_rule": "retire if duplicate-work rubric misses agreement target"
+    },
+    {
+      "id": "handoff_completion_rate", "version": 1, "domain": "agent_orchestration", "unit": "rate", "direction": "higher", "numerator": "handoffs delivering a result under their declared contract", "denominator": "observable handoffs", "eligible_population": "traces with handoff start and terminal evidence",
+      "source_capabilities": ["handoffs", "outcomes"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "orchestration-v1",
+      "known_biases": ["a delivered result may still be low quality"], "retirement_rule": "replace when workflow engine emits contract verdicts"
+    },
+    {
+      "id": "tool_failure_rate", "version": 3, "domain": "agent_orchestration", "unit": "rate", "direction": "lower", "numerator": "tool results with authoritative failure status, stratified by versioned failure kind and reason code", "denominator": "tool results with authoritative status", "eligible_population": "tool calls with matched observable results",
+      "source_capabilities": ["tool_trajectory"], "version_floor": "adapter declared", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "tool-failure-v1",
+      "known_biases": ["expected probes remain unknown until human validation", "tool-specific task mix confounds rates"], "retirement_rule": "replace when source-native structured failure kinds meet held-out targets"
+    },
+    {
+      "id": "input_tokens_per_verified_outcome", "version": 1, "domain": "context_cost", "unit": "tokens", "direction": "lower when quality holds", "numerator": "observable input tokens", "denominator": "verified completed outcomes", "eligible_population": "traces with both usage and outcome evidence",
+      "source_capabilities": ["usage", "outcomes"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "BCa bootstrap 95% interval", "validation_dataset": "context-cost-v1",
+      "known_biases": ["harder tasks legitimately consume more context"], "retirement_rule": "replace when task difficulty matching is available"
+    },
+    {
+      "id": "cache_read_share", "version": 1, "domain": "context_cost", "unit": "rate", "direction": "contextual", "numerator": "cache-read input tokens", "denominator": "all observable input tokens", "eligible_population": "model calls emitting cache and input usage",
+      "source_capabilities": ["usage", "cache_usage"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "paired BCa bootstrap 95% interval", "validation_dataset": "context-cost-v1",
+      "known_biases": ["cache economics depend on current provider prices and TTL"], "retirement_rule": "replace if provider accounting changes"
+    },
+    {
+      "id": "repeated_call_rate", "version": 3, "domain": "context_cost", "unit": "rate", "direction": "lower after legitimate repeats removed", "numerator": "byte-identical tool call signatures repeated within a trace, stratified with explicit provisional reason codes", "denominator": "eligible tool calls; each repeat stratum separately uses all repeat candidates", "eligible_population": "traces with at least two observable tool calls",
+      "source_capabilities": ["tool_trajectory"], "version_floor": "none", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "duplicate-work-v2",
+      "known_biases": ["candidate waste is not wasteful without held-out validation", "source-specific tool kinds can hide polling families"], "retirement_rule": "replace only when a later scorer improves held-out precision or recall"
+    },
+    {
+      "id": "correction_rate", "version": 1, "domain": "clarity_process", "unit": "rate", "direction": "lower", "numerator": "direct-human turns labelled correction", "denominator": "eligible direct-human follow-up turns", "eligible_population": "follow-up turns with preceding assistant context",
+      "source_capabilities": ["human_provenance"], "version_floor": "none", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "turn-intent-v1",
+      "known_biases": ["questions can carry corrective intent"], "retirement_rule": "retire if held-out recall or agreement misses target"
+    },
+    {
+      "id": "discretionary_handoff_rate", "version": 1, "domain": "clarity_process", "unit": "rate", "direction": "lower", "numerator": "handoffs labelled discretionary while safe work remained", "denominator": "assistant turns that handed control to the user", "eligible_population": "handoff turns with active instruction and task-state evidence",
+      "source_capabilities": ["instruction_provenance", "outcomes"], "version_floor": "none", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "handoff-kind-v1",
+      "known_biases": ["missing external state can be invisible in the transcript"], "retirement_rule": "retire if handoff-kind rubric misses agreement target"
+    },
+    {
+      "id": "stopped_promise_rate", "version": 1, "domain": "clarity_process", "unit": "rate", "direction": "lower", "numerator": "turn-ending action promises without later execution", "denominator": "turn-ending action promises", "eligible_population": "closed traces with observable assistant finals and later tool activity",
+      "source_capabilities": ["tool_trajectory", "outcomes"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "stopped-promise-v1",
+      "known_biases": ["execution can occur in an unobserved external system"], "retirement_rule": "replace if harness emits explicit continuation state"
+    },
+    {
+      "id": "continuation_only_rate", "version": 1, "domain": "clarity_process", "unit": "rate", "direction": "lower", "numerator": "direct-human prompts containing only a continuation nudge", "denominator": "direct-human prompts", "eligible_population": "direct-human sessions with at least two prompts",
+      "source_capabilities": ["human_provenance"], "version_floor": "none", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "turn-intent-v1",
+      "known_biases": ["continuation can be normal in intentionally staged work"], "retirement_rule": "retire if no associated premature stop evidence exists"
+    },
+    {
+      "id": "permission_refusal_rate", "version": 1, "domain": "security_privacy", "unit": "rate", "direction": "contextual", "numerator": "permission or workspace refusals", "denominator": "operations eligible to encounter the control", "eligible_population": "tool operations under an observable permission or workspace policy",
+      "source_capabilities": ["permissions", "tool_trajectory"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "security-events-v1",
+      "known_biases": ["a refusal can be the control working correctly"], "retirement_rule": "split any refusal class with a different remedy"
+    },
+    {
+      "id": "private_output_incident_rate", "version": 1, "domain": "security_privacy", "unit": "rate", "direction": "lower", "numerator": "outputs confirmed to contain disallowed private data", "denominator": "outputs scanned under the declared privacy policy", "eligible_population": "tracked or review-bound outputs with complete scanner coverage",
+      "source_capabilities": ["privacy_scan"], "version_floor": "none", "minimum_n": 2, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "security-events-v1",
+      "known_biases": ["mechanical scans cannot recognize every identifying project reference"], "retirement_rule": "never retire without a strictly stronger control"
+    },
+    {
+      "id": "unsafe_target_rate", "version": 1, "domain": "security_privacy", "unit": "rate", "direction": "lower", "numerator": "operations targeting a disallowed scope", "denominator": "operations with resolvable targets", "eligible_population": "file, command, connector, or deployment operations with target evidence",
+      "source_capabilities": ["tool_trajectory"], "version_floor": "none", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "security-events-v1",
+      "known_biases": ["dynamic command targets may be unresolvable statically"], "retirement_rule": "replace when the control emits authoritative target verdicts"
+    },
+    {
+      "id": "verified_outcome_rate", "version": 1, "domain": "outcomes", "unit": "rate", "direction": "higher", "numerator": "traces ending with evidence satisfying the declared done contract", "denominator": "closed traces with a recoverable done contract", "eligible_population": "tasks whose requested outcome and final evidence are observable",
+      "source_capabilities": ["outcomes"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "outcome-state-v1",
+      "known_biases": ["subjective quality remains a human review decision"], "retirement_rule": "replace when harness emits evaluator verdicts tied to the contract"
+    },
+    {
+      "id": "premature_stop_rate", "version": 1, "domain": "outcomes", "unit": "rate", "direction": "lower", "numerator": "closed traces labelled premature stop or unsupported completion", "denominator": "closed traces with a recoverable done contract", "eligible_population": "tasks with observable remaining safe work or failed done evidence",
+      "source_capabilities": ["outcomes", "tool_trajectory"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "outcome-state-v1",
+      "known_biases": ["some external blockers are not captured locally"], "retirement_rule": "retire if outcome-state rubric misses agreement target"
+    },
+    {
+      "id": "regression_rate", "version": 1, "domain": "outcomes", "unit": "rate", "direction": "lower", "numerator": "paired evaluation cases that pass control and fail candidate", "denominator": "paired cases eligible under both versions", "eligible_population": "identical versioned dataset cases scored by control and candidate",
+      "source_capabilities": ["outcomes"], "version_floor": "none", "minimum_n": 20, "uncertainty_method": "paired BCa bootstrap 95% interval", "validation_dataset": "versioned regression datasets",
+      "known_biases": ["evaluation datasets can overrepresent previously observed failures"], "retirement_rule": "never retire; update version when definition changes"
+    }
+  ]
+}

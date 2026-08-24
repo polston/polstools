@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "status": "provisional",
+  "rubric_defaults": {
+    "allowed_uses": ["candidate_sampling", "human_annotation", "scorer_validation"]
+  },
+  "rubrics": [
+    {
+      "id": "human_provenance", "version": 1, "calibration_status": "unvalidated", "scope": "message", "labels": ["direct_human", "injected", "tool_generated", "automation", "ambiguous"],
+      "required_evidence": ["source-native provenance fields", "message role and record type"], "abstain_when": ["legacy source lacks authoritative provenance"], "minimum_n": 30,
+      "targets": {"precision": 0.98, "recall": 0.95, "agreement": 0.95},
+      "positive_examples": ["typed or explicitly human-origin prompt"], "negative_examples": ["tool result wrapped in a user-role record"]
+    },
+    {
+      "id": "handoff_kind", "version": 1, "calibration_status": "unvalidated", "scope": "assistant_turn", "labels": ["required_gate", "discretionary_handoff", "continuing_status"],
+      "required_evidence": ["active instruction contract", "remaining task state", "assistant action after status"], "abstain_when": ["external-state requirement cannot be recovered"], "minimum_n": 30,
+      "targets": {"precision": 0.85, "recall": 0.85, "agreement": 0.80},
+      "positive_examples": ["asks for an irreducible subjective decision"], "negative_examples": ["reports progress and immediately continues"]
+    },
+    {
+      "id": "skill_opportunity", "version": 1, "calibration_status": "unvalidated", "scope": "trace", "labels": ["correct_trigger", "missed_trigger", "false_trigger", "not_applicable", "ambiguous"],
+      "required_evidence": ["task intent", "installed skill trigger", "observed invocation when available"], "abstain_when": ["task text is insufficient", "skill catalogue version is unknown"], "minimum_n": 50,
+      "targets": {"precision": 0.80, "recall": 0.85, "agreement": 0.80},
+      "positive_examples": ["task semantics satisfy a skill trigger and the skill ran"], "negative_examples": ["shared keywords without trigger semantics"]
+    },
+    {
+      "id": "duplicate_work", "version": 4, "calibration_status": "unvalidated", "scope": "span_pair", "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
+      "required_evidence": ["normalized call or task signatures", "intervening state changes", "declared polling or review intent when observable", "cumulative polling cost and available completion notification when judging polling efficiency"], "abstain_when": ["tool target or state transition is unavailable", "only adjacent waits are shown without cumulative duration, repeat count, or notification capability"], "minimum_n": 50,
+      "targets": {"precision": 0.90, "recall": 0.75, "agreement": 0.80},
+      "positive_examples": ["identical observation repeated with no intervening state or monitoring purpose", "prolonged repeated polling consumes context while a deterministic completion mechanism should replace it"], "negative_examples": ["same check after a mutation", "one bounded follow-up wait at a reasonable cadence when no completion notification is available"],
+      "adaptive_sampling": {"initial_calibration": 50, "initial_heldout": 50, "minimum_heldout_per_label": 20, "support_labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat"], "maximum_rounds": 4, "maximum_total": 400},
+      "promotion": {"positive_labels": ["wasteful_duplicate"], "maximum_polling_false_positive_rate": 0.05}
+    },
+    {
+      "id": "turn_intent", "version": 1, "calibration_status": "unvalidated", "scope": "user_turn", "labels": ["correction", "clarification", "approval", "continuation", "new_request", "question", "ambiguous"],
+      "required_evidence": ["direct-human text", "preceding assistant context"], "abstain_when": ["preceding context is absent", "multiple intents cannot be separated"], "minimum_n": 50,
+      "targets": {"precision": 0.80, "recall": 0.85, "agreement": 0.80},
+      "positive_examples": ["explicitly replaces a prior instruction"], "negative_examples": ["short approval without a correction"]
+    },
+    {
+      "id": "outcome_state", "version": 1, "calibration_status": "unvalidated", "scope": "trace", "labels": ["complete", "review_needed", "blocked", "premature_stop", "stopped_promise", "ambiguous"],
+      "required_evidence": ["requested outcome", "done contract when present", "terminal evidence", "remaining actionable work"], "abstain_when": ["the task contract cannot be recovered", "external result is unobservable"], "minimum_n": 40,
+      "targets": {"precision": 0.85, "recall": 0.85, "agreement": 0.80},
+      "positive_examples": ["all declared checks pass and intended state is clean"], "negative_examples": ["final answer after announcing an action that never ran"]
+    },
+    {
+      "id": "prompt_contract_quality", "version": 1, "calibration_status": "unvalidated", "scope": "direct_human_prompt", "labels": ["complete_contract", "missing_outcome", "missing_done_condition", "contradictory", "redundant_context", "unsafe_scope", "ambiguous"],
+      "required_evidence": ["direct-human prompt text in the external evidence store", "recoverable prior task context", "resulting clarification, correction, or outcome when available"], "abstain_when": ["shared context is unavailable", "multiple requests cannot be separated", "the source cannot prove direct-human provenance"], "minimum_n": 50,
+      "targets": {"precision": 0.85, "recall": 0.80, "agreement": 0.80},
+      "positive_examples": ["prompt states the requested outcome and relies only on constraints already fixed by live context"], "negative_examples": ["prompt contradicts active constraints or omits the decision needed to act"]
+    },
+    {
+      "id": "agent_prompt_contract", "version": 1, "calibration_status": "unvalidated", "scope": "handoff", "labels": ["complete_contract", "underspecified", "redundant_context", "unsafe_scope", "ambiguous"],
+      "required_evidence": ["dispatched agent prompt", "parent task contract", "child result or terminal state"], "abstain_when": ["the source does not expose dispatched prompt structure", "the parent contract cannot be recovered"], "minimum_n": 30,
+      "targets": {"precision": 0.85, "recall": 0.80, "agreement": 0.80},
+      "positive_examples": ["prompt states bounded outcome, evidence requirements, protected scope, and return contract"], "negative_examples": ["prompt copies unrelated transcript context or leaves authority unbounded"]
+    },
+    {
+      "id": "subagent_result_use", "version": 1, "calibration_status": "unvalidated", "scope": "handoff", "labels": ["incorporated", "acknowledged_only", "ignored", "superseded", "ambiguous"],
+      "required_evidence": ["child result", "parent activity after delivery", "shared evidence references"], "abstain_when": ["parent continuation is outside the captured trace"], "minimum_n": 30,
+      "targets": {"precision": 0.80, "recall": 0.80, "agreement": 0.75},
+      "positive_examples": ["parent decision cites or applies child evidence"], "negative_examples": ["child completes but parent repeats the same investigation"]
+    },
+    {
+      "id": "proposal_grounding", "version": 1, "calibration_status": "unvalidated", "scope": "proposal", "labels": ["evidence_backed", "conjectural", "duplicate_guidance", "not_falsifiable"],
+      "required_evidence": ["eligible population", "at least two concrete sessions", "uncertainty", "exact change", "experiment", "rollback"], "abstain_when": ["evidence references cannot be resolved"], "minimum_n": 20,
+      "targets": {"precision": 0.95, "recall": 0.90, "agreement": 0.90},
+      "positive_examples": ["proposal names measured recurrence and a replay threshold"], "negative_examples": ["recommendation rests on one memorable anecdote"]
+    },
+    {
+      "id": "security_event", "version": 1, "calibration_status": "unvalidated", "scope": "span", "labels": ["incident", "control_working", "configuration_friction", "not_applicable", "ambiguous"],
+      "required_evidence": ["operation target", "active policy", "authoritative result status"], "abstain_when": ["target or policy cannot be resolved"], "minimum_n": 30,
+      "targets": {"precision": 0.95, "recall": 0.90, "agreement": 0.90},
+      "positive_examples": ["disallowed private output reaches a review artifact"], "negative_examples": ["guard refuses an unsafe operation before any effect"]
+    },
+    {
+      "id": "tool_failure_kind", "version": 2, "calibration_status": "unvalidated", "scope": "tool_result", "labels": ["expected_probe", "control_refusal", "malformed_input", "missing_target", "execution_failure", "unknown"],
+      "required_evidence": ["tool kind", "authoritative result status", "redacted result evidence when available"], "abstain_when": ["the result does not distinguish the failure cause", "the source lacks authoritative failure status"], "minimum_n": 100,
+      "targets": {"precision": 0.90, "recall": 0.80, "agreement": 0.80},
+      "positive_examples": ["a missing file is distinguished from malformed command syntax"], "negative_examples": ["every nonzero result is called an execution failure"],
+      "adaptive_sampling": {"initial_calibration": 100, "initial_heldout": 100, "minimum_heldout_per_label": 20, "support_labels": ["expected_probe", "control_refusal", "malformed_input", "missing_target", "execution_failure"], "maximum_rounds": 4, "maximum_total": 800, "maximum_unknown_rate": 0.10},
+      "promotion": {"positive_labels": ["control_refusal", "malformed_input", "missing_target", "execution_failure"]}
+    },
+    {
+      "id": "interpretation_grounding", "version": 1, "calibration_status": "calibration_only", "scope": "review_card", "labels": ["accurate", "partly_accurate", "wrong", "not_enough_context"],
+      "allowed_uses": ["human_annotation", "scorer_validation"],
+      "required_evidence": ["plain-language situation summary", "source evidence excerpt", "explicit interpretation and rationale", "expected agent action"], "abstain_when": ["the source evidence cannot support or refute the interpretation", "the situation summary omits a material condition"], "minimum_n": 10,
+      "targets": {"precision": 0.80, "recall": 0.80, "agreement": 0.80},
+      "positive_examples": ["the card explains what the user meant and the behavior that should follow"], "negative_examples": ["the card asks the reviewer to infer a diagnosis from raw telemetry"]
+    },
+    {
+      "id": "turn_friction_legacy", "version": 1, "calibration_status": "calibration_only", "scope": "user_turn", "labels": ["interrupt", "question", "approval", "correction", "none"],
+      "deterministic_predictor": "retro_eval.predictors:legacy_turn_friction_v1", "deterministic_predictor_id": "legacy-rule-v1",
+      "required_evidence": ["direct-human text", "preceding assistant character count"], "abstain_when": ["preceding context is absent"], "minimum_n": 100,
+      "targets": {"precision": 0.80, "recall": 0.80, "agreement": 0.80},
+      "positive_examples": ["human marked a turn under the legacy five-class protocol"], "negative_examples": ["unmarked turn or machine-generated user-role record"]
+    }
+  ]
+}

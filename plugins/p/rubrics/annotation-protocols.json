@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "status": "provisional",
+  "protocols": [
+    {
+      "id": "duplicate-work-taxonomy",
+      "version": 2,
+      "rubric_id": "duplicate_work",
+      "rubric_version": 4,
+      "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
+      "decision_order": ["polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "ambiguous"],
+      "definitions": {
+        "wasteful_duplicate": "The same observation or action was repeated without a state change, monitoring purpose, independent review, or other useful reason.",
+        "polling": "The call intentionally checks an operation or external state that can change while the agent waits.",
+        "post_state_change_verification": "The call repeats an earlier observation after an intervening mutation to verify the new state.",
+        "independent_review": "The repeat is an intentionally separate review or cross-check rather than duplicated execution.",
+        "other_legitimate_repeat": "The repeat has a useful reason not covered by polling, verification, or independent review.",
+        "ambiguous": "The available evidence cannot distinguish waste from a legitimate repeat."
+      },
+      "human_instruction": "Why was this tool call repeated? Use only the evidence shown; choose Not enough evidence when the hidden target or surrounding state is necessary.",
+      "label_prompts": {
+        "wasteful_duplicate": {"action": "Unnecessary repeat", "detail": "No useful state change, monitoring purpose, or independent review explains it."},
+        "polling": {"action": "Polling or waiting", "detail": "It checks an operation or state expected to change over time."},
+        "post_state_change_verification": {"action": "Verify a change", "detail": "It repeats an observation after an intervening mutation."},
+        "independent_review": {"action": "Independent review", "detail": "It is a deliberately separate cross-check."},
+        "other_legitimate_repeat": {"action": "Another useful repeat", "detail": "It has another observable useful purpose."},
+        "ambiguous": {"action": "Not enough evidence", "detail": "The shown evidence cannot establish why it repeated."}
+      },
+      "tie_breaks": [
+        "Choose Polling when the repeated tool is a wait or monitor operation.",
+        "Choose Verify a change when a mutation occurred between matching calls.",
+        "Choose Not enough evidence instead of inferring intent from a tool name alone."
+      ],
+      "prompt_template": "Classify why the repeated tool call occurred. Use exactly one canonical label.\n\nPRECEDING TOOL STATE:\n{context}\n\nREPEATED CALL:\n{user_turn}"
+    },
+    {
+      "id": "duplicate-work-taxonomy",
+      "version": 3,
+      "rubric_id": "duplicate_work",
+      "rubric_version": 4,
+      "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
+      "decision_order": ["polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "ambiguous"],
+      "definitions": {
+        "wasteful_duplicate": "The same observation or action was repeated without a state change, monitoring purpose, independent review, or other useful reason.",
+        "polling": "The call intentionally checks an operation or external state that can change while the agent waits.",
+        "post_state_change_verification": "The call repeats an earlier observation after an intervening mutation to verify the new state.",
+        "independent_review": "The repeat is an intentionally separate review or cross-check rather than duplicated execution.",
+        "other_legitimate_repeat": "The repeat has a useful reason not covered by polling, verification, or independent review.",
+        "ambiguous": "The available evidence cannot distinguish waste from a legitimate repeat."
+      },
+      "human_instruction": "Was the proposed repeat diagnosis right? Compare the prior purpose and result, intervening operations, and current purpose. Choose Unsure when those fields do not establish why the call repeated.",
+      "label_prompts": {
+        "wasteful_duplicate": {"action": "Unnecessary repeat", "detail": "No useful state change, monitoring purpose, or independent review explains it."},
+        "polling": {"action": "Polling or waiting", "detail": "It checks an operation or state expected to change over time."},
+        "post_state_change_verification": {"action": "Verify a change", "detail": "It repeats an observation after an intervening mutation."},
+        "independent_review": {"action": "Independent review", "detail": "It is a deliberately separate cross-check."},
+        "other_legitimate_repeat": {"action": "Another useful repeat", "detail": "It has another observable useful purpose."},
+        "ambiguous": {"action": "Not enough evidence", "detail": "The shown evidence cannot establish why it repeated."}
+      },
+      "tie_breaks": [
+        "Choose Polling when the prior result shows an operation was still active or the current purpose explicitly continues monitoring.",
+        "Choose Verify a change only when the intervening evidence identifies a mutation relevant to the repeated target.",
+        "Choose Not enough evidence instead of inferring intent from a tool name, sequence number, or matching signature alone."
+      ],
+      "prompt_template": "Assess whether the proposed repeated-call diagnosis is supported. Use exactly one canonical label and only the external evidence shown.\n\nPRIOR CALL, RESULT, AND INTERVENING STATE:\n{context}\n\nCURRENT REPEAT:\n{user_turn}"
+    },
+    {
+      "id": "duplicate-work-taxonomy",
+      "version": 4,
+      "rubric_id": "duplicate_work",
+      "rubric_version": 4,
+      "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
+      "decision_order": ["polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "ambiguous"],
+      "definitions": {
+        "wasteful_duplicate": "The same observation or action was repeated without a state change, monitoring purpose, independent review, or other useful reason.",
+        "polling": "The call intentionally checks an operation or external state that can change while the agent waits.",
+        "post_state_change_verification": "The call repeats an earlier observation after an intervening mutation to verify the new state.",
+        "independent_review": "The repeat is an intentionally separate review or cross-check rather than duplicated execution.",
+        "other_legitimate_repeat": "The repeat has a useful reason not covered by polling, verification, or independent review.",
+        "ambiguous": "The available evidence cannot distinguish waste from a legitimate repeat."
+      },
+      "human_instruction": "Decide whether the automated diagnosis explains the repeated call. The two evidence panels are captured session evidence; the question appears separately.",
+      "presentation": {
+        "context_label": "Earlier call and intervening evidence",
+        "focal_label": "Current repeated call",
+        "review_question": "Does the automated diagnosis explain why this call was repeated?"
+      },
+      "label_prompts": {
+        "wasteful_duplicate": {"action": "Unnecessary repeat", "detail": "No useful state change, monitoring purpose, or independent review explains it."},
+        "polling": {"action": "Polling or waiting", "detail": "It checks an operation or state expected to change over time."},
+        "post_state_change_verification": {"action": "Verify a change", "detail": "It repeats an observation after an intervening mutation."},
+        "independent_review": {"action": "Independent review", "detail": "It is a deliberately separate cross-check."},
+        "other_legitimate_repeat": {"action": "Another useful repeat", "detail": "It has another observable useful purpose."},
+        "ambiguous": {"action": "Not enough evidence", "detail": "The shown evidence cannot establish why it repeated."}
+      },
+      "tie_breaks": [
+        "Choose Polling when the prior result shows an operation was still active or the current purpose explicitly continues monitoring.",
+        "Choose Verify a change only when the intervening evidence identifies a mutation relevant to the repeated target.",
+        "Choose Not enough evidence instead of inferring intent from a tool name, sequence number, or matching signature alone."
+      ],
+      "prompt_template": "Assess whether the proposed repeated-call diagnosis is supported. Use exactly one canonical label and only the external evidence shown.\n\nPRIOR CALL, RESULT, AND INTERVENING STATE:\n{context}\n\nCURRENT REPEATED CALL:\n{user_turn}"
+    },
+    {
+      "id": "duplicate-work-taxonomy",
+      "version": 5,
+      "rubric_id": "duplicate_work",
+      "rubric_version": 4,
+      "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
+      "decision_order": ["post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "polling", "ambiguous"],
+      "definitions": {
+        "wasteful_duplicate": "The repeat adds avoidable cost without enough benefit, including prolonged status polling that should use deterministic completion notification.",
+        "polling": "A bounded status check uses a reasonable cadence because no deterministic completion notification is available.",
+        "post_state_change_verification": "The call repeats an earlier observation after an intervening mutation to verify the new state.",
+        "independent_review": "The repeat is an intentionally separate review or cross-check rather than duplicated execution.",
+        "other_legitimate_repeat": "The repeat has another observable useful purpose whose benefit justifies its cost.",
+        "ambiguous": "The available evidence cannot establish cumulative repeat cost, relevant state change, or whether notification could replace polling."
+      },
+      "human_instruction": "Decide whether the automated diagnosis explains both the immediate repeat and its cumulative workflow cost. Do not treat an active job or a polling-tool name as proof that repeated checks are efficient.",
+      "presentation": {
+        "context_label": "Earlier call and intervening evidence",
+        "focal_label": "Current repeated call",
+        "review_question": "Does the automated diagnosis explain why this call was repeated?"
+      },
+      "label_prompts": {
+        "wasteful_duplicate": {"action": "Unnecessary repeat", "detail": "The repeat or repeated polling adds avoidable cost without enough benefit."},
+        "polling": {"action": "Bounded polling", "detail": "The cadence is reasonable and deterministic completion notification is unavailable."},
+        "post_state_change_verification": {"action": "Verify a change", "detail": "It repeats an observation after an intervening mutation."},
+        "independent_review": {"action": "Independent review", "detail": "It is a deliberately separate cross-check."},
+        "other_legitimate_repeat": {"action": "Another useful repeat", "detail": "It has another observable purpose whose benefit justifies the cost."},
+        "ambiguous": {"action": "Not enough evidence", "detail": "The shown evidence cannot establish cumulative cost or notification options."}
+      },
+      "tie_breaks": [
+        "Choose Unnecessary repeat when prolonged polling accumulates token or context cost that deterministic completion notification should replace.",
+        "Choose Bounded polling only when the evidence shows a reasonable cadence and no deterministic completion notification is available.",
+        "Choose Verify a change only when the intervening evidence identifies a mutation relevant to the repeated target.",
+        "Choose Not enough evidence when only adjacent waits are shown without cumulative duration, repeat count, or notification capability."
+      ],
+      "prompt_template": "Assess whether the proposed repeated-call diagnosis is supported. Use exactly one canonical label and only the external evidence shown.\n\nPRIOR CALL, RESULT, CUMULATIVE COST, AND INTERVENING STATE:\n{context}\n\nCURRENT REPEATED CALL:\n{user_turn}"
+    },
+    {
+      "id": "tool-failure-taxonomy",
+      "version": 2,
+      "rubric_id": "tool_failure_kind",
+      "rubric_version": 2,
+      "labels": ["expected_probe", "control_refusal", "malformed_input", "missing_target", "execution_failure", "unknown"],
+      "decision_order": ["expected_probe", "control_refusal", "malformed_input", "missing_target", "execution_failure", "unknown"],
+      "definitions": {
+        "expected_probe": "A deliberate negative check failed in the expected way and supplied useful information.",
+        "control_refusal": "A permission, sandbox, policy, or safety control refused the operation before its intended effect.",
+        "malformed_input": "The tool invocation or command was structurally invalid.",
+        "missing_target": "The requested file, process, resource, command, or other target was absent.",
+        "execution_failure": "A valid invocation reached execution but failed for a reason not covered above.",
+        "unknown": "The available evidence does not identify the failure kind."
+      },
+      "human_instruction": "What kind of tool failure is this? Classify the observed failure, not whether the overall task succeeded.",
+      "label_prompts": {
+        "expected_probe": {"action": "Expected negative check", "detail": "The failure was the useful expected result of a deliberate probe."},
+        "control_refusal": {"action": "Permission or policy refusal", "detail": "A control prevented the operation."},
+        "malformed_input": {"action": "Malformed invocation", "detail": "The command or tool input was invalid."},
+        "missing_target": {"action": "Missing target", "detail": "The requested resource or command was absent."},
+        "execution_failure": {"action": "Execution failed", "detail": "A valid invocation started but did not complete successfully."},
+        "unknown": {"action": "Unknown cause", "detail": "The shown evidence is insufficient to identify the cause."}
+      },
+      "tie_breaks": [
+        "Expected negative check takes precedence when failure was the intended observation.",
+        "Permission or policy refusal takes precedence over the downstream error it prevented.",
+        "Choose Unknown cause when the result status alone is the only evidence."
+      ],
+      "prompt_template": "Classify the tool failure using exactly one canonical label.\n\nTOOL CONTEXT:\n{context}\n\nRESULT EVIDENCE:\n{user_turn}"
+    },
+    {
+      "id": "interpretation-grounding",
+      "version": 1,
+      "rubric_id": "interpretation_grounding",
+      "rubric_version": 1,
+      "labels": ["accurate", "partly_accurate", "wrong", "not_enough_context"],
+      "decision_order": ["accurate", "partly_accurate", "wrong", "not_enough_context"],
+      "definitions": {
+        "accurate": "The interpretation and expected action fit the source evidence without a material error.",
+        "partly_accurate": "The main reading is useful but a material detail, reason, or expected action is incomplete or wrong.",
+        "wrong": "The interpretation substantially misunderstands the user, agent action, or situation.",
+        "not_enough_context": "The evidence shown cannot establish whether the interpretation is accurate."
+      },
+      "human_instruction": "Judge my plain-language interpretation. You are checking whether I understood the situation, not classifying raw logs. Notes are optional.",
+      "presentation": {
+        "context_label": "Source evidence",
+        "focal_label": "Current evidence",
+        "review_question": "Is my interpretation accurate?"
+      },
+      "label_prompts": {
+        "accurate": {"action": "Accurate", "detail": "The interpretation and expected action fit."},
+        "partly_accurate": {"action": "Partly accurate", "detail": "The main idea fits, but something material is off."},
+        "wrong": {"action": "Wrong", "detail": "The interpretation substantially misunderstands the situation."},
+        "not_enough_context": {"action": "Not enough context", "detail": "The shown evidence is not enough to judge."}
+      },
+      "tie_breaks": [
+        "Choose Partly accurate when the central interpretation is useful but the reason or expected action needs correction.",
+        "Choose Wrong when acting on the interpretation would repeat or worsen the misunderstanding.",
+        "Choose Not enough context only when missing evidence prevents a judgment."
+      ],
+      "prompt_template": "Judge the proposed interpretation using the source evidence.\n\nSOURCE CONTEXT:\n{context}\n\nFOCAL EVIDENCE:\n{user_turn}"
+    },
+    {
+      "id": "turn-friction-dominant-intent",
+      "version": 1,
+      "rubric_id": "turn_friction_legacy",
+      "rubric_version": 1,
+      "labels": ["interrupt", "question", "approval", "correction", "none"],
+      "decision_order": ["interrupt", "correction", "approval", "question", "none"],
+      "definitions": {
+        "interrupt": "The primary intent is to stop, cancel, or pause the current action immediately.",
+        "correction": "The user says prior work is wrong, missing, or misunderstood, or replaces or redirects the prior instruction.",
+        "approval": "The user accepts a result or authorizes the proposed next action without changing its requirements.",
+        "question": "The primary intent is to request information or clarification without rejecting or redirecting prior work.",
+        "none": "The turn is a new request, neutral continuation, status comment, or other intent not covered above."
+      },
+      "tie_breaks": [
+        "Use the first matching label in decision_order when more than one label appears to apply.",
+        "A question used to challenge, reject, or redirect prior work is correction, not question.",
+        "Approval that adds or changes a requirement is correction, not approval.",
+        "A request to stop and replace direction is interrupt only when immediate stopping is the dominant intent; otherwise it is correction.",
+        "Judge the dominant intent of the whole turn, not isolated keywords or punctuation."
+      ],
+      "prompt_template": "Classify the USER TURN by its single dominant intent relative to the PRECEDING ASSISTANT CONTEXT. Apply this exact precedence: interrupt > correction > approval > question > none. interrupt means stop, cancel, or pause the current action immediately. correction means prior work is wrong, missing, misunderstood, replaced, or redirected; a challenging question is correction. approval accepts or authorizes without changing requirements. question requests information without rejecting or redirecting. none covers new requests, neutral continuation, status comments, or anything else. Return exactly one label and no explanation.\n\nPRECEDING ASSISTANT CONTEXT:\n{context}\n\nUSER TURN:\n{user_turn}"
+    },
+    {
+      "id": "turn-friction-dominant-intent",
+      "version": 2,
+      "rubric_id": "turn_friction_legacy",
+      "rubric_version": 1,
+      "labels": ["interrupt", "question", "approval", "correction", "none"],
+      "decision_order": ["interrupt", "correction", "approval", "question", "none"],
+      "definitions": {
+        "interrupt": "The primary intent is to stop, cancel, or pause the current action immediately.",
+        "correction": "The user says prior work is wrong, missing, or misunderstood, or replaces or redirects the prior instruction.",
+        "approval": "The user accepts a result or authorizes the proposed next action without changing its requirements.",
+        "question": "The primary intent is to request information or clarification without rejecting or redirecting prior work.",
+        "none": "The turn is a new request, neutral continuation, status comment, or other intent not covered above."
+      },
+      "human_instruction": "What is the user doing with this reply? Read the user reply in light of the preceding assistant context, then choose the one plain-language action that fits best. You are judging the user's intent, not whether the assistant's response was good.",
+      "label_prompts": {
+        "interrupt": {"action": "Stop or pause the work", "detail": "The user wants the current action stopped, cancelled, or paused now."},
+        "correction": {"action": "Change or fix the prior work", "detail": "The user says something is wrong, missing, misunderstood, or needs a different direction."},
+        "approval": {"action": "Accept it and continue", "detail": "The user accepts the answer or authorizes the proposed next step without changing it."},
+        "question": {"action": "Get an explanation or answer", "detail": "The user primarily wants information and is not rejecting or redirecting the work."},
+        "none": {"action": "Do something else", "detail": "The reply is a new request, neutral update, status comment, or another intent."}
+      },
+      "tie_breaks": [
+        "Choose Stop or pause only when stopping immediately is the main point.",
+        "A question that challenges a mistake means Change or fix, not Get an explanation.",
+        "Acceptance that adds or changes a requirement means Change or fix, not Accept and continue.",
+        "Judge the whole reply rather than isolated words or punctuation."
+      ],
+      "prompt_template": "What is the user doing with this reply? Classify the USER REPLY by its single dominant intent relative to the PRECEDING ASSISTANT CONTEXT. Choose exactly one: interrupt = stop or pause the work now; correction = change or fix prior work because it is wrong, missing, misunderstood, or redirected; approval = accept it and continue without changing requirements; question = get an explanation or answer without rejecting or redirecting; none = do something else such as a new request, neutral update, or status comment. A challenging question is correction. Approval with changed requirements is correction. Apply precedence interrupt > correction > approval > question > none. Return exactly the canonical label and no explanation.\n\nPRECEDING ASSISTANT CONTEXT:\n{context}\n\nUSER REPLY:\n{user_turn}"
+    }
+  ]
+}

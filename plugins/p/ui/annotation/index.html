@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Retro - Evidence review</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">Retro / Human review</p>
+        <h1 id="pageTitle">Audit one diagnosis</h1>
+        <p id="taskInstruction" class="task-instruction"></p>
+      </div>
+      <div class="progress-block">
+        <p id="progressText" aria-live="polite">Loading cases…</p>
+        <div class="progress-track" role="progressbar" aria-label="Annotation progress"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="progressBar"></span>
+        </div>
+      </div>
+    </header>
+
+    <nav id="viewSwitch" class="view-switch" aria-label="Review views" hidden>
+      <button id="showEvidence" type="button" aria-pressed="false">Analysis workbench</button>
+      <button id="showReview" type="button" aria-pressed="false">Review cards</button>
+    </nav>
+
+    <main id="evidenceView" class="analysis-workbench" hidden>
+      <section class="analysis-section changeset-section" aria-labelledby="changesetTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Actual repository patch</p><h2 id="changesetTitle">Proposed file changes</h2></div>
+          <p id="changesetSummary" class="analysis-note"></p>
+        </header>
+        <div class="table-wrap changeset-table-wrap">
+          <table class="data-table changeset-table">
+            <thead><tr><th>File</th><th>Scope</th><th>Status</th><th class="numeric">+</th><th class="numeric">-</th></tr></thead>
+            <tbody id="changedFileTable"></tbody>
+          </table>
+        </div>
+        <div class="diff-inspector">
+          <label for="diffFileSelect">Unified diff</label>
+          <select id="diffFileSelect"></select>
+          <pre id="diffViewer" aria-live="polite"></pre>
+        </div>
+      </section>
+
+      <section class="analysis-section recommendation-section" aria-labelledby="recommendationTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Decision layer</p><h2 id="recommendationTitle">Recommended decisions</h2></div>
+          <p id="recommendationSummary" class="analysis-note"></p>
+        </header>
+        <div class="table-wrap">
+          <table class="data-table recommendation-table">
+            <thead><tr><th>Proposal</th><th>Recommendation</th><th>Do now</th><th>Evidence basis</th><th>Revisit when</th></tr></thead>
+            <tbody id="recommendationTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="analysis-section run-section" aria-labelledby="runTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Bound evidence set</p><h2 id="runTitle">Run inventory</h2></div>
+          <p id="evidenceSummary" class="analysis-note"></p>
+        </header>
+        <div class="table-wrap">
+          <table class="data-table inventory-table">
+            <thead><tr><th>Dataset</th><th>Traces</th><th>Trace schema</th><th>Adapters</th><th>Scorers</th><th>Rubrics</th></tr></thead>
+            <tbody id="runInventory"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="analysis-section" aria-labelledby="metricsTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Observed estimates</p><h2 id="metricsTitle">Metric matrix</h2></div>
+          <p class="analysis-note">Rates retain their numerator, eligible denominator, uncertainty, scorer version, and observability state.</p>
+        </header>
+        <div class="coverage-layout">
+          <div class="table-wrap coverage-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Harness</th><th>Measured</th><th>Not observable</th><th>Not scored</th><th>Dependency unavailable</th></tr></thead>
+              <tbody id="coverageTable"></tbody>
+            </table>
+          </div>
+          <div id="ratePlot" class="rate-plot"></div>
+          <div class="table-wrap">
+            <table class="data-table metric-table">
+              <thead><tr><th>Harness</th><th>Metric</th><th>v</th><th>State</th><th class="numeric">Numerator</th><th class="numeric">Eligible</th><th class="numeric">Estimate</th><th>95% interval</th><th>Decision use</th></tr></thead>
+              <tbody id="metricTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="analysis-section" aria-labelledby="taxonomyTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Packet composition</p><h2 id="taxonomyTitle">P1 / P4 sample support</h2></div>
+          <p class="analysis-note">Colored marks are scorer proposals used for sampling—not human truth.</p>
+        </header>
+        <div id="taxonomyComposition" class="taxonomy-composition"></div>
+      </section>
+
+      <section class="analysis-section analysis-split" aria-labelledby="calibrationTitle">
+        <div>
+          <header class="analysis-heading">
+            <div><p class="eyebrow">Ten completed judgments</p><h2 id="calibrationTitle">Interpretation matrix</h2></div>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Review kind</th><th class="numeric">Accurate</th><th class="numeric">Partial</th><th class="numeric">Wrong</th><th class="numeric">Insufficient</th><th class="numeric">Total</th></tr></thead>
+              <tbody id="calibrationMatrix"></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <header class="analysis-heading">
+            <div><p class="eyebrow">Promotion contract</p><h2>Gate observations</h2></div>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Gate</th><th>Required</th><th>Observed</th><th>Support</th><th>Status</th></tr></thead>
+              <tbody id="gateTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="analysis-section" aria-labelledby="lifecycleTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Owned observability only</p><h2 id="lifecycleTitle">Lifecycle measurements</h2></div>
+        </header>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Proposal</th><th>Measure</th><th class="numeric">Observed</th><th class="numeric">Target</th><th>Status</th><th>Coverage boundary</th></tr></thead>
+            <tbody id="lifecycleTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="analysis-section analysis-split" aria-labelledby="proposalTitle">
+        <div>
+          <header class="analysis-heading">
+            <div><p class="eyebrow">P1-P8</p><h2 id="proposalTitle">Proposal ledger</h2></div>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Proposal</th><th>Current state</th><th>Observable basis</th></tr></thead>
+              <tbody id="proposalTable"></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <header class="analysis-heading">
+            <div><p class="eyebrow">Calibration deltas</p><h2>Rule-change ledger</h2></div>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Observed signal</th><th>Resulting rule change</th><th>Reason</th></tr></thead>
+              <tbody id="changeTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <main id="reviewView" class="workspace" hidden>
+      <section class="case-desk" aria-labelledby="casePosition">
+        <div class="case-meta">
+          <p id="casePosition">Case 1 of 40</p>
+          <p id="sourceBadge">Source</p>
+        </div>
+        <div id="taxonomyEvidence">
+          <article class="transcript context-panel">
+            <p id="contextLabel" class="speaker"></p>
+            <div id="contextText" class="transcript-text"></div>
+          </article>
+          <div class="turn-divider" aria-hidden="true"><span>compared with</span></div>
+          <article class="transcript user-panel">
+            <p id="focalLabel" class="speaker"></p>
+            <div id="userText" class="transcript-text user-text" tabindex="-1"></div>
+          </article>
+        </div>
+
+        <section id="interpretationCard" class="interpretation-card" hidden>
+          <p id="reviewKind" class="kind-badge"></p>
+          <div class="card-section">
+            <p id="situationLabel" class="speaker"></p>
+            <p id="situationSummary" class="card-lead"></p>
+          </div>
+          <div id="replyBlock" class="card-section reply-card">
+            <p class="speaker">You replied</p>
+            <p id="replyText" class="quoted-reply"></p>
+          </div>
+          <div class="card-section interpretation-block">
+            <p id="interpretationLabel" class="speaker"></p>
+            <p id="interpretationText" class="card-claim"></p>
+          </div>
+          <div class="card-grid">
+            <div class="card-section">
+              <p class="speaker">Why</p>
+              <p id="rationaleText"></p>
+            </div>
+            <div class="card-section action-block">
+              <p class="speaker">What I should do</p>
+              <p id="expectedAction"></p>
+            </div>
+          </div>
+          <details id="rawEvidence" class="raw-evidence">
+            <summary>Show source evidence</summary>
+            <p class="speaker">Earlier evidence</p>
+            <div id="rawContext" class="transcript-text"></div>
+            <p class="speaker">Focal evidence</p>
+            <div id="rawFocal" class="transcript-text"></div>
+          </details>
+        </section>
+
+        <div class="notes-row">
+          <label for="notes">Optional note</label>
+          <textarea id="notes" rows="2" maxlength="2000"
+                    placeholder="Record why only when the edge case matters."></textarea>
+        </div>
+
+        <nav class="case-nav" aria-label="Cases">
+          <button id="previousCase" class="quiet-button" type="button">← Previous</button>
+          <button id="clearLabel" class="quiet-button" type="button">Clear label</button>
+          <button id="nextCase" class="quiet-button" type="button">Next →</button>
+        </nav>
+      </section>
+
+      <aside class="decision-rail" aria-labelledby="reviewQuestion">
+        <div class="rail-heading">
+          <p class="eyebrow">Question</p>
+          <h2 id="reviewQuestion"></h2>
+          <p id="decisionTitle">Choose one assessment. It saves immediately.</p>
+        </div>
+        <div id="proposalPanel" class="rule-card" hidden>
+          <p class="eyebrow">Automated diagnosis</p>
+          <h3 id="proposalLabel"></h3>
+          <p class="signal-label">Observed signal</p>
+          <p id="proposalReason"></p>
+        </div>
+        <div id="assessmentControls" class="label-stack" role="group"
+             aria-label="Assess the proposed diagnosis" hidden>
+          <button id="assessmentCorrect" type="button"><span><strong>Correct</strong><small>The proposed diagnosis and reason fit.</small></span></button>
+          <button id="assessmentIncorrect" type="button"><span><strong>Incorrect</strong><small>Choose the better label below.</small></span></button>
+          <button id="assessmentUnsure" type="button"><span><strong>Unsure</strong><small>The evidence is not enough to judge.</small></span></button>
+        </div>
+        <div id="groundingControls" class="label-stack grounding-controls" role="group"
+             aria-label="Assess my interpretation" hidden>
+          <button data-grounding="accurate" type="button"><span><strong>Accurate</strong><small>The interpretation and next action fit.</small></span></button>
+          <button data-grounding="partly_accurate" type="button"><span><strong>Partly accurate</strong><small>The main idea fits, but something material is off.</small></span></button>
+          <button data-grounding="wrong" type="button"><span><strong>Wrong</strong><small>The interpretation substantially misunderstands this.</small></span></button>
+          <button data-grounding="not_enough_context" type="button"><span><strong>Not enough context</strong><small>The evidence shown is insufficient to judge.</small></span></button>
+        </div>
+        <div id="labelStack" class="label-stack" role="group" aria-label="Classification labels"></div>
+        <div id="guidanceCard" class="rule-card">
+          <p class="eyebrow">When labels overlap</p>
+          <ol id="tieBreaks"></ol>
+        </div>
+        <p id="saveStatus" class="save-status" aria-live="polite">Ready</p>
+      </aside>
+    </main>
+
+    <section id="errorPanel" class="error-panel" hidden>
+      <h2>Review could not load</h2>
+      <p id="errorMessage"></p>
+      <button id="retry" type="button">Try again</button>
+    </section>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

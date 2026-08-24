@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "profile_version": 1,
+  "status": "comparability_gate_only",
+  "sources": {
+    "claude": {
+      "accounting_version": "claude-v1",
+      "input_tokens": "source-reported non-cache-read input",
+      "cached_input_tokens": "source-reported cache-read input",
+      "cache_write_input_tokens": "not separately normalized",
+      "output_tokens": "source-reported output"
+    },
+    "codex": {
+      "accounting_version": "codex-v1",
+      "input_tokens": "source-reported input total",
+      "cached_input_tokens": "source-reported cached subset",
+      "cache_write_input_tokens": "source-reported cache-write input",
+      "output_tokens": "source-reported output"
+    }
+  },
+  "required_case_fields": [
+    "task_family",
+    "difficulty",
+    "cache_treatment",
+    "accounting_version",
+    "accounting_profile_version",
+    "paired_case_id"
+  ],
+  "comparison_rule": "Compare separate token dimensions only within complete pairs whose task family, difficulty, cache treatment, profile version, and paired identity match."
+}

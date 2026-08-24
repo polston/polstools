@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    "human_provenance",
+    "subagent_identity",
+    "skill_attribution",
+    "skill_lifecycle",
+    "skill_chaining",
+    "skill_opportunities",
+    "tool_trajectory",
+    "tool_result_status",
+    "usage",
+    "cache_usage",
+    "handoffs",
+    "agent_prompt_structure",
+    "outcomes",
+    "instruction_provenance",
+    "permissions",
+    "hooks",
+    "privacy_scan"
+  ]
+}
