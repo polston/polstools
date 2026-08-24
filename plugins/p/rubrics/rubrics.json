@@ -82,6 +82,13 @@
       "promotion": {"positive_labels": ["control_refusal", "malformed_input", "missing_target", "execution_failure"]}
     },
     {
+      "id": "interpretation_grounding", "version": 1, "calibration_status": "calibration_only", "scope": "review_card", "labels": ["accurate", "partly_accurate", "wrong", "not_enough_context"],
+      "allowed_uses": ["human_annotation", "scorer_validation"],
+      "required_evidence": ["plain-language situation summary", "source evidence excerpt", "explicit interpretation and rationale", "expected agent action"], "abstain_when": ["the source evidence cannot support or refute the interpretation", "the situation summary omits a material condition"], "minimum_n": 10,
+      "targets": {"precision": 0.80, "recall": 0.80, "agreement": 0.80},
+      "positive_examples": ["the card explains what the user meant and the behavior that should follow"], "negative_examples": ["the card asks the reviewer to infer a diagnosis from raw telemetry"]
+    },
+    {
       "id": "turn_friction_legacy", "version": 1, "calibration_status": "calibration_only", "scope": "user_turn", "labels": ["interrupt", "question", "approval", "correction", "none"],
       "deterministic_predictor": "retro_eval.predictors:legacy_turn_friction_v1", "deterministic_predictor_id": "legacy-rule-v1",
       "required_evidence": ["direct-human text", "preceding assistant character count"], "abstain_when": ["preceding context is absent"], "minimum_n": 100,

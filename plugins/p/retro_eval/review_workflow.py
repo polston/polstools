@@ -12,8 +12,10 @@ from .annotation import _load_packet_manifest
 from .annotation_ui import AnnotationWorkspace, serve_annotation_ui
 
 
-_RUBRIC_ORDER = {"duplicate_work": 0, "tool_failure_kind": 1}
-_ASSESSMENTS = {"", "correct", "incorrect", "unsure"}
+_RUBRIC_ORDER = {"interpretation_grounding": -1,
+                 "duplicate_work": 0, "tool_failure_kind": 1}
+_ASSESSMENTS = {"", "correct", "incorrect", "unsure", "accurate",
+                "partly_accurate", "wrong", "not_enough_context"}
 
 
 def _review_directory(value=None) -> Path:
@@ -45,10 +47,11 @@ def _packet_states(review_dir: Path, split: str):
                 continue
             rubric_id = str(raw["rubric_id"])
             rubric_version = int(raw["rubric_version"])
-            round_number = int(raw["adaptive_sampling"]["round"])
+            round_number = int(raw.get("review_round") or
+                               raw.get("adaptive_sampling", {})["round"])
         except (OSError, KeyError, TypeError, ValueError,
                 json.JSONDecodeError) as exc:
-            raise ValueError("invalid adaptive taxonomy manifest") from exc
+            raise ValueError("invalid review packet manifest") from exc
         source = manifest_path.with_name(
             manifest_path.name.removesuffix("-manifest.json") + ".csv")
         _load_packet_manifest(

@@ -1,9 +1,9 @@
 ---
 name: reviewing-evaluation-taxonomies
-description: Use when starting, resuming, or checking the proposal-first local review that calibrates repeated-call and tool-failure diagnoses against private RETRO_HOME evidence.
+description: Use when starting, resuming, or checking the local mixed interpretation and proposal review against private RETRO_HOME evidence.
 ---
 
-# Reviewing evaluation taxonomies
+# Reviewing agent interpretations
 
 Use the plugin's `bin/retro-eval-review` as the single entrypoint. Resolve the
 plugin root from this skill's location, `PLUGIN_ROOT`, or
@@ -18,9 +18,16 @@ from `RETRO_HOME`; when that variable is absent, it uses the sole discoverable
 review set under the local `.retro` directory. It resumes the first case without
 an assessment and opens a loopback-only browser workspace.
 
-The operator judges the rule-based proposal as Correct, Incorrect, or Unsure.
-Incorrect reveals the canonical alternatives. Notes are optional. Do not ask
-the operator to explain every problem or manually edit CSV files.
+The first incomplete mixed interpretation packet comes before taxonomy packets.
+Its cards alternate between user-understanding checks and agent judgments. Each
+card states the situation, the agent's interpretation, its reason, and the
+expected action in plain language; raw source evidence stays collapsed. The
+operator chooses Accurate, Partly accurate, Wrong, or Not enough context.
+Notes are optional. Never ask the operator to derive or explain the diagnosis.
+
+After mixed calibration is complete, the same entrypoint advances to any
+remaining proposal-first taxonomy packets. Those retain their versioned
+Correct, Incorrect, and Unsure contract.
 
 ## Preserve the evaluation boundary
 

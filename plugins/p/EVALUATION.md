@@ -226,6 +226,14 @@ review question is never stored or displayed as captured evidence; a matching
 signature or sequence number alone is explicitly insufficient. Arrow keys move
 between cases; reopening resumes at the first unassessed case.
 
+Mixed interpretation calibration runs before taxonomy review when such a packet
+is present. Each authored card links to immutable external source evidence but
+shows a bounded plain-language situation, interpretation, reason, and expected
+action. Cards may check understanding of a direct-human reply or an assessment
+of agent behavior. The operator chooses Accurate, Partly accurate, Wrong, or
+Not enough context; notes and raw-evidence expansion are optional. This rubric
+is calibration-only and cannot support decisions.
+
 The same UI also supports older label-first protocols. Questions, choices,
 definitions, and overlap rules always come from the packet's bound versioned
 annotation protocol; they are not hard-coded in the browser client.

@@ -11,7 +11,7 @@
     <header class="masthead">
       <div>
         <p class="eyebrow">Retro / Human review</p>
-        <h1>Audit one diagnosis</h1>
+        <h1 id="pageTitle">Audit one diagnosis</h1>
         <p id="taskInstruction" class="task-instruction"></p>
       </div>
       <div class="progress-block">
@@ -29,15 +29,50 @@
           <p id="casePosition">Case 1 of 40</p>
           <p id="sourceBadge">Source</p>
         </div>
-        <article class="transcript context-panel">
-          <p id="contextLabel" class="speaker"></p>
-          <div id="contextText" class="transcript-text"></div>
-        </article>
-        <div class="turn-divider" aria-hidden="true"><span>compared with</span></div>
-        <article class="transcript user-panel">
-          <p id="focalLabel" class="speaker"></p>
-          <div id="userText" class="transcript-text user-text" tabindex="-1"></div>
-        </article>
+        <div id="taxonomyEvidence">
+          <article class="transcript context-panel">
+            <p id="contextLabel" class="speaker"></p>
+            <div id="contextText" class="transcript-text"></div>
+          </article>
+          <div class="turn-divider" aria-hidden="true"><span>compared with</span></div>
+          <article class="transcript user-panel">
+            <p id="focalLabel" class="speaker"></p>
+            <div id="userText" class="transcript-text user-text" tabindex="-1"></div>
+          </article>
+        </div>
+
+        <section id="interpretationCard" class="interpretation-card" hidden>
+          <p id="reviewKind" class="kind-badge"></p>
+          <div class="card-section">
+            <p id="situationLabel" class="speaker"></p>
+            <p id="situationSummary" class="card-lead"></p>
+          </div>
+          <div id="replyBlock" class="card-section reply-card">
+            <p class="speaker">You replied</p>
+            <p id="replyText" class="quoted-reply"></p>
+          </div>
+          <div class="card-section interpretation-block">
+            <p id="interpretationLabel" class="speaker"></p>
+            <p id="interpretationText" class="card-claim"></p>
+          </div>
+          <div class="card-grid">
+            <div class="card-section">
+              <p class="speaker">Why</p>
+              <p id="rationaleText"></p>
+            </div>
+            <div class="card-section action-block">
+              <p class="speaker">What I should do</p>
+              <p id="expectedAction"></p>
+            </div>
+          </div>
+          <details id="rawEvidence" class="raw-evidence">
+            <summary>Show source evidence</summary>
+            <p class="speaker">Earlier evidence</p>
+            <div id="rawContext" class="transcript-text"></div>
+            <p class="speaker">Focal evidence</p>
+            <div id="rawFocal" class="transcript-text"></div>
+          </details>
+        </section>
 
         <div class="notes-row">
           <label for="notes">Optional note</label>
@@ -70,8 +105,15 @@
           <button id="assessmentIncorrect" type="button"><span><strong>Incorrect</strong><small>Choose the better label below.</small></span></button>
           <button id="assessmentUnsure" type="button"><span><strong>Unsure</strong><small>The evidence is not enough to judge.</small></span></button>
         </div>
+        <div id="groundingControls" class="label-stack grounding-controls" role="group"
+             aria-label="Assess my interpretation" hidden>
+          <button data-grounding="accurate" type="button"><span><strong>Accurate</strong><small>The interpretation and next action fit.</small></span></button>
+          <button data-grounding="partly_accurate" type="button"><span><strong>Partly accurate</strong><small>The main idea fits, but something material is off.</small></span></button>
+          <button data-grounding="wrong" type="button"><span><strong>Wrong</strong><small>The interpretation substantially misunderstands this.</small></span></button>
+          <button data-grounding="not_enough_context" type="button"><span><strong>Not enough context</strong><small>The evidence shown is insufficient to judge.</small></span></button>
+        </div>
         <div id="labelStack" class="label-stack" role="group" aria-label="Classification labels"></div>
-        <div class="rule-card">
+        <div id="guidanceCard" class="rule-card">
           <p class="eyebrow">When labels overlap</p>
           <ol id="tieBreaks"></ol>
         </div>

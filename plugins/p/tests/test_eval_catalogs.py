@@ -75,6 +75,7 @@ class RubricCatalogueTests(unittest.TestCase):
             "subagent_result_use",
             "proposal_grounding", "security_event",
             "tool_failure_kind",
+            "interpretation_grounding",
         }
         self.assertTrue(required.issubset({rubric.id for rubric in catalogue.rubrics}))
         for rubric in catalogue.rubrics:
@@ -93,6 +94,23 @@ class RubricCatalogueTests(unittest.TestCase):
         self.assertTrue(all(value in {"unvalidated", "calibration_only"}
                             for value in statuses.values()))
         self.assertEqual("calibration_only", statuses["turn_friction_legacy"])
+        self.assertEqual("calibration_only", statuses["interpretation_grounding"])
+
+    def test_interpretation_protocol_is_calibration_only_and_plain_language(self):
+        rubrics = load_rubric_catalogue(RUBRICS / "rubrics.json")
+        protocols = load_annotation_protocol_catalogue(
+            RUBRICS / "annotation-protocols.json", rubrics)
+        rubric = next(item for item in rubrics.rubrics
+                      if item.id == "interpretation_grounding")
+        protocol = protocols.get("interpretation-grounding", 1)
+        self.assertEqual(
+            {"accurate", "partly_accurate", "wrong", "not_enough_context"},
+            set(protocol.labels))
+        self.assertEqual(rubric.version, protocol.rubric_version)
+        self.assertEqual("Is my interpretation accurate?",
+                         protocol.extensions["presentation"]["review_question"])
+        with self.assertRaisesRegex(ValueError, "decision_support"):
+            ensure_rubric_use(rubric, "decision_support")
 
     def test_legacy_rubric_is_machine_gated_to_non_decision_uses(self):
         catalogue = load_rubric_catalogue(RUBRICS / "rubrics.json")

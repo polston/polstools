@@ -9,7 +9,7 @@
       "name": "p",
       "source": "./plugins/p",
       "description": "Personal tooling for privacy audits, workflow analysis and evaluation, change-explicit response formatting, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
-      "version": "1.5.3",
+      "version": "1.5.4",
       "category": "productivity",
       "keywords": ["skills", "workflow", "privacy", "retrospective", "evaluation", "format", "review", "statusline", "ccstatusline", "claude-code", "codex", "windows"]
     }

@@ -14,6 +14,7 @@ const elements = {
   notes: $("#notes"), previous: $("#previousCase"), next: $("#nextCase"),
   clear: $("#clearLabel"), tieBreaks: $("#tieBreaks"), saveStatus: $("#saveStatus"),
   taskInstruction: $("#taskInstruction"), labelStack: $("#labelStack"),
+  pageTitle: $("#pageTitle"), taxonomyEvidence: $("#taxonomyEvidence"),
   contextLabel: $("#contextLabel"), focalLabel: $("#focalLabel"),
   reviewQuestion: $("#reviewQuestion"),
   proposalPanel: $("#proposalPanel"), proposalLabel: $("#proposalLabel"),
@@ -21,6 +22,14 @@ const elements = {
   assessmentCorrect: $("#assessmentCorrect"),
   assessmentIncorrect: $("#assessmentIncorrect"),
   assessmentUnsure: $("#assessmentUnsure"),
+  groundingControls: $("#groundingControls"), guidanceCard: $("#guidanceCard"),
+  interpretationCard: $("#interpretationCard"), reviewKind: $("#reviewKind"),
+  situationLabel: $("#situationLabel"), situationSummary: $("#situationSummary"),
+  replyBlock: $("#replyBlock"), replyText: $("#replyText"),
+  interpretationLabel: $("#interpretationLabel"),
+  interpretationText: $("#interpretationText"), rationaleText: $("#rationaleText"),
+  expectedAction: $("#expectedAction"), rawContext: $("#rawContext"),
+  rawFocal: $("#rawFocal"), rawEvidence: $("#rawEvidence"),
 };
 
 function setStatus(message, error = false) {
@@ -33,6 +42,26 @@ function currentCase() { return state.cases[currentIndex]; }
 function humanizeReason(value) {
   const text = String(value || "").replaceAll("_", " ").trim();
   return text ? text[0].toUpperCase() + text.slice(1) : "No signal recorded";
+}
+
+function renderInterpretationCard(item) {
+  const understanding = item.review_kind === "user_understanding";
+  elements.pageTitle.textContent = understanding
+    ? "Did I understand you?" : "Did I judge this correctly?";
+  elements.reviewKind.textContent = understanding
+    ? "Understanding check" : "Agent judgment";
+  elements.situationLabel.textContent = understanding ? "Agent said or did" : "What happened";
+  elements.situationSummary.textContent = item.situation_summary;
+  elements.replyBlock.hidden = !understanding;
+  elements.replyText.textContent = item.user_turn;
+  elements.interpretationLabel.textContent = understanding
+    ? "My interpretation" : "My assessment";
+  elements.interpretationText.textContent = item.interpretation;
+  elements.rationaleText.textContent = item.rationale;
+  elements.expectedAction.textContent = item.expected_action;
+  formatEvidence(elements.rawContext, item.context_blocks, "No earlier evidence captured.");
+  formatEvidence(elements.rawFocal, item.user_turn_blocks, "No focal evidence captured.");
+  elements.rawEvidence.open = false;
 }
 
 function buildLabelButtons(item) {
@@ -111,6 +140,8 @@ function formatEvidence(container, blocks, emptyMessage) {
 
 function render() {
   const item = currentCase();
+  const grounding = item.review_kind === "user_understanding"
+    || item.review_kind === "agent_judgment";
   const { completed, total } = state.progress;
   const percent = total ? Math.round((completed / total) * 100) : 0;
   elements.progressText.textContent = `${completed} of ${total} judged / ${percent}%`;
@@ -118,6 +149,10 @@ function render() {
   elements.progressTrack.setAttribute("aria-valuenow", String(percent));
   elements.casePosition.textContent = `Case ${currentIndex + 1} of ${total}`;
   elements.sourceBadge.textContent = item.source;
+  elements.taxonomyEvidence.hidden = grounding;
+  elements.interpretationCard.hidden = !grounding;
+  if (grounding) renderInterpretationCard(item);
+  else elements.pageTitle.textContent = "Audit one diagnosis";
   formatEvidence(elements.contextText, item.context_blocks,
                  "No preceding assistant context was captured.");
   formatEvidence(elements.userText, item.user_turn_blocks, "No user turn was captured.");
@@ -129,8 +164,10 @@ function render() {
   const hasProposal = Boolean(item.proposed_label);
   buildLabelButtons(item);
   elements.proposalPanel.hidden = !hasProposal;
-  elements.assessmentControls.hidden = !hasProposal;
-  elements.labelStack.hidden = hasProposal;
+  elements.assessmentControls.hidden = grounding || !hasProposal;
+  elements.groundingControls.hidden = !grounding;
+  elements.labelStack.hidden = grounding || hasProposal;
+  elements.guidanceCard.hidden = grounding;
   if (hasProposal) {
     const prompt = state.protocol.label_prompts[item.proposed_label];
     elements.proposalLabel.textContent = prompt ? prompt.action : item.proposed_label;
@@ -143,6 +180,11 @@ function render() {
     const prompt = state.protocol.label_prompts[label];
     button.querySelector("strong").textContent = prompt.action;
     button.querySelector("small").textContent = prompt.detail;
+  });
+  document.querySelectorAll("[data-grounding]").forEach((button) => {
+    const label = button.dataset.grounding;
+    button.classList.toggle("selected", label === item.assessment);
+    button.setAttribute("aria-pressed", String(label === item.assessment));
   });
   setStatus(item.assessment ? `Assessment saved as ${item.assessment}`
     : item.human_label ? `Saved as ${item.human_label}` : "Not yet judged");
@@ -228,8 +270,10 @@ async function saveNotesBeforeMove(delta) {
 
 elements.previous.addEventListener("click", () => saveNotesBeforeMove(-1));
 elements.next.addEventListener("click", () => saveNotesBeforeMove(1));
-elements.clear.addEventListener("click", () => save(
-  "", false, currentCase().proposed_label ? "" : null));
+elements.clear.addEventListener("click", () => {
+  const item = currentCase();
+  save("", false, item.review_kind ? "" : item.proposed_label ? "" : null);
+});
 elements.notes.addEventListener("input", () => {
   notesDirty = elements.notes.value !== currentCase().notes;
   setStatus(notesDirty ? "Note will save when you leave this case"
@@ -242,6 +286,10 @@ elements.assessmentIncorrect.addEventListener("click", () => {
   setStatus("Choose the better label; no note is required");
 });
 elements.assessmentUnsure.addEventListener("click", () => save("", true, "unsure"));
+document.querySelectorAll("[data-grounding]").forEach((button) => {
+  button.addEventListener("click", () => save(
+    button.dataset.grounding, true, button.dataset.grounding));
+});
 $("#retry").addEventListener("click", load);
 
 function handleKeyboard(event /** @type {KeyboardEvent} */) {
@@ -249,7 +297,12 @@ function handleKeyboard(event /** @type {KeyboardEvent} */) {
   if (event.target.matches("textarea, input")) return;
   const labels = state.protocol.decision_order;
   const index = Number(event.key) - 1;
-  if (!currentCase().proposed_label
+  if (currentCase().review_kind && /^[1-4]$/.test(event.key)) {
+    event.preventDefault();
+    const assessment = ["accurate", "partly_accurate", "wrong",
+                        "not_enough_context"][index];
+    save(assessment, true, assessment);
+  } else if (!currentCase().proposed_label
       && /^[1-9]$/.test(event.key) && index < labels.length) {
     event.preventDefault();
     save(labels[index]);

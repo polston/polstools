@@ -67,6 +67,22 @@ h1 { margin: 0; max-width: 760px; font-size: clamp(2rem, 4vw, 4.6rem); line-heig
 .user-panel { padding-top: 18px; }
 .user-text { color: #071a31; font-size: clamp(1.15rem, 1.55vw, 1.42rem); line-height: 1.5; font-weight: 620; }
 .user-text p + p { margin-top: 0.7em; }
+.interpretation-card { padding: 26px 0 8px; }
+.kind-badge { display: inline-block; margin: 0 0 18px; padding: 6px 9px; background: var(--ink); color: white; font: 700 0.7rem/1 "Cascadia Code", Consolas, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+.card-section { padding: 18px 0; border-top: 1px solid var(--line); }
+.card-section p:last-child { margin-bottom: 0; }
+.card-lead { max-width: 66ch; margin: 0; font-size: clamp(1.2rem, 1.7vw, 1.55rem); line-height: 1.42; font-weight: 680; letter-spacing: -0.02em; }
+.reply-card { margin: 12px 0; padding: 20px 22px; border: 0; border-left: 4px solid var(--cobalt); background: #eaf1fb; }
+.quoted-reply { margin: 0; font-size: 1.16rem; line-height: 1.5; font-weight: 620; white-space: pre-wrap; }
+.interpretation-block { margin-top: 8px; padding: 24px 22px; border: 0; background: #fff7e8; }
+.card-claim { margin: 0; color: #3d2a0d; font-size: clamp(1.15rem, 1.6vw, 1.45rem); line-height: 1.45; font-weight: 700; }
+.card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.card-grid .card-section { line-height: 1.55; }
+.action-block { border-top-color: var(--success); }
+.raw-evidence { margin-top: 20px; padding: 14px 16px; border: 1px solid var(--line); background: #edf2f7; }
+.raw-evidence summary { cursor: pointer; color: var(--cobalt-deep); font-weight: 750; }
+.raw-evidence .speaker { margin-top: 18px; }
+.raw-evidence .transcript-text { max-height: 260px; font-size: 0.88rem; }
 .turn-divider { display: flex; align-items: center; gap: 12px; color: var(--signal); font: 700 0.68rem/1 "Cascadia Code", Consolas, monospace; text-transform: uppercase; letter-spacing: 0.12em; }
 .turn-divider::before, .turn-divider::after { content: ""; height: 1px; flex: 1; background: var(--line); }
 .notes-row { margin-top: 12px; }
@@ -94,6 +110,8 @@ h1 { margin: 0; max-width: 760px; font-size: clamp(2rem, 4vw, 4.6rem); line-heig
 .label-stack strong { font-size: 1rem; }
 .label-stack small { margin-top: 2px; color: var(--muted); line-height: 1.3; }
 .label-stack button.selected small { color: #e7efff; }
+.grounding-controls::before { display: none; }
+.grounding-controls button { grid-template-columns: 1fr; padding: 14px 13px; border-bottom: 1px solid var(--line); }
 .rule-card { margin: 2px 16px 16px; padding: 18px; border-left: 4px solid var(--signal); background: #fff7e8; }
 .rule-card ol { margin: 8px 0 0; padding-left: 20px; color: #5e421c; font-size: 0.84rem; line-height: 1.45; }
 .rule-card li + li { margin-top: 6px; }
@@ -117,6 +135,7 @@ h1 { margin: 0; max-width: 760px; font-size: clamp(2rem, 4vw, 4.6rem); line-heig
   .masthead { padding: 20px 18px 0; }
   .case-desk, .decision-rail { border-left: 0; border-right: 0; box-shadow: none; }
   .case-desk { padding: 24px 18px; }
+  .card-grid { grid-template-columns: 1fr; gap: 0; }
   .label-stack { grid-template-columns: 1fr; }
   .transcript-text { max-height: 320px; }
   .reference-list li { grid-template-columns: 1fr; gap: 0.25em; }

@@ -68,6 +68,39 @@ class ReviewWorkflowTests(unittest.TestCase):
                          status["next_packet"]["progress"])
         self.assertEqual(2, status["packet_count"])
 
+    def test_mixed_interpretation_calibration_precedes_taxonomy_packets(self):
+        source = self.root / "mixed-interpretation-calibration-round1.csv"
+        fields = TAXONOMY_FIELDS + (
+            "review_kind", "situation_summary", "interpretation",
+            "rationale", "expected_action")
+        row = {field: "" for field in fields}
+        row.update({"case_id": "mixed-1", "source": "fixture",
+                    "split": "calibration", "context": "before",
+                    "user_turn": "after", "review_kind": "user_understanding",
+                    "situation_summary": "The agent asked a question.",
+                    "interpretation": "The user corrected it.",
+                    "rationale": "The response replaces the prior premise.",
+                    "expected_action": "Correct the work.",
+                    "proposed_label": "", "proposal_reason": ""})
+        with source.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader(); writer.writerow(row)
+        manifest = {
+            "schema_version": 1, "dataset_id": "mixed-fixture",
+            "rubric_id": "interpretation_grounding", "rubric_version": 1,
+            "split": "calibration", "sample_sha256": _packet_fingerprint(source),
+            "review_round": 1,
+        }
+        (self.root / "mixed-interpretation-calibration-round1-manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8")
+        self.packet("duplicate-work-calibration-round1", rubric="duplicate_work",
+                    split="calibration")
+
+        status = review_status(self.root)
+
+        self.assertEqual("mixed-interpretation-calibration-round1.csv",
+                         status["next_packet"]["source_name"])
+
     def test_heldout_requires_explicit_phase_and_resumes_first_open_case(self):
         self.packet("duplicate-work-test-round1", rubric="duplicate_work",
                     split="test", assessments=("unsure", ""))
@@ -103,6 +136,8 @@ class ReviewWorkflowTests(unittest.TestCase):
                  / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("retro-eval-review status", skill)
         self.assertIn("retro-eval-review serve-next", skill)
+        self.assertIn("mixed interpretation", skill.lower())
+        self.assertIn("Accurate", skill)
         self.assertIn("--phase heldout", skill)
         self.assertNotIn("retro-eval-labels serve", skill)
 

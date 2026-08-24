@@ -132,6 +132,38 @@
       "prompt_template": "Classify the tool failure using exactly one canonical label.\n\nTOOL CONTEXT:\n{context}\n\nRESULT EVIDENCE:\n{user_turn}"
     },
     {
+      "id": "interpretation-grounding",
+      "version": 1,
+      "rubric_id": "interpretation_grounding",
+      "rubric_version": 1,
+      "labels": ["accurate", "partly_accurate", "wrong", "not_enough_context"],
+      "decision_order": ["accurate", "partly_accurate", "wrong", "not_enough_context"],
+      "definitions": {
+        "accurate": "The interpretation and expected action fit the source evidence without a material error.",
+        "partly_accurate": "The main reading is useful but a material detail, reason, or expected action is incomplete or wrong.",
+        "wrong": "The interpretation substantially misunderstands the user, agent action, or situation.",
+        "not_enough_context": "The evidence shown cannot establish whether the interpretation is accurate."
+      },
+      "human_instruction": "Judge my plain-language interpretation. You are checking whether I understood the situation, not classifying raw logs. Notes are optional.",
+      "presentation": {
+        "context_label": "Source evidence",
+        "focal_label": "Current evidence",
+        "review_question": "Is my interpretation accurate?"
+      },
+      "label_prompts": {
+        "accurate": {"action": "Accurate", "detail": "The interpretation and expected action fit."},
+        "partly_accurate": {"action": "Partly accurate", "detail": "The main idea fits, but something material is off."},
+        "wrong": {"action": "Wrong", "detail": "The interpretation substantially misunderstands the situation."},
+        "not_enough_context": {"action": "Not enough context", "detail": "The shown evidence is not enough to judge."}
+      },
+      "tie_breaks": [
+        "Choose Partly accurate when the central interpretation is useful but the reason or expected action needs correction.",
+        "Choose Wrong when acting on the interpretation would repeat or worsen the misunderstanding.",
+        "Choose Not enough context only when missing evidence prevents a judgment."
+      ],
+      "prompt_template": "Judge the proposed interpretation using the source evidence.\n\nSOURCE CONTEXT:\n{context}\n\nFOCAL EVIDENCE:\n{user_turn}"
+    },
+    {
       "id": "turn-friction-dominant-intent",
       "version": 1,
       "rubric_id": "turn_friction_legacy",

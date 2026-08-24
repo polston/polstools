@@ -26,6 +26,15 @@ class AnnotationConflict(RuntimeError):
 
 
 def _validate_case_evidence(protocol, case):
+    if protocol.id == "interpretation-grounding":
+        required = ("review_kind", "situation_summary", "interpretation",
+                    "rationale", "expected_action")
+        if not all(str(case.get(field) or "").strip() for field in required):
+            raise ValueError("interpretation review case is incomplete")
+        if case["review_kind"] not in {
+                "user_understanding", "agent_judgment"}:
+            raise ValueError("interpretation review kind is unsupported")
+        return
     if protocol.id != "duplicate-work-taxonomy" or protocol.version < 4:
         return
     context = str(case.get("context") or "")
@@ -157,14 +166,21 @@ class AnnotationWorkspace:
                 assessment = str(assessment).strip()
                 if "assessment" not in target:
                     raise ValueError("assessment is unsupported for this packet")
-                if assessment not in {"", "correct", "incorrect", "unsure"}:
+                grounding = self.protocol.id == "interpretation-grounding"
+                allowed = ({"", "accurate", "partly_accurate", "wrong",
+                            "not_enough_context"} if grounding else
+                           {"", "correct", "incorrect", "unsure"})
+                if assessment not in allowed:
                     raise ValueError("unsupported assessment")
                 proposed = str(target.get("proposed_label") or "")
-                if assessment == "correct" and label != proposed:
+                if grounding and label != assessment:
+                    raise ValueError("interpretation assessment must match its label")
+                if not grounding and assessment == "correct" and label != proposed:
                     raise ValueError("correct assessment must accept the proposal")
-                if assessment == "incorrect" and (not label or label == proposed):
+                if not grounding and assessment == "incorrect" and (
+                        not label or label == proposed):
                     raise ValueError("incorrect assessment requires a correction label")
-                if assessment == "unsure" and label:
+                if not grounding and assessment == "unsure" and label:
                     raise ValueError("unsure assessment cannot assert a label")
                 target["assessment"] = assessment
             target["human_label"] = label
