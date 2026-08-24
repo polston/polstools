@@ -13,7 +13,7 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 
 from retro_eval.annotation import _packet_fingerprint  # noqa: E402
 from retro_eval.review_workflow import (  # noqa: E402
-    DEFAULT_REVIEW_PORT, review_status,
+    DEFAULT_REVIEW_PORT, review_status, select_display_packet,
 )
 from retro_eval.taxonomy_packets import TAXONOMY_FIELDS  # noqa: E402
 
@@ -109,6 +109,45 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertEqual("mixed-interpretation-calibration-round1.csv",
                          status["next_packet"]["source_name"])
 
+    def test_completed_mixed_review_does_not_auto_advance_to_taxonomy_forms(self):
+        source = self.root / "mixed-interpretation-calibration-round1.csv"
+        fields = TAXONOMY_FIELDS + (
+            "review_kind", "situation_summary", "interpretation",
+            "rationale", "expected_action")
+        row = {field: "" for field in fields}
+        row.update({"case_id": "mixed-1", "source": "fixture",
+                    "split": "calibration", "context": "before",
+                    "user_turn": "after", "review_kind": "agent_judgment",
+                    "situation_summary": "The agent repeated a wait.",
+                    "interpretation": "The wait was avoidable.",
+                    "rationale": "A completion event was available.",
+                    "expected_action": "Use the completion event.",
+                    "assessment": "accurate"})
+        with source.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader(); writer.writerow(row)
+        manifest = {
+            "schema_version": 1, "dataset_id": "mixed-fixture",
+            "rubric_id": "interpretation_grounding", "rubric_version": 1,
+            "split": "calibration", "sample_sha256": _packet_fingerprint(source),
+            "review_round": 1,
+        }
+        (self.root / "mixed-interpretation-calibration-round1-manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8")
+        self.packet("duplicate-work-calibration-round1", rubric="duplicate_work",
+                    split="calibration")
+
+        status = review_status(self.root)
+        taxonomy = review_status(self.root, include_taxonomies=True)
+
+        self.assertTrue(status["phase_completed"])
+        self.assertIsNone(status["next_packet"])
+        self.assertTrue(status["taxonomy_review_available"])
+        self.assertEqual("duplicate-work-calibration-round1.csv",
+                         taxonomy["next_packet"]["source_name"])
+        self.assertEqual("mixed-interpretation-calibration-round1.csv",
+                         select_display_packet(status)["source_name"])
+
     def test_heldout_requires_explicit_phase_and_resumes_first_open_case(self):
         self.packet("duplicate-work-test-round1", rubric="duplicate_work",
                     split="test", assessments=("unsure", ""))
@@ -146,6 +185,7 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertIn("retro-eval-review serve-next", skill)
         self.assertIn("mixed interpretation", skill.lower())
         self.assertIn("Accurate", skill)
+        self.assertIn("--include-taxonomies", skill)
         self.assertIn("--phase heldout", skill)
         self.assertNotIn("retro-eval-labels serve", skill)
 

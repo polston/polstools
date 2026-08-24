@@ -51,7 +51,7 @@ def _validate_case_evidence(protocol, case):
 
 class AnnotationWorkspace:
     def __init__(self, *, source: Path, manifest_path: Path, rubrics_path: Path,
-                 protocols_path: Path):
+                 protocols_path: Path, dashboard=None):
         self.source = Path(source)
         self.manifest_path = Path(manifest_path)
         _external(self.source)
@@ -81,6 +81,7 @@ class AnnotationWorkspace:
         self.manifest = _load_packet_manifest(
             self.source, self.manifest_path, rubric_id=rubric.id,
             rubric_version=rubric.version)
+        self.dashboard = dashboard
         self._lock = threading.Lock()
 
     def _revision(self):
@@ -121,7 +122,7 @@ class AnnotationWorkspace:
                 or not all(str(presentation.get(key) or "").strip() for key in (
                     "context_label", "focal_label", "review_question"))):
             raise ValueError("annotation protocol presentation is incomplete")
-        return {
+        snapshot = {
             "schema_version": 1,
             "dataset_id": self.manifest["dataset_id"],
             "revision": revision,
@@ -142,6 +143,9 @@ class AnnotationWorkspace:
             },
             "cases": cases,
         }
+        if self.dashboard is not None:
+            snapshot["dashboard"] = self.dashboard
+        return snapshot
 
     def update(self, *, case_id: str, label: str, notes: str,
                assessment=None,

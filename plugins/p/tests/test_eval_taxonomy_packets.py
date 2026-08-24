@@ -80,6 +80,38 @@ class AdaptiveSupportTests(unittest.TestCase):
 
 
 class TaxonomyPacketTests(unittest.TestCase):
+    def test_polling_proposal_requires_cost_context_and_flags_repeated_overhead(self):
+        from retro_eval.taxonomy_packets import _candidates
+
+        trace = "a" * 24
+        first = record(trace, 1, SpanKind.TOOL,
+                       signature="same", tool="wait")
+        second = record(trace, 2, SpanKind.TOOL,
+                        signature="same", tool="wait")
+        evidence = {
+            first.span_id: {"tool_result": "Script running with cell ID 7"},
+            second.span_id: {"tool_result": "Script running with cell ID 7"},
+        }
+        (bounded_unknown,) = _candidates(
+            (first, second), "duplicate_work", evidence)
+        self.assertEqual("ambiguous", bounded_unknown.proposed_label)
+        self.assertEqual("polling_cost_unobservable",
+                         bounded_unknown.proposal_reason)
+
+        probe = record(trace, 3, SpanKind.TOOL,
+                       signature="probe", tool="wait_agent")
+        third = record(trace, 4, SpanKind.TOOL,
+                       signature="same", tool="wait")
+        evidence[probe.span_id] = {"tool_result": "Wait timed out"}
+        evidence[third.span_id] = {"tool_result": "Script running with cell ID 7"}
+        candidates = _candidates(
+            (first, second, probe, third), "duplicate_work", evidence)
+        prolonged = next(item for item in candidates
+                         if item.stable_key == third.span_id)
+        self.assertEqual("wasteful_duplicate", prolonged.proposed_label)
+        self.assertEqual("repeated_polling_overhead",
+                         prolonged.proposal_reason)
+
     def test_failure_sampling_uses_all_redacted_evidence_hint_classes(self):
         from retro_eval.taxonomy_packets import _failure_sampling_stratum
 
@@ -248,7 +280,7 @@ class TaxonomyPacketTests(unittest.TestCase):
                     self.assertEqual(6, manifest["annotation_packet_version"])
                     if packet["rubric_id"] == "duplicate_work":
                         self.assertEqual(
-                            4, manifest["annotation_protocol_version"])
+                            5, manifest["annotation_protocol_version"])
                         self.assertEqual(
                             "passed", manifest["review_quality"]["status"])
                         self.assertEqual(

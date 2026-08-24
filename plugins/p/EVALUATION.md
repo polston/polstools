@@ -222,11 +222,15 @@ entrypoint uses the stable URI `http://127.0.0.1:8123/`; random ports are not
 part of the default workflow. Taxonomy packets show the
 frozen rule-based proposal and offer Correct, Incorrect, and Unsure. Choosing
 Incorrect reveals the current protocol's canonical alternatives. Repeated-call
-protocol v4 presents separate Earlier call/intervening and Current repeated
+protocol v5 presents separate Earlier call/intervening and Current repeated
 call evidence panels with redacted purpose, input, and result evidence. The
 review question is never stored or displayed as captured evidence; a matching
-signature or sequence number alone is explicitly insufficient. Arrow keys move
-between cases; reopening resumes at the first unassessed case.
+signature or sequence number alone is explicitly insufficient. An active job is
+also insufficient to excuse repeated polling: bounded polling requires evidence
+of reasonable cadence and unavailable completion notification, prolonged
+polling is avoidable overhead, and adjacent waits without cumulative context
+remain ambiguous. Arrow keys move between cases; reopening resumes at the first
+unassessed case.
 
 Mixed interpretation calibration runs before taxonomy review when such a packet
 is present. Each authored card links to immutable external source evidence but

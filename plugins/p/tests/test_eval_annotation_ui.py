@@ -85,6 +85,19 @@ class AnnotationWorkspaceTests(unittest.TestCase):
         self.assertNotIn(str(self.root), json.dumps(state))
         self.assertTrue(state["cases"][0]["context_blocks"])
 
+    def test_snapshot_includes_an_optional_privacy_safe_dashboard(self):
+        dashboard = {"schema_version": 1, "calibration": {"total": 10}}
+        workspace = AnnotationWorkspace(
+            source=self.packet, manifest_path=self.manifest,
+            rubrics_path=PLUGIN_ROOT / "rubrics" / "rubrics.json",
+            protocols_path=PLUGIN_ROOT / "rubrics" / "annotation-protocols.json",
+            dashboard=dashboard,
+        )
+
+        state = workspace.snapshot()
+
+        self.assertEqual(dashboard, state["dashboard"])
+
     def test_reference_style_points_are_restored_to_separate_blocks(self):
         blocks = evidence_blocks(
             "ask.1 - skip ask.2 - proceed stdin/out.4.3.6 - good "
@@ -222,6 +235,24 @@ class AnnotationWorkspaceTests(unittest.TestCase):
         self.assertIn('id="reviewQuestion"', html)
         self.assertIn('id="interpretationCard"', html)
         self.assertIn('id="rawEvidence"', html)
+        self.assertIn('id="evidenceView"', html)
+        self.assertIn('id="reviewView"', html)
+        self.assertIn('id="changesetSummary"', html)
+        self.assertIn('id="changedFileTable"', html)
+        self.assertIn('id="diffFileSelect"', html)
+        self.assertIn('id="diffViewer"', html)
+        self.assertIn('id="recommendationSummary"', html)
+        self.assertIn('id="recommendationTable"', html)
+        self.assertIn('id="runInventory"', html)
+        self.assertIn('id="coverageTable"', html)
+        self.assertIn('id="ratePlot"', html)
+        self.assertIn('id="metricTable"', html)
+        self.assertIn('id="calibrationMatrix"', html)
+        self.assertIn('id="taxonomyComposition"', html)
+        self.assertIn('id="gateTable"', html)
+        self.assertIn('id="lifecycleTable"', html)
+        self.assertIn('id="changeTable"', html)
+        self.assertIn('id="proposalTable"', html)
         self.assertNotIn("data-label=", html)
         self.assertIn("const buttons = labels.map", script)
         self.assertIn("button.dataset.label = label", script)
@@ -238,12 +269,35 @@ class AnnotationWorkspaceTests(unittest.TestCase):
         self.assertIn("humanizeReason", script)
         self.assertIn("renderInterpretationCard", script)
         self.assertIn("partly_accurate", script)
+        self.assertIn("renderDashboard", script)
+        self.assertIn("renderChangeset", script)
+        self.assertIn("dashboard.changeset", script)
+        self.assertIn("file.patch", script)
+        self.assertIn("diffFileSelect.addEventListener", script)
+        self.assertIn("function diffLineClass", script)
+        self.assertIn('"diff-line diff-line-addition"', script)
+        self.assertIn('"diff-line diff-line-deletion"', script)
+        self.assertIn('"diff-line diff-line-hunk"', script)
+        self.assertIn('"diff-line diff-line-file"', script)
+        self.assertIn("diffViewer.replaceChildren", script)
+        self.assertNotIn("diffViewer.innerHTML", script)
+        self.assertIn("renderRecommendations", script)
+        self.assertIn("dashboard.recommendations", script)
+        self.assertIn("recommended_action", script)
+        self.assertIn("revisit_when", script)
+        self.assertIn("dashboard.metrics", script)
+        self.assertIn("proposed_support", script)
+        self.assertIn("interval_low", script)
+        self.assertIn("drawRatePlot", script)
+        self.assertIn("minimum_heldout_per_label", script)
         self.assertIn("Observed signal", html)
         self.assertIn("async function saveNotesBeforeMove", script)
         self.assertIn("elements.notes.addEventListener(\"input\"", script)
         self.assertNotIn("innerHTML", script)
         self.assertIn(".evidence-list", (PLUGIN_ROOT / "ui" / "annotation" /
                                          "styles.css").read_text(encoding="utf-8"))
+        self.assertIn(".data-table", (PLUGIN_ROOT / "ui" / "annotation" /
+                                      "styles.css").read_text(encoding="utf-8"))
 
     def test_http_api_requires_csrf_and_persists_a_label(self):
         server = create_server(self.workspace, host="127.0.0.1", port=0)

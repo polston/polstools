@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "provisional",
   "repeated_call": {
-    "version": 3,
+    "version": 4,
     "classes": ["polling", "post_state_change", "candidate_waste"],
     "polling_tools": ["wait", "wait_agent", "write_stdin", "taskoutput"],
     "mutation_tools": ["edit", "write", "notebookedit", "apply_patch", "git_commit"]

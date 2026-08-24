@@ -24,10 +24,10 @@
       "positive_examples": ["task semantics satisfy a skill trigger and the skill ran"], "negative_examples": ["shared keywords without trigger semantics"]
     },
     {
-      "id": "duplicate_work", "version": 3, "calibration_status": "unvalidated", "scope": "span_pair", "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
-      "required_evidence": ["normalized call or task signatures", "intervening state changes", "declared polling or review intent when observable"], "abstain_when": ["tool target or state transition is unavailable"], "minimum_n": 50,
+      "id": "duplicate_work", "version": 4, "calibration_status": "unvalidated", "scope": "span_pair", "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
+      "required_evidence": ["normalized call or task signatures", "intervening state changes", "declared polling or review intent when observable", "cumulative polling cost and available completion notification when judging polling efficiency"], "abstain_when": ["tool target or state transition is unavailable", "only adjacent waits are shown without cumulative duration, repeat count, or notification capability"], "minimum_n": 50,
       "targets": {"precision": 0.90, "recall": 0.75, "agreement": 0.80},
-      "positive_examples": ["identical observation repeated with no intervening state or monitoring purpose"], "negative_examples": ["same check after a mutation", "wait call repeated while monitoring an active operation"],
+      "positive_examples": ["identical observation repeated with no intervening state or monitoring purpose", "prolonged repeated polling consumes context while a deterministic completion mechanism should replace it"], "negative_examples": ["same check after a mutation", "one bounded follow-up wait at a reasonable cadence when no completion notification is available"],
       "adaptive_sampling": {"initial_calibration": 50, "initial_heldout": 50, "minimum_heldout_per_label": 20, "support_labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat"], "maximum_rounds": 4, "maximum_total": 400},
       "promotion": {"positive_labels": ["wasteful_duplicate"], "maximum_polling_false_positive_rate": 0.05}
     },

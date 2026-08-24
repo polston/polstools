@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .annotation import _load_packet_manifest
 from .annotation_ui import AnnotationWorkspace, serve_annotation_ui
+from .review_dashboard import build_review_dashboard
 
 
 _RUBRIC_ORDER = {"interpretation_grounding": -1,
@@ -88,25 +89,45 @@ def _packet_states(review_dir: Path, split: str):
     return packets
 
 
-def review_status(review_dir, *, phase="calibration"):
+def review_status(review_dir, *, phase="calibration", include_taxonomies=False):
     """Return resumable state for one explicit review phase."""
     if phase not in {"calibration", "heldout"}:
         raise ValueError("review phase must be calibration or heldout")
     directory = _review_directory(review_dir)
     split = "calibration" if phase == "calibration" else "test"
-    packets = _packet_states(directory, split)
-    if not packets:
+    all_packets = _packet_states(directory, split)
+    if not all_packets:
         raise ValueError("no %s taxonomy packets found" % phase)
+    interpretation_packets = [
+        item for item in all_packets
+        if item["rubric_id"] == "interpretation_grounding"]
+    if phase == "calibration" and interpretation_packets \
+            and not include_taxonomies:
+        packets = interpretation_packets
+    else:
+        packets = all_packets
     next_packet = next((item for item in packets if item["remaining"]), None)
+    taxonomy_review_available = any(
+        item["rubric_id"] != "interpretation_grounding" and item["remaining"]
+        for item in all_packets)
     return {
         "schema_version": 1,
         "phase": phase,
         "packet_count": len(packets),
         "phase_completed": next_packet is None,
         "remaining_cases": next_packet["remaining"] if next_packet else 0,
+        "taxonomy_review_available": taxonomy_review_available,
         "next_packet": next_packet,
         "packets": packets,
     }
+
+
+def select_display_packet(status):
+    """Keep the completed low-burden packet available as a dashboard drilldown."""
+    if status["next_packet"] is not None:
+        return status["next_packet"]
+    packets = status.get("packets") or []
+    return packets[-1] if packets else None
 
 
 def main(argv=None):
@@ -117,22 +138,28 @@ def main(argv=None):
         command.add_argument("--review-dir", type=Path)
         command.add_argument("--phase", choices=("calibration", "heldout"),
                              default="calibration")
+        command.add_argument("--include-taxonomies", action="store_true")
         if name == "serve-next":
             command.add_argument("--host", default="127.0.0.1")
             command.add_argument("--port", type=int, default=DEFAULT_REVIEW_PORT)
             command.add_argument("--no-open", action="store_true")
     args = parser.parse_args(argv)
-    status = review_status(args.review_dir, phase=args.phase)
-    if args.command == "status" or status["next_packet"] is None:
+    status = review_status(
+        args.review_dir, phase=args.phase,
+        include_taxonomies=args.include_taxonomies)
+    if args.command == "status":
         print(json.dumps(status, sort_keys=True))
         return 0
-    packet = status["next_packet"]
+    packet = select_display_packet(status)
+    if packet is None:
+        raise ValueError("no review packet is available to display")
     plugin_root = Path(__file__).resolve().parents[1]
     workspace = AnnotationWorkspace(
         source=Path(packet["source"]),
         manifest_path=Path(packet["manifest"]),
         rubrics_path=plugin_root / "rubrics" / "rubrics.json",
-        protocols_path=plugin_root / "rubrics" / "annotation-protocols.json")
+        protocols_path=plugin_root / "rubrics" / "annotation-protocols.json",
+        dashboard=build_review_dashboard(_review_directory(args.review_dir)))
     serve_annotation_ui(
         workspace, host=args.host, port=args.port,
         open_browser=not args.no_open)

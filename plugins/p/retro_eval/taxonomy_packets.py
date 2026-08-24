@@ -6,6 +6,7 @@ import csv
 import hashlib
 import hmac
 import json
+import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -25,6 +26,11 @@ FAILURE_SAMPLING_HINT_VERSION = 1
 TAXONOMY_FIELDS = FIELDS[:-2] + (
     "proposed_label", "proposal_reason", "assessment") + FIELDS[-2:]
 ANNOTATION_PACKET_VERSION = 6
+_NONTERMINAL_POLLING_RESULT = re.compile(
+    r"\b(?:still\s+)?running\b|\btimed?\s*out\b|\bqueued\b|"
+    r"\bin\s+progress\b|\bnot\s+(?:yet\s+)?(?:complete|finished|resolved)\b",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -252,6 +258,19 @@ def _repeat_evidence(item, private_evidence):
     return "\n".join(parts), "\n".join(current_parts)
 
 
+def _polling_proposal(item, private_evidence):
+    """Avoid treating a polling tool name as proof that the repeat was useful."""
+    observations = (item.previous,) + item.intervening_records + (item.current,)
+    nonterminal = sum(
+        bool(_NONTERMINAL_POLLING_RESULT.search(str(
+            private_evidence.get(record.span_id, {}).get("tool_result") or "")))
+        for record in observations
+    )
+    if nonterminal >= 3:
+        return "wasteful_duplicate", "repeated_polling_overhead"
+    return "ambiguous", "polling_cost_unobservable"
+
+
 def _validate_candidate_evidence(candidate, rubric_id):
     if rubric_id != "duplicate_work":
         return
@@ -278,18 +297,23 @@ def _candidates(records, rubric_id, private_evidence=None):
         candidates = []
         for item in repeated_call_candidates(records, taxonomy):
             context, current = _repeat_evidence(item, private_evidence)
+            if item.candidate_class == "polling":
+                proposed_label, proposal_reason = _polling_proposal(
+                    item, private_evidence)
+            else:
+                proposed_label = {
+                    "post_state_change": "post_state_change_verification",
+                    "candidate_waste": "wasteful_duplicate",
+                }[item.candidate_class]
+                proposal_reason = item.reason_code
             candidate = _Candidate(
                 stable_key=item.current.span_id,
                 source=item.current.source,
                 stratum=item.candidate_class,
                 context=context,
                 user_turn=current,
-                proposed_label={
-                    "polling": "polling",
-                    "post_state_change": "post_state_change_verification",
-                    "candidate_waste": "wasteful_duplicate",
-                }[item.candidate_class],
-                proposal_reason=item.reason_code,
+                proposed_label=proposed_label,
+                proposal_reason=proposal_reason,
             )
             _validate_candidate_evidence(candidate, rubric_id)
             candidates.append(candidate)
@@ -474,7 +498,7 @@ def write_taxonomy_review_packets(trace_path: Path, output_dir: Path, *,
         plugin_root / "rubrics" / "annotation-protocols.json", rubrics)
     rubric_index = {item.id: item for item in rubrics.rubrics}
     specs = (
-        ("duplicate_work", "duplicate-work-taxonomy", 4, "duplicate-work"),
+        ("duplicate_work", "duplicate-work-taxonomy", 5, "duplicate-work"),
         ("tool_failure_kind", "tool-failure-taxonomy", 2, "tool-failure"),
     )
     packets = []

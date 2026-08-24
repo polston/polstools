@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Retro · Human review</title>
+  <title>Retro - Evidence review</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -23,7 +23,150 @@
       </div>
     </header>
 
-    <main class="workspace" hidden>
+    <nav id="viewSwitch" class="view-switch" aria-label="Review views" hidden>
+      <button id="showEvidence" type="button" aria-pressed="false">Analysis workbench</button>
+      <button id="showReview" type="button" aria-pressed="false">Review cards</button>
+    </nav>
+
+    <main id="evidenceView" class="analysis-workbench" hidden>
+      <section class="analysis-section changeset-section" aria-labelledby="changesetTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Actual repository patch</p><h2 id="changesetTitle">Proposed file changes</h2></div>
+          <p id="changesetSummary" class="analysis-note"></p>
+        </header>
+        <div class="table-wrap changeset-table-wrap">
+          <table class="data-table changeset-table">
+            <thead><tr><th>File</th><th>Scope</th><th>Status</th><th class="numeric">+</th><th class="numeric">-</th></tr></thead>
+            <tbody id="changedFileTable"></tbody>
+          </table>
+        </div>
+        <div class="diff-inspector">
+          <label for="diffFileSelect">Unified diff</label>
+          <select id="diffFileSelect"></select>
+          <pre id="diffViewer" aria-live="polite"></pre>
+        </div>
+      </section>
+
+      <section class="analysis-section recommendation-section" aria-labelledby="recommendationTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Decision layer</p><h2 id="recommendationTitle">Recommended decisions</h2></div>
+          <p id="recommendationSummary" class="analysis-note"></p>
+        </header>
+        <div class="table-wrap">
+          <table class="data-table recommendation-table">
+            <thead><tr><th>Proposal</th><th>Recommendation</th><th>Do now</th><th>Evidence basis</th><th>Revisit when</th></tr></thead>
+            <tbody id="recommendationTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="analysis-section run-section" aria-labelledby="runTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Bound evidence set</p><h2 id="runTitle">Run inventory</h2></div>
+          <p id="evidenceSummary" class="analysis-note"></p>
+        </header>
+        <div class="table-wrap">
+          <table class="data-table inventory-table">
+            <thead><tr><th>Dataset</th><th>Traces</th><th>Trace schema</th><th>Adapters</th><th>Scorers</th><th>Rubrics</th></tr></thead>
+            <tbody id="runInventory"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="analysis-section" aria-labelledby="metricsTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Observed estimates</p><h2 id="metricsTitle">Metric matrix</h2></div>
+          <p class="analysis-note">Rates retain their numerator, eligible denominator, uncertainty, scorer version, and observability state.</p>
+        </header>
+        <div class="coverage-layout">
+          <div class="table-wrap coverage-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Harness</th><th>Measured</th><th>Not observable</th><th>Not scored</th><th>Dependency unavailable</th></tr></thead>
+              <tbody id="coverageTable"></tbody>
+            </table>
+          </div>
+          <div id="ratePlot" class="rate-plot"></div>
+          <div class="table-wrap">
+            <table class="data-table metric-table">
+              <thead><tr><th>Harness</th><th>Metric</th><th>v</th><th>State</th><th class="numeric">Numerator</th><th class="numeric">Eligible</th><th class="numeric">Estimate</th><th>95% interval</th><th>Decision use</th></tr></thead>
+              <tbody id="metricTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="analysis-section" aria-labelledby="taxonomyTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Packet composition</p><h2 id="taxonomyTitle">P1 / P4 sample support</h2></div>
+          <p class="analysis-note">Colored marks are scorer proposals used for sampling—not human truth.</p>
+        </header>
+        <div id="taxonomyComposition" class="taxonomy-composition"></div>
+      </section>
+
+      <section class="analysis-section analysis-split" aria-labelledby="calibrationTitle">
+        <div>
+          <header class="analysis-heading">
+            <div><p class="eyebrow">Ten completed judgments</p><h2 id="calibrationTitle">Interpretation matrix</h2></div>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Review kind</th><th class="numeric">Accurate</th><th class="numeric">Partial</th><th class="numeric">Wrong</th><th class="numeric">Insufficient</th><th class="numeric">Total</th></tr></thead>
+              <tbody id="calibrationMatrix"></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <header class="analysis-heading">
+            <div><p class="eyebrow">Promotion contract</p><h2>Gate observations</h2></div>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Gate</th><th>Required</th><th>Observed</th><th>Support</th><th>Status</th></tr></thead>
+              <tbody id="gateTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="analysis-section" aria-labelledby="lifecycleTitle">
+        <header class="analysis-heading">
+          <div><p class="eyebrow">Owned observability only</p><h2 id="lifecycleTitle">Lifecycle measurements</h2></div>
+        </header>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Proposal</th><th>Measure</th><th class="numeric">Observed</th><th class="numeric">Target</th><th>Status</th><th>Coverage boundary</th></tr></thead>
+            <tbody id="lifecycleTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="analysis-section analysis-split" aria-labelledby="proposalTitle">
+        <div>
+          <header class="analysis-heading">
+            <div><p class="eyebrow">P1-P8</p><h2 id="proposalTitle">Proposal ledger</h2></div>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Proposal</th><th>Current state</th><th>Observable basis</th></tr></thead>
+              <tbody id="proposalTable"></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <header class="analysis-heading">
+            <div><p class="eyebrow">Calibration deltas</p><h2>Rule-change ledger</h2></div>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table data-table-compact">
+              <thead><tr><th>Observed signal</th><th>Resulting rule change</th><th>Reason</th></tr></thead>
+              <tbody id="changeTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <main id="reviewView" class="workspace" hidden>
       <section class="case-desk" aria-labelledby="casePosition">
         <div class="case-meta">
           <p id="casePosition">Case 1 of 40</p>

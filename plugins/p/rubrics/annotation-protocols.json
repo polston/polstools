@@ -6,7 +6,7 @@
       "id": "duplicate-work-taxonomy",
       "version": 2,
       "rubric_id": "duplicate_work",
-      "rubric_version": 3,
+      "rubric_version": 4,
       "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
       "decision_order": ["polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "ambiguous"],
       "definitions": {
@@ -37,7 +37,7 @@
       "id": "duplicate-work-taxonomy",
       "version": 3,
       "rubric_id": "duplicate_work",
-      "rubric_version": 3,
+      "rubric_version": 4,
       "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
       "decision_order": ["polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "ambiguous"],
       "definitions": {
@@ -68,7 +68,7 @@
       "id": "duplicate-work-taxonomy",
       "version": 4,
       "rubric_id": "duplicate_work",
-      "rubric_version": 3,
+      "rubric_version": 4,
       "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
       "decision_order": ["polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "ambiguous"],
       "definitions": {
@@ -99,6 +99,43 @@
         "Choose Not enough evidence instead of inferring intent from a tool name, sequence number, or matching signature alone."
       ],
       "prompt_template": "Assess whether the proposed repeated-call diagnosis is supported. Use exactly one canonical label and only the external evidence shown.\n\nPRIOR CALL, RESULT, AND INTERVENING STATE:\n{context}\n\nCURRENT REPEATED CALL:\n{user_turn}"
+    },
+    {
+      "id": "duplicate-work-taxonomy",
+      "version": 5,
+      "rubric_id": "duplicate_work",
+      "rubric_version": 4,
+      "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
+      "decision_order": ["post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "polling", "ambiguous"],
+      "definitions": {
+        "wasteful_duplicate": "The repeat adds avoidable cost without enough benefit, including prolonged status polling that should use deterministic completion notification.",
+        "polling": "A bounded status check uses a reasonable cadence because no deterministic completion notification is available.",
+        "post_state_change_verification": "The call repeats an earlier observation after an intervening mutation to verify the new state.",
+        "independent_review": "The repeat is an intentionally separate review or cross-check rather than duplicated execution.",
+        "other_legitimate_repeat": "The repeat has another observable useful purpose whose benefit justifies its cost.",
+        "ambiguous": "The available evidence cannot establish cumulative repeat cost, relevant state change, or whether notification could replace polling."
+      },
+      "human_instruction": "Decide whether the automated diagnosis explains both the immediate repeat and its cumulative workflow cost. Do not treat an active job or a polling-tool name as proof that repeated checks are efficient.",
+      "presentation": {
+        "context_label": "Earlier call and intervening evidence",
+        "focal_label": "Current repeated call",
+        "review_question": "Does the automated diagnosis explain why this call was repeated?"
+      },
+      "label_prompts": {
+        "wasteful_duplicate": {"action": "Unnecessary repeat", "detail": "The repeat or repeated polling adds avoidable cost without enough benefit."},
+        "polling": {"action": "Bounded polling", "detail": "The cadence is reasonable and deterministic completion notification is unavailable."},
+        "post_state_change_verification": {"action": "Verify a change", "detail": "It repeats an observation after an intervening mutation."},
+        "independent_review": {"action": "Independent review", "detail": "It is a deliberately separate cross-check."},
+        "other_legitimate_repeat": {"action": "Another useful repeat", "detail": "It has another observable purpose whose benefit justifies the cost."},
+        "ambiguous": {"action": "Not enough evidence", "detail": "The shown evidence cannot establish cumulative cost or notification options."}
+      },
+      "tie_breaks": [
+        "Choose Unnecessary repeat when prolonged polling accumulates token or context cost that deterministic completion notification should replace.",
+        "Choose Bounded polling only when the evidence shows a reasonable cadence and no deterministic completion notification is available.",
+        "Choose Verify a change only when the intervening evidence identifies a mutation relevant to the repeated target.",
+        "Choose Not enough evidence when only adjacent waits are shown without cumulative duration, repeat count, or notification capability."
+      ],
+      "prompt_template": "Assess whether the proposed repeated-call diagnosis is supported. Use exactly one canonical label and only the external evidence shown.\n\nPRIOR CALL, RESULT, CUMULATIVE COST, AND INTERVENING STATE:\n{context}\n\nCURRENT REPEATED CALL:\n{user_turn}"
     },
     {
       "id": "tool-failure-taxonomy",

@@ -28,9 +28,12 @@ expected action in plain language; raw source evidence stays collapsed. The
 operator chooses Accurate, Partly accurate, Wrong, or Not enough context.
 Notes are optional. Never ask the operator to derive or explain the diagnosis.
 
-After mixed calibration is complete, the same entrypoint advances to any
-remaining proposal-first taxonomy packets. Those retain their versioned
-Correct, Incorrect, and Unsure contract.
+After mixed calibration is complete, analyze its disagreements and stop. Do not
+automatically advance the operator into the longer taxonomy forms. Their empty
+state is valid and keeps the scorers explicitly unvalidated. Only when the
+operator explicitly chooses that additional review should the same entrypoint
+use `--include-taxonomies`; those packets retain their versioned Correct,
+Incorrect, and Unsure contract.
 
 ## Preserve the evaluation boundary
 

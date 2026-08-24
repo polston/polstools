@@ -32,7 +32,7 @@ class ToolTaxonomyTests(unittest.TestCase):
     def test_profile_is_versioned_and_declares_all_candidate_classes(self):
         profile = load_tool_taxonomy()
         self.assertEqual(1, profile.schema_version)
-        self.assertEqual(3, profile.repeated_call_version)
+        self.assertEqual(4, profile.repeated_call_version)
         self.assertEqual(3, profile.tool_failure_version)
         self.assertEqual(
             {"polling", "post_state_change", "candidate_waste"},
@@ -54,7 +54,7 @@ class ToolTaxonomyTests(unittest.TestCase):
             "repeated_call_rate", minimum_n=1).score(records)
         taxonomy = result.details["repeat_taxonomy"]
 
-        self.assertEqual(3, result.scorer_version)
+        self.assertEqual(4, result.scorer_version)
         self.assertEqual(3, result.numerator)
         self.assertEqual(7, result.eligible_population)
         self.assertEqual(
