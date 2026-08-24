@@ -12,11 +12,19 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
 from retro_eval.annotation import _packet_fingerprint  # noqa: E402
-from retro_eval.review_workflow import review_status  # noqa: E402
+from retro_eval.review_workflow import (  # noqa: E402
+    DEFAULT_REVIEW_PORT, review_status,
+)
 from retro_eval.taxonomy_packets import TAXONOMY_FIELDS  # noqa: E402
 
 
 class ReviewWorkflowTests(unittest.TestCase):
+    def test_review_uri_uses_one_stable_loopback_port(self):
+        self.assertEqual(8765, DEFAULT_REVIEW_PORT)
+        skill = (PLUGIN_ROOT / "skills" / "reviewing-evaluation-taxonomies"
+                 / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("http://127.0.0.1:8765/", skill)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

@@ -16,6 +16,7 @@ _RUBRIC_ORDER = {"interpretation_grounding": -1,
                  "duplicate_work": 0, "tool_failure_kind": 1}
 _ASSESSMENTS = {"", "correct", "incorrect", "unsure", "accurate",
                 "partly_accurate", "wrong", "not_enough_context"}
+DEFAULT_REVIEW_PORT = 8765
 
 
 def _review_directory(value=None) -> Path:
@@ -118,7 +119,7 @@ def main(argv=None):
                              default="calibration")
         if name == "serve-next":
             command.add_argument("--host", default="127.0.0.1")
-            command.add_argument("--port", type=int, default=0)
+            command.add_argument("--port", type=int, default=DEFAULT_REVIEW_PORT)
             command.add_argument("--no-open", action="store_true")
     args = parser.parse_args(argv)
     status = review_status(args.review_dir, phase=args.phase)
