@@ -9,6 +9,20 @@ from .base import AdapterBase, AdapterResult, iter_jsonl, parse_timestamp
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
 
 
+def _message_text(payload):
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(
+        str(block.get("text") or "").strip()
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") in {"input_text", "output_text", "text"}
+        and str(block.get("text") or "").strip())
+
+
 class CodexAdapter(AdapterBase):
     source = "codex"
 
@@ -148,12 +162,30 @@ class CodexAdapter(AdapterBase):
             return {}
         trace_id = self.trace_id(path, root)
         evidence = {}
+        call_details = {}
+        last_assistant_context = ""
         for sequence, (_, record) in enumerate(rows):
             if record.get("type") != "response_item":
                 continue
             payload = record.get("payload")
-            if not isinstance(payload, dict) or payload.get("type") not in {
-                    "function_call", "custom_tool_call"}:
+            if not isinstance(payload, dict):
+                continue
+            item_type = payload.get("type")
+            if item_type == "message" and payload.get("role") == "assistant":
+                shown = _message_text(payload)
+                if shown:
+                    last_assistant_context = redactor(shown)[-1200:]
+                continue
+            if item_type in {"function_call_output", "custom_tool_call_output"}:
+                call_id = str(payload.get("call_id") or payload.get("id") or "")
+                details = call_details.get(call_id)
+                if details is not None:
+                    raw = payload.get("output") or payload.get("result") or ""
+                    shown = (json.dumps(raw, sort_keys=True, default=str)
+                             if not isinstance(raw, str) else raw)
+                    details["tool_result"] = redactor(shown)[:1600]
+                continue
+            if item_type not in {"function_call", "custom_tool_call"}:
                 continue
             tool = str(payload.get("name") or payload.get("tool_name") or "")
             kind = SpanKind.HANDOFF if tool in self.handoff_tools else SpanKind.TOOL
@@ -161,10 +193,16 @@ class CodexAdapter(AdapterBase):
             shown = (json.dumps(raw, sort_keys=True, default=str)
                      if not isinstance(raw, str) else raw)
             span_id = self.ids.make(trace_id, sequence, kind.value)
-            evidence[span_id] = {
+            details = {
                 "tool_kind": tool,
                 "tool_input": redactor(shown)[:1200],
             }
+            if last_assistant_context:
+                details["intent_context"] = last_assistant_context
+            evidence[span_id] = details
+            call_id = str(payload.get("call_id") or payload.get("id") or "")
+            if call_id:
+                call_details[call_id] = details
         return evidence
 
     def _span(self, trace_id, sequence, kind, record, source_version, actor,

@@ -219,8 +219,11 @@ The server binds only to loopback, validates the packet's rubric and
 annotation-protocol hash before serving, rejects cross-origin writes, and saves
 each assessment atomically back to the external CSV. Taxonomy packets show the
 frozen rule-based proposal and offer Correct, Incorrect, and Unsure. Choosing
-Incorrect reveals the current protocol's canonical alternatives. Arrow keys
-move between cases; reopening resumes at the first unassessed case.
+Incorrect reveals the current protocol's canonical alternatives. Repeated-call
+protocol v3 presents separate Prior call, Intervening operations, and Current
+repeat sections with redacted purpose, input, and result evidence; a matching
+signature or sequence number alone is explicitly insufficient. Arrow keys move
+between cases; reopening resumes at the first unassessed case.
 
 The same UI also supports older label-first protocols. Questions, choices,
 definitions, and overlap rules always come from the packet's bound versioned

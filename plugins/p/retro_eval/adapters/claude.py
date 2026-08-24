@@ -232,6 +232,7 @@ class ClaudeAdapter(AdapterBase):
         trace_id = self.trace_id(path, root)
         tool_details = {}
         evidence = {}
+        last_assistant_context = ""
         for sequence, (_, record) in enumerate(iter_jsonl(path)):
             message = record.get("message")
             if not isinstance(message, dict):
@@ -239,6 +240,13 @@ class ClaudeAdapter(AdapterBase):
             content = message.get("content")
             if not isinstance(content, list):
                 continue
+            message_context = "\n".join(
+                str(block.get("text") or "").strip()
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+                and str(block.get("text") or "").strip())
+            shown_context = (redactor(message_context)[-1200:]
+                             if message_context else last_assistant_context)
             for index, block in enumerate(content):
                 if not isinstance(block, dict):
                     continue
@@ -251,6 +259,8 @@ class ClaudeAdapter(AdapterBase):
                             block.get("input"), sort_keys=True,
                             default=str))[:800],
                     }
+                    if shown_context:
+                        details["intent_context"] = shown_context
                     if tool_id:
                         tool_details[tool_id] = details
                     span_id = self.ids.make(
@@ -259,13 +269,19 @@ class ClaudeAdapter(AdapterBase):
                 elif (record.get("type") == "user"
                       and block.get("type") == "tool_result"):
                     tool_id = str(block.get("tool_use_id") or "")
-                    details = dict(tool_details.get(tool_id) or {})
-                    details["tool_result"] = redactor(json.dumps(
+                    call_details = tool_details.get(tool_id)
+                    shown_result = redactor(json.dumps(
                         block.get("content"), sort_keys=True,
                         default=str))[:1200]
+                    if call_details is not None:
+                        call_details["tool_result"] = shown_result
+                    details = dict(call_details or {})
+                    details["tool_result"] = shown_result
                     span_id = self.ids.make(
                         trace_id, sequence * 1000 + index, "retro.tool_result")
                     evidence[span_id] = details
+            if record.get("type") == "assistant" and message_context:
+                last_assistant_context = redactor(message_context)[-1200:]
         return evidence
 
     def _span(self, trace_id, sequence, kind, record, source_version, mode,

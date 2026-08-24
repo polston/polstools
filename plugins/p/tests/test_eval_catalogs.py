@@ -161,7 +161,7 @@ class RubricCatalogueTests(unittest.TestCase):
         self.assertEqual(3, duplicate.version)
         self.assertEqual(2, failure.version)
         for rubric, protocol_id, protocol_version in (
-                (duplicate, "duplicate-work-taxonomy", 2),
+                (duplicate, "duplicate-work-taxonomy", 3),
                 (failure, "tool-failure-taxonomy", 2)):
             plan = rubric.extensions["adaptive_sampling"]
             self.assertGreaterEqual(plan["maximum_rounds"], 2)

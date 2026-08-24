@@ -114,8 +114,9 @@ class TaxonomyPacketTests(unittest.TestCase):
         candidate = _candidates(
             (previous,) + intervening + (current,), "duplicate_work")[0]
 
-        self.assertIn("Intervening tool count: 200", candidate.context)
-        self.assertIn("recent kinds:", candidate.context)
+        self.assertIn("### Intervening operations", candidate.context)
+        self.assertIn("- Count: 200", candidate.context)
+        self.assertEqual(4, candidate.context.count("purpose=unavailable"))
         self.assertLess(len(candidate.context), 1000)
 
     def test_source_adapter_private_evidence_enriches_external_packets_only(self):
@@ -130,6 +131,7 @@ class TaxonomyPacketTests(unittest.TestCase):
                  "message": {"role": "user", "content": "start"}},
                 {"type": "assistant", "timestamp": "2026-08-01T12:00:01Z",
                  "message": {"role": "assistant", "content": [
+                     {"type": "text", "text": "Inspect the initial state"},
                      {"type": "tool_use", "id": "tool-1", "name": "Read",
                       "input": {"file": "private-target"}}]}},
                 {"type": "user", "timestamp": "2026-08-01T12:00:02Z",
@@ -138,6 +140,7 @@ class TaxonomyPacketTests(unittest.TestCase):
                       "is_error": True, "content": "private missing target"}]}},
                 {"type": "assistant", "timestamp": "2026-08-01T12:00:03Z",
                  "message": {"role": "assistant", "content": [
+                     {"type": "text", "text": "Verify after the result"},
                      {"type": "tool_use", "id": "tool-2", "name": "Read",
                       "input": {"file": "private-target"}}]}},
             ]
@@ -162,7 +165,22 @@ class TaxonomyPacketTests(unittest.TestCase):
             packet_text = "\n".join(
                 path.read_text(encoding="utf-8")
                 for path in output.glob("*.csv"))
+            duplicate_rows = []
+            for path in output.glob("duplicate-work-*.csv"):
+                with path.open("r", encoding="utf-8", newline="") as handle:
+                    duplicate_rows.extend(csv.DictReader(handle))
+            duplicate_context = "\n".join(
+                row["context"] for row in duplicate_rows)
             self.assertIn("<redacted>", packet_text)
+            self.assertIn("Prior call purpose: Inspect the initial state",
+                          duplicate_context)
+            self.assertIn("Prior result:", duplicate_context)
+            self.assertIn("<redacted> missing target", duplicate_context)
+            self.assertIn("Current call purpose: Verify after the result",
+                          duplicate_context)
+            self.assertIn("Prior call input:", duplicate_context)
+            self.assertIn("Current call input:", duplicate_context)
+            self.assertNotIn("use the redacted current input above", packet_text)
             self.assertNotIn("private-target", packet_text)
             normalized_text = traces.read_text(encoding="utf-8")
             self.assertNotIn("<redacted>", normalized_text)
@@ -222,7 +240,10 @@ class TaxonomyPacketTests(unittest.TestCase):
                     all_ids |= ids
                     self.assertEqual(expected_round,
                                      manifest["adaptive_sampling"]["round"])
-                    self.assertEqual(4, manifest["annotation_packet_version"])
+                    self.assertEqual(5, manifest["annotation_packet_version"])
+                    if packet["rubric_id"] == "duplicate_work":
+                        self.assertEqual(
+                            3, manifest["annotation_protocol_version"])
                     for row in rows:
                         self.assertTrue(row["proposed_label"])
                         self.assertTrue(row["proposal_reason"])

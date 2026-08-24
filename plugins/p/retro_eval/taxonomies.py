@@ -88,6 +88,7 @@ class RepeatCandidate:
     previous: object
     candidate_class: str
     intervening_tools: tuple[str, ...]
+    intervening_records: tuple[object, ...]
     reason_code: str
 
 
@@ -107,8 +108,8 @@ def repeated_call_candidates(records, taxonomy: ToolTaxonomy | None = None):
         for index, span in enumerate(spans):
             prior_index = previous.get(span.call_signature)
             if prior_index is not None:
-                intervening = tuple(item.tool_kind
-                                    for item in spans[prior_index + 1:index])
+                intervening_records = tuple(spans[prior_index + 1:index])
+                intervening = tuple(item.tool_kind for item in intervening_records)
                 if taxonomy.is_polling(span.tool_kind):
                     candidate_class = "polling"
                     reason_code = "polling_tool"
@@ -121,7 +122,9 @@ def repeated_call_candidates(records, taxonomy: ToolTaxonomy | None = None):
                 candidates.append(RepeatCandidate(
                     current=span, previous=spans[prior_index],
                     candidate_class=candidate_class,
-                    intervening_tools=intervening, reason_code=reason_code))
+                    intervening_tools=intervening,
+                    intervening_records=intervening_records,
+                    reason_code=reason_code))
             previous[span.call_signature] = index
     return tuple(candidates)
 

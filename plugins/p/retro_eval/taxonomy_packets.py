@@ -24,6 +24,7 @@ from .taxonomies import (classify_failure_evidence, load_tool_taxonomy,
 FAILURE_SAMPLING_HINT_VERSION = 1
 TAXONOMY_FIELDS = FIELDS[:-2] + (
     "proposed_label", "proposal_reason", "assessment") + FIELDS[-2:]
+ANNOTATION_PACKET_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -206,6 +207,49 @@ def _failure_sampling_stratum(evidence):
         evidence.get("tool_input"), evidence.get("tool_result")).kind
 
 
+def _shown(value, limit=600):
+    value = str(value or "").strip()
+    return value[:limit] if value else "unavailable"
+
+
+def _repeat_context(item, private_evidence):
+    previous = private_evidence.get(item.previous.span_id, {})
+    current = private_evidence.get(item.current.span_id, {})
+    tool = current.get("tool_kind") or previous.get("tool_kind") \
+        or item.current.tool_kind or "unknown"
+    parts = [
+        "### Prior call",
+        "- Source: %s" % item.current.source,
+        "- Tool: %s" % tool,
+        "- Prior call purpose: %s" % _shown(previous.get("intent_context")),
+        "- Prior call input: %s" % _shown(previous.get("tool_input")),
+        "- Prior result: %s" % _shown(previous.get("tool_result")),
+    ]
+    intervening = []
+    for record in item.intervening_records[-4:]:
+        evidence = private_evidence.get(record.span_id, {})
+        intervening.append(
+            "%s purpose=%s input=%s result=%s" % (
+                evidence.get("tool_kind") or record.tool_kind or "unknown",
+                _shown(evidence.get("intent_context"), 240),
+                _shown(evidence.get("tool_input"), 240),
+                _shown(evidence.get("tool_result"), 240)))
+    parts.extend([
+        "### Intervening operations",
+        "- Count: %d" % len(item.intervening_records),
+        "- Recent evidence: %s" % (
+            " | ".join(intervening) if intervening else "none"),
+    ])
+    parts.extend([
+        "### Current repeat",
+        "- Current call purpose: %s" % _shown(current.get("intent_context")),
+        "- Current call input: %s" % _shown(current.get("tool_input")),
+        "- Current result: %s" % _shown(current.get("tool_result")),
+        "- Structural observation: %s" % item.reason_code,
+    ])
+    return "\n".join(parts)
+
+
 def _candidates(records, rubric_id, private_evidence=None):
     taxonomy = load_tool_taxonomy()
     private_evidence = private_evidence or {}
@@ -214,24 +258,11 @@ def _candidates(records, rubric_id, private_evidence=None):
             stable_key=item.current.span_id,
             source=item.current.source,
             stratum=item.candidate_class,
-            context=(
-                "Source: %s. Tool: %s. Previous sequence: %s. "
-                "Intervening tool count: %s; recent kinds: %s. "
-                "Structural candidate: %s."
-                % (item.current.source, item.current.tool_kind or "unknown",
-                   item.previous.sequence,
-                   len(item.intervening_tools),
-                   ", ".join(item.intervening_tools[-8:]) or "none",
-                   item.candidate_class)
-                + (" Redacted call input: %s."
-                   % private_evidence.get(
-                       item.current.span_id, {}).get("tool_input")
-                   if private_evidence.get(
-                       item.current.span_id, {}).get("tool_input") else "")),
+            context=_repeat_context(item, private_evidence),
             user_turn=(
-                "Repeated sequence: %s. The normalized call signature matches "
-                "the prior call; use the redacted current input above."
-                % item.current.sequence),
+                "Assess whether the proposed repeat diagnosis is supported by "
+                "the prior purpose and result, intervening operations, and "
+                "current purpose shown above."),
             proposed_label={
                 "polling": "polling",
                 "post_state_change": "post_state_change_verification",
@@ -328,7 +359,7 @@ def _write_packet(path, manifest_path, candidates, *, rubric, protocol,
         writer.writerows(rows)
     manifest = {
         "schema_version": 1,
-        "annotation_packet_version": 4,
+        "annotation_packet_version": ANNOTATION_PACKET_VERSION,
         "dataset_id": dataset_id,
         "rubric_id": rubric.id,
         "rubric_version": rubric.version,
@@ -410,7 +441,7 @@ def write_taxonomy_review_packets(trace_path: Path, output_dir: Path, *,
         plugin_root / "rubrics" / "annotation-protocols.json", rubrics)
     rubric_index = {item.id: item for item in rubrics.rubrics}
     specs = (
-        ("duplicate_work", "duplicate-work-taxonomy", 2, "duplicate-work"),
+        ("duplicate_work", "duplicate-work-taxonomy", 3, "duplicate-work"),
         ("tool_failure_kind", "tool-failure-taxonomy", 2, "tool-failure"),
     )
     packets = []

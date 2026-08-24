@@ -34,6 +34,37 @@
       "prompt_template": "Classify why the repeated tool call occurred. Use exactly one canonical label.\n\nPRECEDING TOOL STATE:\n{context}\n\nREPEATED CALL:\n{user_turn}"
     },
     {
+      "id": "duplicate-work-taxonomy",
+      "version": 3,
+      "rubric_id": "duplicate_work",
+      "rubric_version": 3,
+      "labels": ["wasteful_duplicate", "polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "ambiguous"],
+      "decision_order": ["polling", "post_state_change_verification", "independent_review", "other_legitimate_repeat", "wasteful_duplicate", "ambiguous"],
+      "definitions": {
+        "wasteful_duplicate": "The same observation or action was repeated without a state change, monitoring purpose, independent review, or other useful reason.",
+        "polling": "The call intentionally checks an operation or external state that can change while the agent waits.",
+        "post_state_change_verification": "The call repeats an earlier observation after an intervening mutation to verify the new state.",
+        "independent_review": "The repeat is an intentionally separate review or cross-check rather than duplicated execution.",
+        "other_legitimate_repeat": "The repeat has a useful reason not covered by polling, verification, or independent review.",
+        "ambiguous": "The available evidence cannot distinguish waste from a legitimate repeat."
+      },
+      "human_instruction": "Was the proposed repeat diagnosis right? Compare the prior purpose and result, intervening operations, and current purpose. Choose Unsure when those fields do not establish why the call repeated.",
+      "label_prompts": {
+        "wasteful_duplicate": {"action": "Unnecessary repeat", "detail": "No useful state change, monitoring purpose, or independent review explains it."},
+        "polling": {"action": "Polling or waiting", "detail": "It checks an operation or state expected to change over time."},
+        "post_state_change_verification": {"action": "Verify a change", "detail": "It repeats an observation after an intervening mutation."},
+        "independent_review": {"action": "Independent review", "detail": "It is a deliberately separate cross-check."},
+        "other_legitimate_repeat": {"action": "Another useful repeat", "detail": "It has another observable useful purpose."},
+        "ambiguous": {"action": "Not enough evidence", "detail": "The shown evidence cannot establish why it repeated."}
+      },
+      "tie_breaks": [
+        "Choose Polling when the prior result shows an operation was still active or the current purpose explicitly continues monitoring.",
+        "Choose Verify a change only when the intervening evidence identifies a mutation relevant to the repeated target.",
+        "Choose Not enough evidence instead of inferring intent from a tool name, sequence number, or matching signature alone."
+      ],
+      "prompt_template": "Assess whether the proposed repeated-call diagnosis is supported. Use exactly one canonical label and only the external evidence shown.\n\nPRIOR CALL, RESULT, AND INTERVENING STATE:\n{context}\n\nCURRENT REPEAT:\n{user_turn}"
+    },
+    {
       "id": "tool-failure-taxonomy",
       "version": 2,
       "rubric_id": "tool_failure_kind",

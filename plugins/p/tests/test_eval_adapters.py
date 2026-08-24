@@ -169,6 +169,25 @@ class CodexAdapterTests(unittest.TestCase):
             self.assertFalse(excluded.included)
             self.assertEqual(excluded.exclusion_reason, "thread_source:automation")
 
+    def test_private_tool_evidence_joins_call_purpose_and_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "rollout-private.jsonl"
+            rows = self.rows()
+            rows.insert(2, {
+                "type": "response_item", "timestamp": "2026-08-01T12:00:01.5Z",
+                "payload": {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "inspect private state"}]}})
+            write_jsonl(path, rows)
+
+            evidence = CodexAdapter(id_salt=b"local").private_tool_evidence(
+                path, root, lambda text: text.replace("private", "<redacted>"))
+            call = next(iter(evidence.values()))
+
+            self.assertIn("inspect <redacted> state", call["intent_context"])
+            self.assertIn("<redacted> command", call["tool_input"])
+            self.assertIn("<redacted> result", call["tool_result"])
+
     def test_capabilities_are_source_honest(self):
         adapter = CodexAdapter(id_salt=b"local")
         self.assertEqual(adapter.capabilities["human_provenance"].state,
