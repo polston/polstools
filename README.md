@@ -1,8 +1,9 @@
 # polstools
 
 Personal tooling bundled as one Claude Code plugin: home/work skill activation,
-privacy auditing, workflow analysis and evaluation, response formatting, code
-review, aligned status lines, and platform-specific fixes.
+privacy auditing, cross-harness goal design, workflow analysis and evaluation,
+response formatting, code review, aligned status lines, and platform-specific
+fixes.
 
 ```sh
 claude plugin marketplace add polston/polstools
