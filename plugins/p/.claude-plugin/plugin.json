@@ -1,7 +1,7 @@
 {
   "name": "p",
   "description": "Personal tooling for privacy audits, workflow analysis and evaluation, change-explicit response formatting, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "author": {
     "name": "polston"
   },

@@ -637,6 +637,7 @@ correction rule before evaluation.
 | Current-base re-derivation | current `plugins/p` report and four immutable packet assessments | current scorer/catalogue code resolves the copied trace snapshot without regenerating packet identity | 1,863 traces and 282,851 spans re-derived; every packet fingerprint resolved; zero optional assessments left P1/P4 `needs_more` and barred from decision support |
 | Current-base P7 capture | two consolidated owned hooks through current `format-ctl` | revalidate lifecycle capture and overhead after remote format changes | precision 1.0; recall 1.0; unmatched 0; 1,673 added bytes; normalized share 0.001015%; coverage remains repository-owned wrapped hooks only |
 | Current consolidated format validation | current `plugins/p/bin/format-e2e` | hook output remains byte-exact while telemetry stays content-free | hook metadata first broke payload discovery at 1/3; Windows-aware exact-argument execution plus lifecycle checks then passed 30/30 |
+| Taxonomy review skill RED/GREEN | focused review-workflow, annotation UI, and taxonomy packet tests plus the real private packet set | one invocation discovers and resumes calibration without exposing held-out cases or copying machine-specific launcher commands | missing `retro_eval.review_workflow` failed RED; then 20 focused tests passed and `retro-eval-review status` selected immutable P1 calibration at 0/50 with both held-out packets excluded |
 
 ### Bounds and parking
 

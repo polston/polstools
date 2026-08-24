@@ -83,6 +83,22 @@ requires every preregistered held-out class minimum plus all precision, recall,
 agreement, polling false-positive, and unknown-rate gates. Any failure keeps the
 taxonomy unvalidated and barred from decision support.
 
+Start or resume that process through the `reviewing-evaluation-taxonomies`
+skill. Its single `retro-eval-review` entrypoint discovers the current external
+review set, resumes the first open assessment, and keeps calibration separate
+from held-out review:
+
+```text
+<python> <plugin-root>/bin/retro-eval-review status
+<python> <plugin-root>/bin/retro-eval-review serve-next
+```
+
+Calibration is the default phase. After its disagreements have been analyzed
+and any affected scorer, rubric, protocol, dataset, or report version has been
+re-derived, start the untouched held-out phase explicitly with
+`serve-next --phase heldout`. The entrypoint validates every packet fingerprint
+before serving and never regenerates a packet.
+
 Explicit skill lifecycle spans are normalized only when the source emits an
 authoritative attribution boundary. Starts, ends, chain steps, and explicit
 outcomes may be counted. Opportunity and missed-trigger rates remain
@@ -198,18 +214,17 @@ Freeze both prediction sets before importing truth. The comparison command then
 requires exact case coverage and verifies every prediction fingerprint before it
 computes per-class precision/recall intervals, agreement, and kappa.
 
-Review the packet through the local annotation UI instead of editing CSV by
-hand. The server binds only to loopback, validates the packet's rubric and
+Review packets through the local annotation UI instead of editing CSV by hand.
+The server binds only to loopback, validates the packet's rubric and
 annotation-protocol hash before serving, rejects cross-origin writes, and saves
-each label atomically back to the external CSV. Number keys 1--5 select the
-displayed labels; arrow keys move between cases; reopening resumes at the first
-unlabelled case.
+each assessment atomically back to the external CSV. Taxonomy packets show the
+frozen rule-based proposal and offer Correct, Incorrect, and Unsure. Choosing
+Incorrect reveals the current protocol's canonical alternatives. Arrow keys
+move between cases; reopening resumes at the first unassessed case.
 
-The UI asks one ordinary-language question: "What is the user doing with this
-reply?" Its five choices are Stop or pause, Change or fix, Accept and continue,
-Get an explanation or answer, and Do something else. These phrases, their full
-definitions, overlap rules, and the model-judge prompt are fields of the same
-versioned annotation protocol; they are not hard-coded in the browser client.
+The same UI also supports older label-first protocols. Questions, choices,
+definitions, and overlap rules always come from the packet's bound versioned
+annotation protocol; they are not hard-coded in the browser client.
 
 ```text
 <python> <plugin-root>/bin/retro-eval-labels serve \
