@@ -171,15 +171,20 @@ class TaxonomyPacketTests(unittest.TestCase):
                     duplicate_rows.extend(csv.DictReader(handle))
             duplicate_context = "\n".join(
                 row["context"] for row in duplicate_rows)
+            duplicate_current = "\n".join(
+                row["user_turn"] for row in duplicate_rows)
             self.assertIn("<redacted>", packet_text)
             self.assertIn("Prior call purpose: Inspect the initial state",
                           duplicate_context)
             self.assertIn("Prior result:", duplicate_context)
             self.assertIn("<redacted> missing target", duplicate_context)
             self.assertIn("Current call purpose: Verify after the result",
-                          duplicate_context)
+                          duplicate_current)
             self.assertIn("Prior call input:", duplicate_context)
-            self.assertIn("Current call input:", duplicate_context)
+            self.assertIn("Current call input:", duplicate_current)
+            self.assertIn("### Current repeated call", duplicate_current)
+            self.assertNotIn("Assess whether", duplicate_current)
+            self.assertNotIn("### Current", duplicate_context)
             self.assertNotIn("use the redacted current input above", packet_text)
             self.assertNotIn("private-target", packet_text)
             normalized_text = traces.read_text(encoding="utf-8")
@@ -240,10 +245,14 @@ class TaxonomyPacketTests(unittest.TestCase):
                     all_ids |= ids
                     self.assertEqual(expected_round,
                                      manifest["adaptive_sampling"]["round"])
-                    self.assertEqual(5, manifest["annotation_packet_version"])
+                    self.assertEqual(6, manifest["annotation_packet_version"])
                     if packet["rubric_id"] == "duplicate_work":
                         self.assertEqual(
-                            3, manifest["annotation_protocol_version"])
+                            4, manifest["annotation_protocol_version"])
+                        self.assertEqual(
+                            "passed", manifest["review_quality"]["status"])
+                        self.assertEqual(
+                            len(rows), manifest["review_quality"]["case_count"])
                     for row in rows:
                         self.assertTrue(row["proposed_label"])
                         self.assertTrue(row["proposal_reason"])

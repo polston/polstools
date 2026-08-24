@@ -79,8 +79,10 @@ h1 { margin: 0; max-width: 760px; font-size: clamp(2rem, 4vw, 4.6rem); line-heig
 
 .decision-rail { position: sticky; top: 20px; overflow: hidden; }
 .rail-heading { padding: 28px 28px 20px; border-bottom: 1px solid var(--line); }
-.rail-heading h2 { margin: 0; font-size: 2rem; letter-spacing: -0.04em; }
+.rail-heading h2 { margin: 0; font-size: 1.55rem; line-height: 1.15; letter-spacing: -0.035em; }
 .rail-heading > p:last-child { margin: 7px 0 0; color: var(--muted); }
+.signal-label { margin: 18px 0 4px; color: var(--muted); font: 700 0.68rem/1.2 "Cascadia Code", Consolas, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+#proposalReason { margin-top: 0; line-height: 1.45; }
 .label-stack { position: relative; padding: 16px; }
 .label-stack::before { content: ""; position: absolute; top: 29px; bottom: 29px; left: 39px; width: 2px; background: var(--line); }
 .label-stack button { position: relative; z-index: 1; display: grid; grid-template-columns: 46px 1fr; gap: 13px; width: 100%; padding: 11px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }

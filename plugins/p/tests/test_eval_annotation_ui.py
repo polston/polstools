@@ -4,6 +4,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -14,7 +15,8 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 
 from retro_eval.annotation import _packet_fingerprint, sample_annotations  # noqa: E402
 from retro_eval.annotation_ui import (  # noqa: E402
-    AnnotationConflict, AnnotationWorkspace, create_server,
+    AnnotationConflict, AnnotationWorkspace, _validate_case_evidence,
+    create_server,
 )
 from retro_eval.annotation_formatting import evidence_blocks  # noqa: E402
 from retro_eval.catalog import (  # noqa: E402
@@ -23,6 +25,15 @@ from retro_eval.catalog import (  # noqa: E402
 
 
 class AnnotationWorkspaceTests(unittest.TestCase):
+    def test_repeat_protocol_refuses_reviewer_instructions_as_evidence(self):
+        protocol = SimpleNamespace(id="duplicate-work-taxonomy", version=4)
+        case = {
+            "context": "### Prior call\n### Intervening operations\nPrior result: ok",
+            "user_turn": "Assess whether the proposed diagnosis is supported.",
+        }
+        with self.assertRaisesRegex(ValueError, "evaluator instructions"):
+            _validate_case_evidence(protocol, case)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -150,6 +161,35 @@ class AnnotationWorkspaceTests(unittest.TestCase):
                 assessment="correct", notes="",
                 expected_revision=updated["revision"])
 
+    def test_proposal_review_exposes_truthful_evidence_roles_and_question(self):
+        with self.packet.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+            fields = tuple(reader.fieldnames or ())
+        extended = fields[:-2] + (
+            "proposed_label", "proposal_reason", "assessment") + fields[-2:]
+        for row in rows:
+            row.update({"proposed_label": "correction",
+                        "proposal_reason": "provisional_reason",
+                        "assessment": ""})
+        with self.packet.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=extended)
+            writer.writeheader()
+            writer.writerows(rows)
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest["sample_sha256"] = _packet_fingerprint(self.packet)
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        state = AnnotationWorkspace(
+            source=self.packet, manifest_path=self.manifest,
+            rubrics_path=PLUGIN_ROOT / "rubrics" / "rubrics.json",
+            protocols_path=PLUGIN_ROOT / "rubrics" / "annotation-protocols.json",
+        ).snapshot()
+        self.assertEqual("Preceding assistant context",
+                         state["protocol"]["presentation"]["context_label"])
+        self.assertEqual("User reply",
+                         state["protocol"]["presentation"]["focal_label"])
+        self.assertTrue(state["protocol"]["presentation"]["review_question"])
+
     def test_stale_revision_and_invalid_label_are_rejected(self):
         state = self.workspace.snapshot()
         case_id = state["cases"][0]["case_id"]
@@ -176,6 +216,10 @@ class AnnotationWorkspaceTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('aria-live="polite"', html)
         self.assertIn('id="labelStack"', html)
+        self.assertNotIn("User reply", html)
+        self.assertIn('id="contextLabel"', html)
+        self.assertIn('id="focalLabel"', html)
+        self.assertIn('id="reviewQuestion"', html)
         self.assertNotIn("data-label=", html)
         self.assertIn("const buttons = labels.map", script)
         self.assertIn("button.dataset.label = label", script)
@@ -186,6 +230,11 @@ class AnnotationWorkspaceTests(unittest.TestCase):
         self.assertIn("expected_revision", script)
         self.assertIn("label_prompts", script)
         self.assertIn("formatEvidence", script)
+        self.assertIn("presentation.context_label", script)
+        self.assertIn("presentation.focal_label", script)
+        self.assertIn("presentation.review_question", script)
+        self.assertIn("humanizeReason", script)
+        self.assertIn("Observed signal", html)
         self.assertIn("async function saveNotesBeforeMove", script)
         self.assertIn("elements.notes.addEventListener(\"input\"", script)
         self.assertNotIn("innerHTML", script)

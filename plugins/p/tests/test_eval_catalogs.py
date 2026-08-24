@@ -161,7 +161,7 @@ class RubricCatalogueTests(unittest.TestCase):
         self.assertEqual(3, duplicate.version)
         self.assertEqual(2, failure.version)
         for rubric, protocol_id, protocol_version in (
-                (duplicate, "duplicate-work-taxonomy", 3),
+                (duplicate, "duplicate-work-taxonomy", 4),
                 (failure, "tool-failure-taxonomy", 2)):
             plan = rubric.extensions["adaptive_sampling"]
             self.assertGreaterEqual(plan["maximum_rounds"], 2)
@@ -169,6 +169,10 @@ class RubricCatalogueTests(unittest.TestCase):
             protocol = protocols.get(protocol_id, protocol_version)
             self.assertEqual(rubric.version, protocol.rubric_version)
             self.assertEqual(set(rubric.labels), set(protocol.labels))
+            if rubric.id == "duplicate_work":
+                self.assertEqual(
+                    "Current repeated call",
+                    protocol.extensions["presentation"]["focal_label"])
 
     def test_annotation_protocol_rejects_incomplete_decision_order(self):
         rubrics = load_rubric_catalogue(RUBRICS / "rubrics.json")

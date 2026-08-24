@@ -11,7 +11,7 @@
     <header class="masthead">
       <div>
         <p class="eyebrow">Retro / Human review</p>
-        <h1>Review the evidence</h1>
+        <h1>Audit one diagnosis</h1>
         <p id="taskInstruction" class="task-instruction"></p>
       </div>
       <div class="progress-block">
@@ -30,12 +30,12 @@
           <p id="sourceBadge">Source</p>
         </div>
         <article class="transcript context-panel">
-          <p class="speaker">Preceding assistant context</p>
+          <p id="contextLabel" class="speaker"></p>
           <div id="contextText" class="transcript-text"></div>
         </article>
-        <div class="turn-divider" aria-hidden="true"><span>then</span></div>
+        <div class="turn-divider" aria-hidden="true"><span>compared with</span></div>
         <article class="transcript user-panel">
-          <p class="speaker">User reply</p>
+          <p id="focalLabel" class="speaker"></p>
           <div id="userText" class="transcript-text user-text" tabindex="-1"></div>
         </article>
 
@@ -52,15 +52,16 @@
         </nav>
       </section>
 
-      <aside class="decision-rail" aria-labelledby="decisionTitle">
+      <aside class="decision-rail" aria-labelledby="reviewQuestion">
         <div class="rail-heading">
-          <p class="eyebrow">Classification</p>
-          <h2 id="decisionTitle">Choose one label</h2>
-          <p>Use the numbered shortcut shown. The choice saves immediately.</p>
+          <p class="eyebrow">Question</p>
+          <h2 id="reviewQuestion"></h2>
+          <p id="decisionTitle">Choose one assessment. It saves immediately.</p>
         </div>
         <div id="proposalPanel" class="rule-card" hidden>
-          <p class="eyebrow">Rule-based scorer proposal</p>
+          <p class="eyebrow">Automated diagnosis</p>
           <h3 id="proposalLabel"></h3>
+          <p class="signal-label">Observed signal</p>
           <p id="proposalReason"></p>
         </div>
         <div id="assessmentControls" class="label-stack" role="group"

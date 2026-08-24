@@ -24,7 +24,7 @@ from .taxonomies import (classify_failure_evidence, load_tool_taxonomy,
 FAILURE_SAMPLING_HINT_VERSION = 1
 TAXONOMY_FIELDS = FIELDS[:-2] + (
     "proposed_label", "proposal_reason", "assessment") + FIELDS[-2:]
-ANNOTATION_PACKET_VERSION = 5
+ANNOTATION_PACKET_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -212,7 +212,7 @@ def _shown(value, limit=600):
     return value[:limit] if value else "unavailable"
 
 
-def _repeat_context(item, private_evidence):
+def _repeat_evidence(item, private_evidence):
     previous = private_evidence.get(item.previous.span_id, {})
     current = private_evidence.get(item.current.span_id, {})
     tool = current.get("tool_kind") or previous.get("tool_kind") \
@@ -240,36 +240,60 @@ def _repeat_context(item, private_evidence):
         "- Recent evidence: %s" % (
             " | ".join(intervening) if intervening else "none"),
     ])
-    parts.extend([
-        "### Current repeat",
+    current_parts = [
+        "### Current repeated call",
+        "- Source: %s" % item.current.source,
+        "- Tool: %s" % tool,
         "- Current call purpose: %s" % _shown(current.get("intent_context")),
         "- Current call input: %s" % _shown(current.get("tool_input")),
         "- Current result: %s" % _shown(current.get("tool_result")),
         "- Structural observation: %s" % item.reason_code,
-    ])
-    return "\n".join(parts)
+    ]
+    return "\n".join(parts), "\n".join(current_parts)
+
+
+def _validate_candidate_evidence(candidate, rubric_id):
+    if rubric_id != "duplicate_work":
+        return
+    required_context = ("### Prior call", "### Intervening operations",
+                        "Prior call purpose:", "Prior result:")
+    required_focal = ("### Current repeated call", "Current call purpose:",
+                      "Current call input:")
+    if not all(value in candidate.context for value in required_context):
+        raise ValueError("repeat review case lacks structured prior evidence")
+    if not all(value in candidate.user_turn for value in required_focal):
+        raise ValueError("repeat review case lacks structured current evidence")
+    if "### Current" in candidate.context:
+        raise ValueError("repeat review case mixes current and prior evidence")
+    evaluator_phrases = ("assess whether", "choose one", "classify why",
+                         "proposed diagnosis")
+    if any(value in candidate.user_turn.lower() for value in evaluator_phrases):
+        raise ValueError("repeat review evidence contains evaluator instructions")
 
 
 def _candidates(records, rubric_id, private_evidence=None):
     taxonomy = load_tool_taxonomy()
     private_evidence = private_evidence or {}
     if rubric_id == "duplicate_work":
-        return tuple(_Candidate(
-            stable_key=item.current.span_id,
-            source=item.current.source,
-            stratum=item.candidate_class,
-            context=_repeat_context(item, private_evidence),
-            user_turn=(
-                "Assess whether the proposed repeat diagnosis is supported by "
-                "the prior purpose and result, intervening operations, and "
-                "current purpose shown above."),
-            proposed_label={
-                "polling": "polling",
-                "post_state_change": "post_state_change_verification",
-                "candidate_waste": "wasteful_duplicate",
-            }[item.candidate_class],
-            proposal_reason=item.reason_code,
-        ) for item in repeated_call_candidates(records, taxonomy))
+        candidates = []
+        for item in repeated_call_candidates(records, taxonomy):
+            context, current = _repeat_evidence(item, private_evidence)
+            candidate = _Candidate(
+                stable_key=item.current.span_id,
+                source=item.current.source,
+                stratum=item.candidate_class,
+                context=context,
+                user_turn=current,
+                proposed_label={
+                    "polling": "polling",
+                    "post_state_change": "post_state_change_verification",
+                    "candidate_waste": "wasteful_duplicate",
+                }[item.candidate_class],
+                proposal_reason=item.reason_code,
+            )
+            _validate_candidate_evidence(candidate, rubric_id)
+            candidates.append(candidate)
+        return tuple(candidates)
     if rubric_id == "tool_failure_kind":
         candidates = []
         for record in records:
@@ -377,6 +401,15 @@ def _write_packet(path, manifest_path, candidates, *, rubric, protocol,
         "annotation_protocol_version": protocol.version,
         "annotation_protocol_sha256": protocol.sha256,
         "adaptive_sampling": plan.to_dict(round_number=round_number),
+        "review_quality": ({
+            "status": "passed",
+            "case_count": len(rows),
+            "evidence_role_contract": "validated before write",
+        } if rubric.id == "duplicate_work" else {
+            "status": "not_evaluated",
+            "case_count": len(rows),
+            "evidence_role_contract": "not_defined",
+        }),
     }
     if rubric.id == "tool_failure_kind":
         manifest["sampling_hint_version"] = FAILURE_SAMPLING_HINT_VERSION
@@ -441,7 +474,7 @@ def write_taxonomy_review_packets(trace_path: Path, output_dir: Path, *,
         plugin_root / "rubrics" / "annotation-protocols.json", rubrics)
     rubric_index = {item.id: item for item in rubrics.rubrics}
     specs = (
-        ("duplicate_work", "duplicate-work-taxonomy", 3, "duplicate-work"),
+        ("duplicate_work", "duplicate-work-taxonomy", 4, "duplicate-work"),
         ("tool_failure_kind", "tool-failure-taxonomy", 2, "tool-failure"),
     )
     packets = []

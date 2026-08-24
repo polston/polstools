@@ -25,6 +25,21 @@ class AnnotationConflict(RuntimeError):
     """The packet changed after a browser read it."""
 
 
+def _validate_case_evidence(protocol, case):
+    if protocol.id != "duplicate-work-taxonomy" or protocol.version < 4:
+        return
+    context = str(case.get("context") or "")
+    focal = str(case.get("user_turn") or "")
+    evaluator_phrases = ("assess whether", "choose one", "classify why",
+                         "proposed diagnosis")
+    if any(value in focal.lower() for value in evaluator_phrases):
+        raise ValueError("repeat review evidence contains evaluator instructions")
+    if ("### Prior call" not in context
+            or "### Intervening operations" not in context
+            or "### Current repeated call" not in focal):
+        raise ValueError("repeat review case has invalid evidence roles")
+
+
 class AnnotationWorkspace:
     def __init__(self, *, source: Path, manifest_path: Path, rubrics_path: Path,
                  protocols_path: Path):
@@ -82,9 +97,21 @@ class AnnotationWorkspace:
         cases = []
         for row in rows:
             case = {field: str(value or "") for field, value in row.items()}
+            _validate_case_evidence(self.protocol, case)
             case["context_blocks"] = evidence_blocks(case["context"])
             case["user_turn_blocks"] = evidence_blocks(case["user_turn"])
             cases.append(case)
+        default_presentation = {
+            "context_label": "Preceding assistant context",
+            "focal_label": "User reply",
+            "review_question": self.protocol.human_instruction,
+        }
+        presentation = self.protocol.extensions.get(
+            "presentation", default_presentation)
+        if (not isinstance(presentation, dict)
+                or not all(str(presentation.get(key) or "").strip() for key in (
+                    "context_label", "focal_label", "review_question"))):
+            raise ValueError("annotation protocol presentation is incomplete")
         return {
             "schema_version": 1,
             "dataset_id": self.manifest["dataset_id"],
@@ -99,6 +126,10 @@ class AnnotationWorkspace:
                 "human_instruction": self.protocol.human_instruction,
                 "label_prompts": dict(self.protocol.label_prompts),
                 "tie_breaks": list(self.protocol.tie_breaks),
+                "presentation": {
+                    key: str(presentation[key]) for key in (
+                        "context_label", "focal_label", "review_question")
+                },
             },
             "cases": cases,
         }

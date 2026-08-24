@@ -220,8 +220,9 @@ annotation-protocol hash before serving, rejects cross-origin writes, and saves
 each assessment atomically back to the external CSV. Taxonomy packets show the
 frozen rule-based proposal and offer Correct, Incorrect, and Unsure. Choosing
 Incorrect reveals the current protocol's canonical alternatives. Repeated-call
-protocol v3 presents separate Prior call, Intervening operations, and Current
-repeat sections with redacted purpose, input, and result evidence; a matching
+protocol v4 presents separate Earlier call/intervening and Current repeated
+call evidence panels with redacted purpose, input, and result evidence. The
+review question is never stored or displayed as captured evidence; a matching
 signature or sequence number alone is explicitly insufficient. Arrow keys move
 between cases; reopening resumes at the first unassessed case.
 

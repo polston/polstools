@@ -14,6 +14,8 @@ const elements = {
   notes: $("#notes"), previous: $("#previousCase"), next: $("#nextCase"),
   clear: $("#clearLabel"), tieBreaks: $("#tieBreaks"), saveStatus: $("#saveStatus"),
   taskInstruction: $("#taskInstruction"), labelStack: $("#labelStack"),
+  contextLabel: $("#contextLabel"), focalLabel: $("#focalLabel"),
+  reviewQuestion: $("#reviewQuestion"),
   proposalPanel: $("#proposalPanel"), proposalLabel: $("#proposalLabel"),
   proposalReason: $("#proposalReason"), assessmentControls: $("#assessmentControls"),
   assessmentCorrect: $("#assessmentCorrect"),
@@ -27,6 +29,11 @@ function setStatus(message, error = false) {
 }
 
 function currentCase() { return state.cases[currentIndex]; }
+
+function humanizeReason(value) {
+  const text = String(value || "").replaceAll("_", " ").trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : "No signal recorded";
+}
 
 function buildLabelButtons(item) {
   const labels = item.proposed_label
@@ -127,7 +134,7 @@ function render() {
   if (hasProposal) {
     const prompt = state.protocol.label_prompts[item.proposed_label];
     elements.proposalLabel.textContent = prompt ? prompt.action : item.proposed_label;
-    elements.proposalReason.textContent = item.proposal_reason;
+    elements.proposalReason.textContent = humanizeReason(item.proposal_reason);
   }
   document.querySelectorAll("[data-label]").forEach((button) => {
     const label = button.dataset.label;
@@ -152,6 +159,10 @@ async function load() {
     const response = await fetch("/api/state", { cache: "no-store" });
     if (!response.ok) throw new Error(`Server returned ${response.status}`);
     state = await response.json();
+    const presentation = state.protocol.presentation;
+    elements.contextLabel.textContent = presentation.context_label;
+    elements.focalLabel.textContent = presentation.focal_label;
+    elements.reviewQuestion.textContent = presentation.review_question;
     elements.taskInstruction.textContent = state.protocol.human_instruction;
     selectFirstOpen();
     elements.tieBreaks.replaceChildren(...state.protocol.tie_breaks.map((rule) => {
