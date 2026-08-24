@@ -17,7 +17,7 @@ default phase is calibration. The command discovers the current review set
 from `RETRO_HOME`; when that variable is absent, it uses the sole discoverable
 review set under the local `.retro` directory. It resumes the first case without
 an assessment and opens a loopback-only browser workspace.
-The default review URI is always `http://127.0.0.1:8765/`. Do not choose a
+The default review URI is always `http://127.0.0.1:8123/`. Do not choose a
 random port. Use `--port` only when the operator explicitly requests another
 stable URI.
 

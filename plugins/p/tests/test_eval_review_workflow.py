@@ -20,10 +20,10 @@ from retro_eval.taxonomy_packets import TAXONOMY_FIELDS  # noqa: E402
 
 class ReviewWorkflowTests(unittest.TestCase):
     def test_review_uri_uses_one_stable_loopback_port(self):
-        self.assertEqual(8765, DEFAULT_REVIEW_PORT)
+        self.assertEqual(8123, DEFAULT_REVIEW_PORT)
         skill = (PLUGIN_ROOT / "skills" / "reviewing-evaluation-taxonomies"
                  / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("http://127.0.0.1:8765/", skill)
+        self.assertIn("http://127.0.0.1:8123/", skill)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

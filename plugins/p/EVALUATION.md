@@ -218,7 +218,7 @@ Review packets through the local annotation UI instead of editing CSV by hand.
 The server binds only to loopback, validates the packet's rubric and
 annotation-protocol hash before serving, rejects cross-origin writes, and saves
 each assessment atomically back to the external CSV. The single review
-entrypoint uses the stable URI `http://127.0.0.1:8765/`; random ports are not
+entrypoint uses the stable URI `http://127.0.0.1:8123/`; random ports are not
 part of the default workflow. Taxonomy packets show the
 frozen rule-based proposal and offer Correct, Incorrect, and Unsure. Choosing
 Incorrect reveals the current protocol's canonical alternatives. Repeated-call

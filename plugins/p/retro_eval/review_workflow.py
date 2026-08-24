@@ -16,7 +16,7 @@ _RUBRIC_ORDER = {"interpretation_grounding": -1,
                  "duplicate_work": 0, "tool_failure_kind": 1}
 _ASSESSMENTS = {"", "correct", "incorrect", "unsure", "accurate",
                 "partly_accurate", "wrong", "not_enough_context"}
-DEFAULT_REVIEW_PORT = 8765
+DEFAULT_REVIEW_PORT = 8123
 
 
 def _review_directory(value=None) -> Path:
