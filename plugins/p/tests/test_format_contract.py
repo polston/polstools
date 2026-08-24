@@ -124,12 +124,14 @@ class FormatContractTests(unittest.TestCase):
             "/format:off",
             "/format:on",
             "19-check",
+            "25-check",
             "%LOCALAPPDATA%",
             "~/.local/state",
         ):
             self.assertNotIn(stale, self.design)
+        self.assertIn("plugins/p/bin/python-launcher", self.design)
         self.assertIn("plugins/p/bin/format-e2e", self.design)
-        self.assertIn("25-check end-to-end verifier", self.design)
+        self.assertIn("30-check end-to-end verifier", self.design)
         self.assertIn("/p:fmt-off", self.design)
         self.assertIn("/p:fmt-on", self.design)
 

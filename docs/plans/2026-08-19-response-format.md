@@ -35,8 +35,9 @@ session id from hook input JSON, while the skill side accepts the native Claude
 Code or Codex session environment. Unreadable hook input fails open to ON;
 flags older than 14 days are pruned on every toggle. A bad payload makes `gate`
 exit 1, not 2 — exit 2 from a UserPromptSubmit hook blocks processing and
-erases the user's prompt. Hook commands execute the controller directly through
-its Python 3 shebang.
+erases the user's prompt. Hook commands route the controller through
+`bin/python-launcher`, which resolves Python 3 without assuming the harness's
+PATH contains `python3`.
 
 ## Renderer facts the format is built around
 
@@ -92,13 +93,17 @@ relied on above.
 ## Layout
 
 - `plugins/p/hooks/hooks.json` — registers both hooks; each command runs
-  `bin/format-ctl gate`, which prints its payload unless the session is
-  toggled off. A missing payload still surfaces as a failed hook.
+  `bin/format-ctl gate` through `bin/python-launcher`, which prints its payload
+  unless the session is toggled off. A missing payload still surfaces as a
+  failed hook.
+- `plugins/p/bin/python-launcher` — resolves a usable Python 3 interpreter
+  across POSIX and Windows harness environments without requiring `python3`
+  on PATH.
 - `plugins/p/bin/format-ctl` — the gate plus the `off`/`on`/`status`
   toggle (stdlib Python 3). Reconfigures stdio to UTF-8 first: piped stdout
   on Windows defaults to the ANSI code page and mangles non-ASCII payload
   bytes (caught by running the gate, invisible in file reads).
-- `plugins/p/bin/format-e2e` — 25-check end-to-end verifier: wiring,
+- `plugins/p/bin/format-e2e` — 30-check end-to-end verifier: portable wiring,
   gates byte-exact, UTF-8 validity, toggle lifecycle, exit-code contract,
   catalog sync.
 - `plugins/p/skills/maintaining-the-format-plugin/` — mechanical and

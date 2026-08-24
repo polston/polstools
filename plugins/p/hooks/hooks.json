@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate \"${CLAUDE_PLUGIN_ROOT}/style/response-format.md\" --hook-id format.session-start --hook-version 1 --trigger-kind SessionStart"
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\" \"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate \"${CLAUDE_PLUGIN_ROOT}/style/response-format.md\" --hook-id format.session-start --hook-version 1 --trigger-kind SessionStart"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate \"${CLAUDE_PLUGIN_ROOT}/style/turn-reminder.md\" --hook-id format.user-prompt-submit --hook-version 1 --trigger-kind UserPromptSubmit"
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\" \"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate \"${CLAUDE_PLUGIN_ROOT}/style/turn-reminder.md\" --hook-id format.user-prompt-submit --hook-version 1 --trigger-kind UserPromptSubmit"
           }
         ]
       }
