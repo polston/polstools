@@ -5,6 +5,10 @@ description: Use when checking, previewing, applying, repairing, or restoring th
 
 # Aligning status lines
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check aligning-statuslines`. If it
+exits 1 or 2, stop and report its output.
+
 Use the plugin's `bin/statusline-ctl`; never edit a user's whole settings file
 or replace unrelated plugin configuration. Inspect only Claude's `statusLine`
 field before recommending a change. Resolve the plugin root from this skill's
@@ -24,7 +28,8 @@ either settings file and reports the reason.
 - If Claude directly invokes `ccstatusline`, preserve it and read
   [the ccstatusline compatibility guide](references/ccstatusline.md). Align the
   information and percent-left semantics without replacing its layout,
-  colors, custom segments, or reset timers.
+  colors, custom segments, or reset timers. The only added segment is the
+  tagged `p:h`/`p:w` custom-command widget owned by this plugin.
 - If Claude has no status-line renderer, the bundled renderer is the fallback.
 - If Claude uses another external renderer, preserve it. Explain the compatible
   fields and do not apply over it without a separate explicit replacement
@@ -40,15 +45,19 @@ the command name.
    a no-op when already aligned.
 2. `check` reports drift. Exit 0 means the bundled profile is aligned or a
    preserved ccstatusline provider has aligned Codex fields; 1 means drift, and
-   2 means the configuration could not be read safely. Verify ccstatusline's
-   custom-command semantics separately.
+   2 means the configuration could not be read safely. It verifies the owned
+   profile widget; verify unrelated ccstatusline custom commands separately.
 3. `preview` prints fixed representative Claude and Codex output. It does not
    read configuration, credentials, session history, or the working directory.
 4. `apply` transactionally installs the fallback only when Claude has no
-   renderer. With ccstatusline, it preserves Claude and changes only Codex
-   `tui.status_line`. It stages every write and restores all earlier targets if
-   any replacement fails. It refuses unknown external renderers and is idempotent.
-5. `restore` restores only values changed by `apply`. If a managed value changed
+   renderer. With ccstatusline, it preserves the renderer and all unrelated
+   settings while adding or refreshing one owned profile widget. It stages
+   every write and restores all earlier targets if any replacement fails. It
+   refuses unknown external renderers and is idempotent.
+5. `profile-sync` refreshes only the stable profile-label bundle and its owned
+   Claude integration. The `$p:home` and `$p:work` skills call it after a
+   successful session switch; indicator failure does not undo the profile.
+6. `restore` restores only values changed by `apply`. If a managed value changed
    afterwards, it leaves that value untouched and exits 1.
 
 Invoke `<python> <plugin-root>/bin/statusline-ctl <command>` with one command
@@ -59,8 +68,10 @@ is never printed, copied, or cached.
 
 ## Invariants
 
-- Claude remains a two-line ANSI display and retains any model-scoped weekly
-  gauge already configured.
+- The bundled Claude renderer remains a two-line ANSI display and retains its
+  model-scoped weekly gauge; ccstatusline retains its configured row layout.
 - Context and every quota are shown as percent left.
+- Claude shows the effective profile as `p:h` or `p:w`; an invalid policy shows
+  `p:?` without blanking the rest of the status line.
 - Codex uses only its native footer identifiers, in profile order.
 - Nothing runs automatically at session start. Apply and restore are explicit.

@@ -6,6 +6,7 @@ Subcommands:
   check    report whether supported Claude and Codex settings align
   preview  print representative Claude and Codex status lines
   apply    preserve ccstatusline or install fallback, then align Codex
+  profile-sync  install or refresh only the owned Claude profile indicator
   restore  restore settings changed by apply when untouched afterwards
 
 Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
@@ -22,6 +23,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -39,7 +41,12 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 PROFILE_PATH = PLUGIN_ROOT / "profiles" / "aligned-v1.json"
 RENDERER_SOURCE = PLUGIN_ROOT / "renderer" / "claude-statusline.ps1"
+PROFILE_LABEL_SOURCE = PLUGIN_ROOT / "renderer" / "skill-profile-label.py"
+ACTIVATION_LIB_SOURCE = PLUGIN_ROOT / "lib" / "skill_activation.py"
+ACTIVATION_PROFILE_SOURCE = PLUGIN_ROOT / "profiles" / "skill-activation-v1.json"
 ROLLBACK_NAME = "rollback-v1.json"
+PROFILE_OWNER = "skill-activation-v1"
+PROFILE_WIDGET_ID = "p-skill-profile"
 
 
 def load_profile():
@@ -79,7 +86,7 @@ def _bar(left, color):
     return tone + body + "\x1b[0m"
 
 
-def render_claude(data, *, color=True):
+def render_claude(data, *, color=True, profile_label="p:h"):
     """Pure renderer used by preview/tests; the installed PowerShell matches it."""
     esc = "\x1b["
     reset = esc + "0m" if color else ""
@@ -107,6 +114,7 @@ def render_claude(data, *, color=True):
     if remaining is not None:
         left = max(0, min(100, float(remaining)))
         parts.append(_bar(left, color) + " " + _display_percent(left) + "% left")
+    parts.append(dim + profile_label + reset)
 
     limits = []
     rate_limits = data.get("rate_limits") or {}
@@ -154,6 +162,13 @@ def paths():
         "state": state_dir,
         "rollback": state_dir / ROLLBACK_NAME,
         "renderer": install_dir / "claude-statusline.ps1",
+        "profile_label": install_dir / "skill-profile-label.py",
+        "profile_lib": install_dir / "skill_activation.py",
+        "profile_policy": install_dir / "skill-activation-v1.json",
+        "ccstatusline": Path(
+            os.environ.get("STATUSLINE_CCSTATUSLINE_CONFIG")
+            or Path.home() / ".config" / "ccstatusline" / "settings.json"
+        ),
     }
 
 
@@ -292,6 +307,136 @@ def claude_provider(current, desired):
         return "external"
     executable = Path(argv[0].strip('"')).name.lower() if argv else ""
     return "ccstatusline" if executable in {"ccstatusline", "ccstatusline.exe"} else "external"
+
+
+def profile_command(label_path):
+    argv = [sys.executable, str(label_path.resolve())]
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
+def ccstatusline_config_path(current, target):
+    command = current.get("command") if isinstance(current, dict) else None
+    if not isinstance(command, str):
+        raise ValueError("Claude ccstatusline command is invalid")
+    try:
+        argv = shlex.split(command, posix=os.name != "nt")
+    except ValueError as error:
+        raise ValueError("Claude ccstatusline command is invalid") from error
+    if "--config" in argv:
+        index = argv.index("--config")
+        if index + 1 >= len(argv) or argv[index + 1].startswith("--"):
+            raise ValueError("Claude ccstatusline --config path is missing")
+        configured = Path(argv[index + 1].strip('"')).expanduser()
+        if not configured.is_absolute():
+            raise ValueError("Claude ccstatusline --config path must be absolute")
+        return configured.resolve()
+    return target["ccstatusline"].expanduser().resolve()
+
+
+def load_ccstatusline(path):
+    if not path.is_file():
+        raise ValueError("ccstatusline settings are missing")
+    try:
+        with path.open(encoding="utf-8-sig") as handle:
+            value = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("ccstatusline settings are unreadable or malformed") from error
+    if not isinstance(value, dict):
+        raise ValueError("ccstatusline settings must contain a JSON object")
+    lines = value.get("lines")
+    if not isinstance(lines, list) or not lines or not all(
+        isinstance(line, list) for line in lines
+    ):
+        raise ValueError("ccstatusline settings have an unsupported lines shape")
+    for line in lines:
+        for widget in line:
+            if (
+                not isinstance(widget, dict)
+                or not isinstance(widget.get("id"), str)
+                or not isinstance(widget.get("type"), str)
+            ):
+                raise ValueError("ccstatusline settings contain an invalid widget")
+    return value
+
+
+def _owned_profile_widget(widget):
+    metadata = widget.get("metadata") if isinstance(widget, dict) else None
+    return isinstance(metadata, dict) and metadata.get("p.owner") == PROFILE_OWNER
+
+
+def desired_profile_widget(target):
+    return {
+        "id": PROFILE_WIDGET_ID,
+        "type": "custom-command",
+        "color": "brightBlack",
+        "dim": True,
+        "commandPath": profile_command(target["profile_label"]),
+        "maxWidth": 3,
+        "timeout": 500,
+        "metadata": {"p.owner": PROFILE_OWNER},
+    }
+
+
+def set_profile_widget(settings, widget):
+    updated = copy.deepcopy(settings)
+    previous = []
+    for line_index, line in enumerate(updated["lines"]):
+        kept = []
+        for widget_index, current in enumerate(line):
+            if _owned_profile_widget(current):
+                previous.append(
+                    {"line": line_index, "index": widget_index, "widget": current}
+                )
+            else:
+                kept.append(current)
+        updated["lines"][line_index] = kept
+    target_line = next(
+        (index for index, line in enumerate(updated["lines"]) if line), 0
+    )
+    updated["lines"][target_line].append(copy.deepcopy(widget))
+    return updated, previous
+
+
+def restore_profile_widgets(settings, applied, previous):
+    current = []
+    for line_index, line in enumerate(settings["lines"]):
+        for widget_index, widget in enumerate(line):
+            if _owned_profile_widget(widget):
+                current.append((line_index, widget_index, widget))
+    if len(current) != 1 or current[0][2] != applied:
+        return None
+    restored = copy.deepcopy(settings)
+    del restored["lines"][current[0][0]][current[0][1]]
+    for item in sorted(previous, key=lambda value: (value["line"], value["index"])):
+        line_index = item.get("line")
+        widget_index = item.get("index")
+        widget = item.get("widget")
+        if (
+            not isinstance(line_index, int)
+            or not isinstance(widget_index, int)
+            or not isinstance(widget, dict)
+        ):
+            raise ValueError("rollback metadata contains an invalid profile widget")
+        if line_index < 0 or line_index >= len(restored["lines"]):
+            raise ValueError("rollback profile widget line is invalid")
+        restored["lines"][line_index].insert(
+            min(max(widget_index, 0), len(restored["lines"][line_index])), widget
+        )
+    return restored
+
+
+def profile_bundle_changes(target, include_renderer=False):
+    sources = (
+        (target["profile_label"], PROFILE_LABEL_SOURCE),
+        (target["profile_lib"], ACTIVATION_LIB_SOURCE),
+        (target["profile_policy"], ACTIVATION_PROFILE_SOURCE),
+    )
+    if include_renderer:
+        sources = ((target["renderer"], RENDERER_SOURCE),) + sources
+    for _, source in sources:
+        if not source.is_file():
+            raise FileNotFoundError("status profile source is missing")
+    return [(destination, source.read_bytes()) for destination, source in sources]
 
 
 _SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
@@ -554,9 +699,33 @@ def load_rollback(path):
         return None
     with path.open(encoding="utf-8") as handle:
         value = json.load(handle)
-    if not isinstance(value, dict) or value.get("schema") != 1:
+    if not isinstance(value, dict) or value.get("schema") not in {1, 2}:
         raise ValueError("rollback metadata has an unsupported shape")
     return value
+
+
+def profile_sync():
+    target = paths()
+    claude = load_claude(target["claude"])
+    desired_c = desired_claude(target["renderer"])
+    current_claude = claude.get("statusLine")
+    provider = claude_provider(current_claude, desired_c)
+    if provider not in {"bundled", "ccstatusline"}:
+        print("profile indicator not updated: Claude has no supported active renderer")
+        return 1
+    changes = profile_bundle_changes(target, include_renderer=provider == "bundled")
+    if provider == "ccstatusline":
+        cc_path = ccstatusline_config_path(current_claude, target)
+        cc_settings = load_ccstatusline(cc_path)
+        cc_updated, _ = set_profile_widget(
+            cc_settings, desired_profile_widget(target)
+        )
+        changes.append(
+            (cc_path, json.dumps(cc_updated, indent=2, ensure_ascii=False) + "\n")
+        )
+    atomic_write_many(changes)
+    print("profile indicator synchronized for Claude " + provider)
+    return 0
 
 
 def apply_config():
@@ -575,6 +744,18 @@ def apply_config():
         raise FileNotFoundError("bundled Claude renderer is missing")
     previous_rollback = load_rollback(target["rollback"])
 
+    cc_path = None
+    cc_settings = None
+    cc_updated = None
+    cc_previous = None
+    manage_cc = False
+    profile_widget = desired_profile_widget(target)
+    if provider == "ccstatusline":
+        cc_path = ccstatusline_config_path(current_claude, target)
+        cc_settings = load_ccstatusline(cc_path)
+        cc_updated, cc_previous = set_profile_widget(cc_settings, profile_widget)
+        manage_cc = cc_updated != cc_settings
+
     codex_updated, codex_previous = set_codex_status(codex_text, CODEX_STATUS_LINE)
     claude_previous = (
         {"present": "statusLine" in claude, "value": current_claude}
@@ -585,22 +766,37 @@ def apply_config():
         claude_previous = previous_rollback["previous"]["claude"]
     if previous_rollback and codex_current == CODEX_STATUS_LINE:
         codex_previous = previous_rollback["previous"]["codex"]
+    if (
+        previous_rollback
+        and provider == "ccstatusline"
+        and not manage_cc
+        and previous_rollback.get("managed", {}).get("ccstatusline")
+        and previous_rollback.get("applied", {}).get("cc_widget") == profile_widget
+    ):
+        manage_cc = True
+        cc_previous = previous_rollback["previous"]["cc_widgets"]
 
     rollback = {
-        "schema": 1,
-        "managed": {"claude": manage_claude, "codex": True},
+        "schema": 2,
+        "managed": {
+            "claude": manage_claude,
+            "codex": True,
+            "ccstatusline": manage_cc,
+        },
         "applied": {
             "claude": desired_c if manage_claude else None,
             "codex": list(CODEX_STATUS_LINE),
+            "cc_widget": profile_widget if manage_cc else None,
         },
-        "previous": {"claude": claude_previous, "codex": codex_previous},
+        "previous": {
+            "claude": claude_previous,
+            "codex": codex_previous,
+            "cc_widgets": cc_previous if manage_cc else None,
+        },
     }
     rollback_text = json.dumps(rollback, indent=2, ensure_ascii=False) + "\n"
     changes = [(target["rollback"], rollback_text)]
-    if manage_claude:
-        source_bytes = RENDERER_SOURCE.read_bytes()
-        if not target["renderer"].exists() or target["renderer"].read_bytes() != source_bytes:
-            changes.append((target["renderer"], source_bytes))
+    changes.extend(profile_bundle_changes(target, include_renderer=manage_claude))
     if codex_text != codex_updated:
         changes.append((target["codex"], codex_updated))
     if manage_claude and current_claude != desired_c:
@@ -608,11 +804,18 @@ def apply_config():
         changes.append(
             (target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
         )
+    if provider == "ccstatusline" and cc_updated != cc_settings:
+        changes.append(
+            (cc_path, json.dumps(cc_updated, indent=2, ensure_ascii=False) + "\n")
+        )
     atomic_write_many(changes)
     if manage_claude:
         print("applied: Claude statusLine and Codex tui.status_line aligned")
     else:
-        print("applied: Claude ccstatusline preserved; Codex tui.status_line aligned")
+        print(
+            "applied: Claude ccstatusline preserved with p profile indicator; "
+            "Codex tui.status_line aligned"
+        )
     return 0
 
 
@@ -633,6 +836,26 @@ def check_config():
             or target["renderer"].read_bytes() != RENDERER_SOURCE.read_bytes()
         ):
             drift.append("Claude renderer")
+        if provider in {"bundled", "ccstatusline"}:
+            for destination, source in (
+                (target["profile_label"], PROFILE_LABEL_SOURCE),
+                (target["profile_lib"], ACTIVATION_LIB_SOURCE),
+                (target["profile_policy"], ACTIVATION_PROFILE_SOURCE),
+            ):
+                if (
+                    not destination.is_file()
+                    or destination.read_bytes() != source.read_bytes()
+                ):
+                    drift.append("Claude profile indicator")
+                    break
+        if provider == "ccstatusline":
+            cc_path = ccstatusline_config_path(claude.get("statusLine"), target)
+            cc_settings = load_ccstatusline(cc_path)
+            cc_updated, _ = set_profile_widget(
+                cc_settings, desired_profile_widget(target)
+            )
+            if cc_updated != cc_settings:
+                drift.append("Claude profile widget")
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print("cannot check: " + str(error), file=sys.stderr)
         return 2
@@ -640,7 +863,10 @@ def check_config():
         print("drift: " + ", ".join(drift))
         return 1
     if provider == "ccstatusline":
-        print("compatible: Claude ccstatusline preserved; Codex matches aligned-v1")
+        print(
+            "compatible: Claude ccstatusline and p profile indicator preserved; "
+            "Codex matches aligned-v1"
+        )
     else:
         print("aligned: Claude and Codex status lines match aligned-v1")
     return 0
@@ -680,6 +906,22 @@ def restore_config():
             atomic_write(target["codex"], restore_codex_status(codex_text, rollback["previous"]["codex"]))
         else:
             skipped.append("Codex setting changed after apply")
+        if rollback.get("managed", {}).get("ccstatusline"):
+            current_claude = claude.get("statusLine")
+            cc_path = ccstatusline_config_path(current_claude, target)
+            cc_settings = load_ccstatusline(cc_path)
+            restored_cc = restore_profile_widgets(
+                cc_settings,
+                rollback["applied"]["cc_widget"],
+                rollback["previous"]["cc_widgets"],
+            )
+            if restored_cc is None:
+                skipped.append("ccstatusline profile widget changed after apply")
+            else:
+                atomic_write(
+                    cc_path,
+                    (json.dumps(restored_cc, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
+                )
         if skipped:
             print("not restored: " + "; ".join(skipped))
             return 1
@@ -714,7 +956,7 @@ def preview():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "command", choices=("sync", "check", "preview", "apply", "restore")
+        "command", choices=("sync", "check", "preview", "apply", "profile-sync", "restore")
     )
     args = parser.parse_args(argv)
     try:
@@ -723,6 +965,7 @@ def main(argv=None):
             "check": check_config,
             "preview": preview,
             "apply": apply_config,
+            "profile-sync": profile_sync,
             "restore": restore_config,
         }[args.command]()
     except (OSError, ValueError, json.JSONDecodeError) as error:

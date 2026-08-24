@@ -82,6 +82,39 @@ class RepoPrivacyAuditTests(unittest.TestCase):
         )
         self.assertEqual(email_row.split()[1:], ["1", "0", "0", "0", "0"])
 
+    def test_generic_home_directory_in_diff_header_is_not_content(self):
+        relative = "skills/" + "home" + "/SKILL.md"
+        path = self.repo / relative
+        path.parent.mkdir(parents=True)
+        path.write_text("generic profile\n", encoding="utf-8")
+        self.run_git("add", relative)
+        self.run_git("commit", "-q", "-m", "add generic home profile")
+
+        result = self.audit()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("RESULT: every category read zero", result.stdout)
+
+    def test_patch_hunk_content_is_still_scanned(self):
+        private_path = "/" + "Users" + "/fixture-account/private.txt"
+        path = self.repo / "marker.txt"
+        path.write_text(private_path + "\n", encoding="utf-8")
+        self.run_git("add", "marker.txt")
+        self.run_git("commit", "-q", "-m", "add marker")
+        path.write_text("removed\n", encoding="utf-8")
+        self.run_git("add", "marker.txt")
+        self.run_git("commit", "-q", "-m", "remove marker")
+
+        result = self.audit()
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        row = next(
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("unix_home_path")
+        )
+        self.assertGreater(int(row.split()[3]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

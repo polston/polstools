@@ -61,6 +61,23 @@ if ($null -ne $remaining) {
     }
     $parts.Add("$(New-Bar $left) " + ("{0:N0}% left" -f $left) + $tokens)
 }
+$profileLabel = 'p:?'
+$profileHelper = Join-Path $PSScriptRoot 'skill-profile-label.py'
+if (Test-Path -LiteralPath $profileHelper) {
+    try {
+        $profileResult = $null
+        if (Get-Command python3 -ErrorAction SilentlyContinue) {
+            $profileResult = $inputJson | & python3 $profileHelper 2>$null
+        } elseif (Get-Command python -ErrorAction SilentlyContinue) {
+            $profileResult = $inputJson | & python $profileHelper 2>$null
+        } elseif (Get-Command py -ErrorAction SilentlyContinue) {
+            $profileResult = $inputJson | & py -3 $profileHelper 2>$null
+        }
+        $candidate = ($profileResult | Out-String).Trim()
+        if ($candidate -in @('p:h', 'p:w', 'p:?')) { $profileLabel = $candidate }
+    } catch {}
+}
+$parts.Add("$dim$profileLabel$reset")
 if ($parts.Count -gt 0) { Write-Host ($parts -join " $sep ") }
 
 $quotaParts = New-Object System.Collections.Generic.List[string]

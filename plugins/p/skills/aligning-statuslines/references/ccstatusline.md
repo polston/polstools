@@ -3,7 +3,8 @@
 Use this path when Claude's `statusLine.command` directly invokes
 `ccstatusline`. Preserve that command, its layout, and unrelated widgets.
 Alignment means shared information and percentage semantics, not identical
-rendering technology.
+rendering technology. The plugin may add one custom-command widget tagged with
+`p.owner=skill-activation-v1`; that widget alone displays `p:h` or `p:w`.
 
 ## Recommended configuration
 
@@ -29,8 +30,9 @@ synthetic stdin and an isolated fresh cache. A sample with context 28% used,
 five-hour 36% used, and weekly 19% used must render 72%, 64%, and 81% left.
 Do not invoke Claude or a live usage endpoint merely to test presentation.
 
-The default `statusline-ctl sync` and explicit `apply` both preserve a directly
-configured ccstatusline command and align only Codex's owned footer. `check`
-reports that combination as compatible; it cannot certify custom ccstatusline
-command semantics, so verify them separately as above. An unknown external
-Claude renderer is never overwritten.
+The default `statusline-ctl sync` and explicit `apply` preserve a directly
+configured ccstatusline command, every unrelated widget and setting, and
+Codex's native footer contract. They add or refresh only the tagged profile
+widget. `check` certifies that owned widget; it cannot certify unrelated custom
+commands, so verify those separately as above. An unknown external Claude
+renderer is never overwritten.

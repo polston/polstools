@@ -5,6 +5,10 @@ description: Use before cutting a branch that will become a pull request, and ag
 
 # Checking a branch's base before a PR
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check checking-branch-base-before-a-pr`.
+If it exits 1 or 2, stop and report its output.
+
 ## Overview
 
 A pull request diffs against the **remote** base, not your local one. If local

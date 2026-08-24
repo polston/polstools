@@ -5,6 +5,10 @@ description: Use when checking whether announced work actually ran — a session
 
 # Counting stopped promises
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check counting-stopped-promises`.
+If it exits 1 or 2, stop and report its output.
+
 ## Overview
 
 A stopped promise is one event: a message that **ended a turn** by saying it was

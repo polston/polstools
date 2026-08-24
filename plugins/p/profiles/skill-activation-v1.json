@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "default_profile": "home",
+  "capabilities": {
+    "control-plane": {},
+    "core": {},
+    "local-session-history": {},
+    "repository-publication-data": {}
+  },
+  "profiles": {
+    "home": {
+      "capabilities": "all"
+    },
+    "work": {
+      "capabilities": [
+        "control-plane",
+        "core"
+      ]
+    }
+  },
+  "components": {
+    "adequacy-review": {
+      "source": "command",
+      "requires": ["core"]
+    },
+    "aligning-statuslines": {
+      "source": "skill",
+      "requires": ["core"]
+    },
+    "auditing-a-repo-for-private-data": {
+      "source": "skill",
+      "requires": ["repository-publication-data"]
+    },
+    "auditing-workflow-rules-against-behavior": {
+      "source": "skill",
+      "requires": ["local-session-history"]
+    },
+    "checking-branch-base-before-a-pr": {
+      "source": "skill",
+      "requires": ["core"]
+    },
+    "counting-stopped-promises": {
+      "source": "skill",
+      "requires": ["local-session-history"]
+    },
+    "deciding-the-prompt-cache-ttl": {
+      "source": "skill",
+      "requires": ["local-session-history"]
+    },
+    "finding-friction-in-recent-sessions": {
+      "source": "skill",
+      "requires": ["local-session-history"]
+    },
+    "finding-what-a-change-made-false": {
+      "source": "skill",
+      "requires": ["core"]
+    },
+    "fmt-off": {
+      "source": "skill",
+      "requires": ["core"]
+    },
+    "fmt-on": {
+      "source": "skill",
+      "requires": ["core"]
+    },
+    "home": {
+      "source": "skill",
+      "requires": ["control-plane"]
+    },
+    "maintaining-the-format-plugin": {
+      "source": "skill",
+      "requires": ["core"],
+      "conditional_capabilities": ["local-session-history"]
+    },
+    "managing-skill-activation": {
+      "source": "skill",
+      "requires": ["control-plane"]
+    },
+    "reviewing-evaluation-taxonomies": {
+      "source": "skill",
+      "requires": ["local-session-history"]
+    },
+    "robust-over-simple": {
+      "source": "skill",
+      "requires": ["core"]
+    },
+    "scouting-tools-for-open-frictions": {
+      "source": "skill",
+      "requires": ["core"],
+      "conditional_capabilities": ["local-session-history"]
+    },
+    "shift-enter-in-windows-terminal": {
+      "source": "skill",
+      "requires": ["core"]
+    },
+    "statusline-apply": {
+      "source": "command",
+      "requires": ["core"]
+    },
+    "statusline-check": {
+      "source": "command",
+      "requires": ["core"]
+    },
+    "statusline-preview": {
+      "source": "command",
+      "requires": ["core"]
+    },
+    "statusline-restore": {
+      "source": "command",
+      "requires": ["core"]
+    },
+    "work": {
+      "source": "skill",
+      "requires": ["control-plane"]
+    },
+    "writing-goals": {
+      "source": "skill",
+      "requires": ["core"]
+    }
+  }
+}

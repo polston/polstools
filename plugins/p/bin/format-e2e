@@ -86,7 +86,7 @@ if os.path.isfile(mk_path):
     check("marketplace/plugin.json keywords match",
           entry.get("keywords") == pj.get("keywords"))
 
-# 3. Native format skills exist and the legacy commands are gone
+# 3. Native toggle skills exist and the legacy format commands are gone
 skill_scripts = {
     mode: os.path.join(ROOT, "skills", "fmt-" + mode, "scripts", "toggle.py")
     for mode in ("off", "on")
@@ -96,6 +96,45 @@ for mode, path in skill_scripts.items():
 check("legacy off/on commands are absent",
       not os.path.exists(os.path.join(ROOT, "commands", "off.md"))
       and not os.path.exists(os.path.join(ROOT, "commands", "on.md")))
+
+profile_scripts = {
+    mode: os.path.join(ROOT, "skills", mode, "scripts", "toggle.py")
+    for mode in ("home", "work")
+}
+for mode, path in profile_scripts.items():
+    check("%s native profile script exists" % mode, os.path.isfile(path), path)
+profile_ctl = [sys.executable, os.path.join(ROOT, "bin", "skill-profile-ctl")]
+r = run(profile_ctl + ["validate"])
+check("skill activation manifest has exact source coverage",
+      r.returncode == 0, r.stderr.strip())
+check("activation controller is absent from hooks",
+      "skill-profile-ctl" not in json.dumps(hooks))
+
+with tempfile.TemporaryDirectory() as profile_home:
+    profile_env = {
+        "CODEX_THREAD_ID": SID,
+        "P_SKILL_CONFIG_FILE": os.path.join(profile_home, "global.json"),
+        "P_SKILL_STATE_DIR": os.path.join(profile_home, "sessions"),
+        "P_CODEX_CONFIG_FILE": os.path.join(profile_home, "codex.toml"),
+        "P_SKILL_SKIP_STATUS_SYNC": "1",
+    }
+    remove_profile = (
+        "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "P_SKILL_PROFILE"
+    )
+    r = run([sys.executable, profile_scripts["work"]],
+            env_extra=profile_env, env_remove=remove_profile)
+    blocked = run(profile_ctl + ["check", "auditing-a-repo-for-private-data"],
+                  env_extra=profile_env, env_remove=remove_profile)
+    check("work profile blocks repository privacy skill in-session",
+          r.returncode == 0 and blocked.returncode == 1,
+          "toggle=%d gate=%d" % (r.returncode, blocked.returncode))
+    r = run([sys.executable, profile_scripts["home"]],
+            env_extra=profile_env, env_remove=remove_profile)
+    allowed = run(profile_ctl + ["check", "auditing-a-repo-for-private-data"],
+                  env_extra=profile_env, env_remove=remove_profile)
+    check("home profile restores repository privacy skill in-session",
+          r.returncode == 0 and allowed.returncode == 0,
+          "toggle=%d gate=%d" % (r.returncode, allowed.returncode))
 
 # 4. Both gates print their payload byte-exactly, exit 0
 for ev in ("SessionStart", "UserPromptSubmit"):

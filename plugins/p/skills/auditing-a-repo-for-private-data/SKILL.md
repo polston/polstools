@@ -5,6 +5,10 @@ description: Use before a repository's first push, when adding a remote, when ma
 
 # Auditing a repo for private data
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check auditing-a-repo-for-private-data`.
+If it exits 1 or 2, stop and report its output.
+
 ## Overview
 
 A file deleted from the working tree is still in history. A grep of the working
@@ -26,7 +30,7 @@ Run all six. Each catches something the others structurally cannot.
 |---|---|---|
 | 1 | Commit messages | `git log --all --format='%B'` |
 | 2 | Every commit's tree | `git grep <pat> $(git rev-list --all)` — not just HEAD |
-| 3 | Full patch text, added **and** removed lines | `git log --all --format= -p` — patch bodies without duplicate commit headers/messages |
+| 3 | Patch hunk bodies, added **and** removed lines | `git log --all --format= -p` filtered to hunk bodies, without diff paths or duplicate commit headers/messages |
 | 4 | Tag messages | `git tag -l --format='%(contents)'` |
 | 5 | Author/committer metadata | `git log --all --format='%an <%ae> %cn <%ce>'` — email is accepted here by repository policy |
 | 6 | Files ever added | `git log --all --diff-filter=A --name-only` |

@@ -5,6 +5,10 @@ description: Use when constructing or reviewing a Claude Code /goal condition â€
 
 # Writing Goals
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check writing-goals`. If it exits
+1 or 2, stop and report its output.
+
 ## Overview
 
 A /goal condition is judged after every turn by a small evaluator model that reads only the conversation transcript â€” it cannot run commands or read files. A well-formed condition is a compact contract about what the transcript must show. Build it from the five slots below, in order; keep the whole condition under ~120 words.

@@ -5,6 +5,10 @@ description: Use when the p response format misbehaves, when auditing its useful
 
 # Maintaining the p response format
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check maintaining-the-format-plugin`.
+If it exits 1 or 2, stop and report its output.
+
 ## Health check
 
 1. Run `<plugin-root>/bin/format-e2e`. Exit 0 = the wiring, gates,
@@ -21,6 +25,11 @@ description: Use when the p response format misbehaves, when auditing its useful
 
 Mechanical health does not show whether the format remains useful or whether
 models follow it. For a history audit:
+
+Run `<python> <plugin-root>/bin/skill-profile-ctl check-capability local-session-history --component maintaining-the-format-plugin`
+before discovering or reading any transcript. If it exits 1 or 2, stop the
+history branch and report its output; mechanical health and repair remain
+available.
 
 1. Exclude the running audit session and deliberately toggled-off intervals.
 2. Report interim and turn-ending messages separately. Interim messages should

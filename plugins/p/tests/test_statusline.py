@@ -18,6 +18,7 @@ from unittest import mock
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PLUGIN_ROOT.parents[1]
 CTL_PATH = PLUGIN_ROOT / "bin" / "statusline-ctl"
+PROFILE_CTL_PATH = PLUGIN_ROOT / "bin" / "skill-profile-ctl"
 
 
 def load_ctl():
@@ -63,10 +64,11 @@ class StatuslineUnitTests(unittest.TestCase):
         self.assertIn("81% left", lines[1])
         self.assertIn("model", lines[1])
         self.assertIn("88% left", lines[1])
+        self.assertIn("p:h", lines[0])
 
     def test_render_tolerates_missing_optional_fields(self):
         lines = self.ctl.render_claude({}, color=False)
-        self.assertEqual(lines, [])
+        self.assertEqual(lines, ["p:h"])
 
     def test_codex_footer_order_matches_the_contract(self):
         self.assertEqual(
@@ -158,6 +160,7 @@ class StatuslineUnitTests(unittest.TestCase):
         self.assertIn("81% left", plain)
         self.assertIn("model-week", plain)
         self.assertIn("88% left", plain)
+        self.assertIn("p:h", plain)
 
 
 class StatuslineCliTests(unittest.TestCase):
@@ -173,6 +176,7 @@ class StatuslineCliTests(unittest.TestCase):
                 "STATUSLINE_CODEX_CONFIG": str(root / "codex-config.toml"),
                 "STATUSLINE_STATE_DIR": str(root / "state"),
                 "STATUSLINE_INSTALL_DIR": str(root / "install"),
+                "STATUSLINE_CCSTATUSLINE_CONFIG": str(root / "ccstatusline.json"),
                 "USERPROFILE": str(root / "profile-marker"),
                 "HOME": str(root / "profile-marker"),
             }
@@ -263,7 +267,7 @@ class StatuslineCliTests(unittest.TestCase):
             )
 
     def test_apply_restores_both_configs_after_each_simulated_write_failure(self):
-        for fail_on in range(1, 5):
+        for fail_on in range(1, 8):
             with self.subTest(fail_on=fail_on), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 env = self.make_env(root)
@@ -320,7 +324,7 @@ class StatuslineCliTests(unittest.TestCase):
                 Path(env["STATUSLINE_CODEX_CONFIG"]).read_bytes(), first_codex
             )
 
-    def test_apply_preserves_ccstatusline_and_only_manages_codex(self):
+    def test_apply_preserves_ccstatusline_layout_and_adds_only_owned_widget(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = self.make_env(root)
@@ -331,30 +335,157 @@ class StatuslineCliTests(unittest.TestCase):
                 "statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"},
             }
             codex_original = '[tui]\nstatus_line = ["model"]\n'
+            cc_original = {
+                "version": 3,
+                "lines": [
+                    [
+                        {"id": "model", "type": "model", "color": "cyan"},
+                        {"id": "branch", "type": "git-branch", "color": "magenta"},
+                    ],
+                    [{"id": "clock", "type": "clock", "metadata": {"timezone": "UTC"}}],
+                    [],
+                ],
+                "powerline": {"enabled": True, "separators": [">"], "separatorInvertBackground": [False], "startCaps": [], "endCaps": [], "autoAlign": False, "continueThemeAcrossLines": False},
+            }
             claude_path.write_text(json.dumps(claude_original, indent=2) + "\n", "utf-8")
             codex_path.write_text(codex_original, "utf-8")
+            cc_path = Path(env["STATUSLINE_CCSTATUSLINE_CONFIG"])
+            cc_path.write_text(json.dumps(cc_original, indent=2) + "\n", "utf-8")
             claude_bytes = claude_path.read_bytes()
 
             applied = self.run_ctl("apply", env)
             self.assertEqual(applied.returncode, 0, applied.stderr)
             self.assertIn("ccstatusline preserved", applied.stdout)
             self.assertEqual(claude_path.read_bytes(), claude_bytes)
-            self.assertFalse(Path(env["STATUSLINE_INSTALL_DIR"]).exists())
+            self.assertTrue((Path(env["STATUSLINE_INSTALL_DIR"]) / "skill-profile-label.py").is_file())
+            cc_now = json.loads(cc_path.read_text("utf-8"))
+            owned = [
+                widget
+                for line in cc_now["lines"]
+                for widget in line
+                if (widget.get("metadata") or {}).get("p.owner") == "skill-activation-v1"
+            ]
+            self.assertEqual(len(owned), 1)
+            self.assertEqual(cc_now["lines"][0][:-1], cc_original["lines"][0])
+            self.assertEqual(cc_now["lines"][1:], cc_original["lines"][1:])
+            self.assertEqual(cc_now["powerline"], cc_original["powerline"])
             rollback = json.loads(
                 (root / "state" / "rollback-v1.json").read_text("utf-8")
             )
             self.assertFalse(rollback["managed"]["claude"])
             self.assertIsNone(rollback["applied"]["claude"])
             self.assertIsNone(rollback["previous"]["claude"])
+            self.assertTrue(rollback["managed"]["ccstatusline"])
 
             checked = self.run_ctl("check", env)
             self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
-            self.assertIn("compatible: Claude ccstatusline preserved", checked.stdout)
+            self.assertIn("compatible: Claude ccstatusline", checked.stdout)
 
             restored = self.run_ctl("restore", env)
             self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
             self.assertEqual(claude_path.read_bytes(), claude_bytes)
             self.assertEqual(codex_path.read_text("utf-8"), codex_original)
+            self.assertEqual(json.loads(cc_path.read_text("utf-8")), cc_original)
+
+    def test_profile_sync_is_idempotent_and_changes_no_codex_or_claude_setting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            codex_path = Path(env["STATUSLINE_CODEX_CONFIG"])
+            cc_path = Path(env["STATUSLINE_CCSTATUSLINE_CONFIG"])
+            claude_path.write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"}}, indent=2) + "\n",
+                "utf-8",
+            )
+            codex_path.write_text('[tui]\nstatus_line = ["model"]\n', "utf-8")
+            cc_path.write_text(
+                json.dumps({"version": 3, "lines": [[{"id": "model", "type": "model"}], [], []]}, indent=2) + "\n",
+                "utf-8",
+            )
+            before = (claude_path.read_bytes(), codex_path.read_bytes())
+            first = self.run_ctl("profile-sync", env)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_cc = cc_path.read_bytes()
+            second = self.run_ctl("profile-sync", env)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(cc_path.read_bytes(), first_cc)
+            self.assertEqual(before, (claude_path.read_bytes(), codex_path.read_bytes()))
+
+    def test_profile_sync_refuses_invalid_ccstatusline_without_any_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            cc_path = Path(env["STATUSLINE_CCSTATUSLINE_CONFIG"])
+            claude_path.write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"}}),
+                "utf-8",
+            )
+            cc_path.write_text("{broken", "utf-8")
+            before = (claude_path.read_bytes(), cc_path.read_bytes())
+            result = self.run_ctl("profile-sync", env)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(before, (claude_path.read_bytes(), cc_path.read_bytes()))
+            self.assertFalse(Path(env["STATUSLINE_INSTALL_DIR"]).exists())
+            applied = self.run_ctl("apply", env)
+            self.assertEqual(applied.returncode, 2)
+            self.assertEqual(before, (claude_path.read_bytes(), cc_path.read_bytes()))
+            self.assertFalse(Path(env["STATUSLINE_CODEX_CONFIG"]).exists())
+            self.assertFalse((root / "state").exists())
+
+    def test_home_work_toggle_refreshes_status_bundle_and_label_in_same_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+                env.pop(name, None)
+            env.update(
+                {
+                    "CODEX_THREAD_ID": "test-session",
+                    "P_SKILL_CONFIG_FILE": str(root / "skill-global.json"),
+                    "P_SKILL_STATE_DIR": str(root / "skill-sessions"),
+                    "P_CODEX_CONFIG_FILE": str(root / "skill-codex.toml"),
+                }
+            )
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"}}),
+                "utf-8",
+            )
+            Path(env["STATUSLINE_CCSTATUSLINE_CONFIG"]).write_text(
+                json.dumps({"version": 3, "lines": [[{"id": "model", "type": "model"}], [], []]}),
+                "utf-8",
+            )
+
+            def toggle(profile):
+                return subprocess.run(
+                    [sys.executable, str(PROFILE_CTL_PATH), profile],
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    env=env,
+                )
+
+            def installed_label():
+                return subprocess.run(
+                    [sys.executable, str(Path(env["STATUSLINE_INSTALL_DIR"]) / "skill-profile-label.py")],
+                    input=json.dumps({"session_id": "test-session"}),
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    env=env,
+                )
+
+            work = toggle("work")
+            self.assertEqual(work.returncode, 0, work.stderr)
+            self.assertEqual(installed_label().stdout.strip(), "p:w")
+            state_files = list((root / "skill-sessions").glob("*.json"))
+            self.assertEqual(len(state_files), 1)
+            state_files[0].write_text("{broken", encoding="utf-8")
+            self.assertEqual(installed_label().stdout.strip(), "p:?")
+            home = toggle("home")
+            self.assertEqual(home.returncode, 0, home.stderr)
+            self.assertEqual(installed_label().stdout.strip(), "p:h")
 
     def test_apply_refuses_unknown_external_claude_renderer_without_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -453,14 +584,17 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual("p", manifest["name"])
         self.assertEqual(entry["version"], manifest["version"])
         self.assertEqual(entry["description"], manifest["description"])
-        for keyword in ("statusline", "claude-code", "codex"):
+        for keyword in ("profiles", "statusline", "claude-code", "codex"):
             self.assertIn(keyword, entry["keywords"])
             self.assertIn(keyword, manifest["keywords"])
 
     def test_statusline_plugin_contains_no_machine_specific_home_path(self):
         pattern = re.compile(r"[A-Za-z]:[\\/](?:Users|home)[\\/][A-Za-z0-9_.-]+")
         for path in PLUGIN_ROOT.rglob("*"):
-            is_text = path.suffix in {".json", ".md", ".ps1"} or path.name == "statusline-ctl"
+            is_text = path.suffix in {".json", ".md", ".ps1", ".py"} or path.name in {
+                "skill-profile-ctl",
+                "statusline-ctl",
+            }
             if path.is_file() and "tests" not in path.parts and is_text:
                 self.assertIsNone(pattern.search(path.read_text("utf-8")), str(path))
 
