@@ -28,10 +28,10 @@ class FormatContractTests(unittest.TestCase):
         self.assertIn("An interim message", self.spec)
         self.assertIn("immediately precedes a tool call", self.spec)
         self.assertIn(
-            "interim message immediately before a tool call",
+            "Interim message immediately before a tool call",
             self._normalized(self.reminder),
         )
-        self.assertIn("repeat actionable items in the final reply", self.reminder)
+        self.assertIn("repeat actions in final", self.reminder)
 
     def test_density_caps_and_conditional_separator_are_reinjected(self):
         self.assertRegex(
@@ -42,14 +42,18 @@ class FormatContractTests(unittest.TestCase):
         self.assertIn("at most 30 words", self.spec)
         self.assertIn("at most 30 words", self.reminder)
         self.assertIn("Write `---` only when optional detail follows it", self.spec)
-        self.assertIn("Add `---` only when optional detail follows", self.reminder)
+        self.assertIn("Optional detail after `---`", self.reminder)
+
+    def test_payloads_stay_within_the_measured_context_budgets(self):
+        self.assertLessEqual(len(SPEC_PATH.read_bytes()), 4200)
+        self.assertLessEqual(len(REMINDER_PATH.read_bytes()), 650)
 
     def test_problem_actions_and_ask_location_are_reinjected(self):
         self.assertIn("`**N.1.** Consequence`", self.spec)
         self.assertIn("`**N.2.** Recommendation`", self.spec)
         self.assertIn("the only place for questions that need a reader answer", self.spec)
-        self.assertIn("Every PROBLEM has a reader consequence and recommended", self.reminder)
-        self.assertIn("Questions needing answers appear only in ASKS", self.reminder)
+        self.assertIn("Each PROBLEM: reader consequence + recommendation", self.reminder)
+        self.assertIn("questions\nonly in ASKS", self.reminder)
 
     def test_material_proposals_disclose_the_complete_change_surface(self):
         labels = ("ADD", "CHANGE", "REMOVE", "PRESERVE")
@@ -57,9 +61,11 @@ class FormatContractTests(unittest.TestCase):
             self.assertIn(f"`**N.2.{index}. {label}**`", self.spec)
             self.assertIn(label, self.reminder)
         self.assertIn("current state → proposed state", self.spec)
-        self.assertIn("current → proposed plus mechanism", self.reminder)
+        self.assertIn(
+            "current → proposed plus mechanism", self._normalized(self.reminder)
+        )
         self.assertIn("write `None.` for an empty", self.spec)
-        self.assertIn("Keep them above the rule", self.reminder)
+        self.assertIn("Keep above the rule", self.reminder)
         self.assertIn("Omit it for completed work", self.spec)
 
     def test_only_open_problem_and_ask_numbers_persist(self):
@@ -69,7 +75,7 @@ class FormatContractTests(unittest.TestCase):
             self._normalized(self.spec),
         )
         self.assertIn("FINDINGS restart at 1", self.spec)
-        self.assertIn("Unresolved PROBLEM and\nASK numbers persist without reuse", self.reminder)
+        self.assertIn("Open PROBLEM/ASK numbers persist without reuse", self.reminder)
 
     def test_example_obeys_density_and_word_caps(self):
         example = self.spec.split("<example>\n", 1)[1].split("\n</example>", 1)[0]
@@ -132,6 +138,8 @@ class FormatContractTests(unittest.TestCase):
         self.assertIn("plugins/p/bin/python-launcher", self.design)
         self.assertIn("plugins/p/bin/format-e2e", self.design)
         self.assertIn("30-check end-to-end verifier", self.design)
+        self.assertIn("4,200-byte", self.design)
+        self.assertIn("650-byte", self.design)
         self.assertIn("/p:fmt-off", self.design)
         self.assertIn("/p:fmt-on", self.design)
 

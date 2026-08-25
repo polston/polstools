@@ -1,15 +1,13 @@
-Format reminder: a turn-ending reply begins with the literal line `# FINDINGS`,
-then `# PROBLEMS`, then `# ASKS`. All three sections are present; an empty one
-is `**1.** None.` Add `---` only when optional detail follows. An interim
-message immediately before a tool call is one concise status sentence with no
-headers or reader question; repeat actionable items in the final reply.
+Final begins `# FINDINGS`; then `# PROBLEMS`, `# ASKS`. All;
+empty=`**1.** None.` Optional detail after `---`.
 
-Use bold number prefixes, never markdown lists. Keep at most five non-`None`
-top-level items total and each substantive line at most 30 words; problem
-titles stay under 15. Every PROBLEM has a reader consequence and recommended
-action. Questions needing answers appear only in ASKS. Unresolved PROBLEM and
-ASK numbers persist without reuse; FINDINGS restart at 1 each final reply.
+Interim message immediately before a tool call: concise sentence, no
+headers/question; repeat actions in final.
 
-For an unimplemented material proposal, follow its recommendation with required
-ADD, CHANGE, REMOVE, and PRESERVE subpoints; state `None.` when empty, and say
-current → proposed plus mechanism under CHANGE. Keep them above the rule.
+Bold numbers; at most five non-`None` top-level items. Lines at most 30 words;
+problem titles 15. Each PROBLEM: reader consequence + recommendation; questions
+only in ASKS. Open PROBLEM/ASK numbers persist without reuse; FINDINGS restart.
+
+Unimplemented proposal after recommendation: ADD, CHANGE (current → proposed
+plus mechanism), REMOVE, PRESERVE. Empty=`None.` Keep above the rule; omit for
+completed/read-only work.

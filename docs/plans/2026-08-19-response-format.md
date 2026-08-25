@@ -1,6 +1,6 @@
 # Response-format feature — design record
 
-2026-08-19, updated 2026-08-23. The `p` plugin makes every turn-ending reply
+2026-08-19, updated 2026-08-24. The `p` plugin makes every turn-ending reply
 open with a fixed triage block — FINDINGS, PROBLEMS, ASKS. Interim tool progress
 is one concise sentence instead. A horizontal rule separates optional detail
 only when such detail follows. An unimplemented material proposal expands its
@@ -83,6 +83,10 @@ embedded markdown-to-terminal renderer:
    ADD, CHANGE, REMOVE, and PRESERVE are all explicit, including `None.`. The
    expansion is proposal-only so completed work and read-only findings stay
    compact.
+9. Context budgets are enforced: a 4,200-byte ceiling for the full payload and
+   a 650-byte ceiling for the per-turn reminder. The current 3,564 and 649
+   bytes reduce one start plus ten turns by 34.6% from the measured baseline;
+   semantic contract tests prevent savings by deleting requirements.
 
 Sources: Anthropic prompt-engineering documentation (output consistency,
 examples, long-context tips); IFEval and successors; CFBench; RECAP; "Let Me
