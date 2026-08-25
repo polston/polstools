@@ -5,6 +5,10 @@ description: Use when looking for tooling that would remove a known, named frict
 
 # Scouting tools for open frictions
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check scouting-tools-for-open-frictions`.
+If it exits 1 or 2, stop and report its output.
+
 ## Overview
 
 Tool scouting has two directions and only one of them works. Searching by
@@ -20,6 +24,10 @@ there is nothing to scout, and the correct output is to say so.
 
 **1. Start from the friction list, not from a search box.** Take open items from
 a recent retrospective. If there are none:
+
+Run `<python> <plugin-root>/bin/skill-profile-ctl check-capability local-session-history --component scouting-tools-for-open-frictions`
+before discovering or reading any transcript. If it exits 1 or 2, stop this
+fallback and ask for a named friction instead.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract

@@ -5,6 +5,10 @@ description: Use when asked what has been going wrong in how we work, for a week
 
 # Finding friction in recent sessions
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check finding-friction-in-recent-sessions`.
+If it exits 1 or 2, stop and report its output.
+
 ## Overview
 
 Session transcripts record every time a human had to intervene — correct a turn,

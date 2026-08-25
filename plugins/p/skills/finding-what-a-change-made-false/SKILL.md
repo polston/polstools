@@ -5,6 +5,10 @@ description: Use when a change set is landing or has just landed and the repo ha
 
 # Finding what a change made false
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check finding-what-a-change-made-false`.
+If it exits 1 or 2, stop and report its output.
+
 ## Overview
 
 The question is **"what did this change make false"**, not "review the docs".

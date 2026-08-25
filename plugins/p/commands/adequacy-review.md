@@ -5,6 +5,10 @@ argument-hint: "<target: file | dir | git-range>  [spec: path to the sealed plan
 
 # Adequacy review
 
+Before any other action, resolve the plugin root and run
+`<python> <plugin-root>/bin/skill-profile-ctl check adequacy-review`. If it exits
+1 or 2, stop and report its output.
+
 The mechanism is a **deterministic workflow** at
 `${CLAUDE_PLUGIN_ROOT}/workflows/adequacy-review.js` (blinded · grounded · ensemble ·
 distilled). Do NOT re-implement the recipe here — **invoke the workflow**, so the blinding,

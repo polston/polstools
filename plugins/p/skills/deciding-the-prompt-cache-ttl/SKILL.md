@@ -5,6 +5,10 @@ description: Use when deciding whether Claude Code's prompt cache should use the
 
 # Deciding the prompt-cache TTL
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check deciding-the-prompt-cache-ttl`.
+If it exits 1 or 2, stop and report its output.
+
 ## Overview
 
 Whether to run the prompt cache at a one-hour or a five-minute time to live,

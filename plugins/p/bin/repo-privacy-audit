@@ -96,9 +96,15 @@ git -C "$REPO" log --all --format='%B'                       > "$TMP/messages"  
 # only from the email input; every other category still scans the raw messages.
 grep -viE '^[[:space:]]*co-authored-by[[:space:]]*:' "$TMP/messages" \
   > "$TMP/messages_without_authorship" 2>/dev/null || true
-# Keep this input to patch text. The default pretty format adds generated
-# author headers and commit messages, duplicating places 1 and 5.
-git -C "$REPO" log --all --format= -p                         > "$TMP/patches"   2>/dev/null || true
+# Keep this input to patch hunk bodies. Diff headers contain repository paths,
+# so treating them as content makes a generic directory named "home" resemble
+# a machine home path. Added, removed, and context lines all remain included.
+git -C "$REPO" log --all --format= -p 2>/dev/null \
+  | awk '
+      /^diff --git / { in_hunk=0; next }
+      /^@@ / { in_hunk=1; next }
+      in_hunk && $0 != "\\ No newline at end of file" { print }
+    ' > "$TMP/patches" || true
 git -C "$REPO" tag -l --format='%(contents)'                 > "$TMP/tags"      2>/dev/null || true
 git -C "$REPO" log --all --format='%an <%ae> %cn <%ce>' | sort -u > "$TMP/idents" 2>/dev/null || true
 

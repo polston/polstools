@@ -3,6 +3,10 @@ name: robust-over-simple
 description: Use when two or more viable designs are on the table and one forecloses options the other keeps open. Not for mechanical work, and not when an established order or convention already decides the choice.
 ---
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check robust-over-simple`. If it
+exits 1 or 2, stop and report its output.
+
 ## The rule
 
 Define the seam now; ship one implementation now. The expandable choice is the

@@ -5,6 +5,10 @@ description: Use for a monthly or periodic review of whether standing instructio
 
 # Auditing workflow rules against behavior
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check auditing-workflow-rules-against-behavior`.
+If it exits 1 or 2, stop and report its output.
+
 ## Overview
 
 Instruction files only grow. Every friction adds a clause; nothing removes one.
