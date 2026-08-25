@@ -8,7 +8,7 @@ import unittest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR_PATH = PLUGIN_ROOT / "bin" / "p-doctor"
-COMMAND_PATH = PLUGIN_ROOT / "commands" / "doctor.md"
+SKILL_PATH = PLUGIN_ROOT / "skills" / "doctor" / "SKILL.md"
 
 
 def load_doctor():
@@ -223,11 +223,12 @@ class SchemaAndPackagingTests(unittest.TestCase):
             ]),
         )
 
-    def test_namespaced_command_runs_doctor_through_python_launcher(self):
-        command = COMMAND_PATH.read_text(encoding="utf-8")
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/python-launcher", command)
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/p-doctor", command)
-        self.assertIn("exit code", command)
+    def test_native_skill_runs_doctor_through_python_launcher(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("name: doctor", skill)
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/python-launcher", skill)
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/p-doctor", skill)
+        self.assertIn("exit code", skill)
 
 
 if __name__ == "__main__":
