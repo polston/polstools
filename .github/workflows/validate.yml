@@ -1,0 +1,46 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin:
+    name: plugin (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
+
+      - name: Hook and manifest end-to-end checks
+        run: python -B plugins/p/bin/format-e2e
+
+      - name: Repository privacy audit
+        shell: bash
+        run: sh plugins/p/bin/repo-privacy-audit -C .
+
+      - name: Diff hygiene
+        run: git diff --check
