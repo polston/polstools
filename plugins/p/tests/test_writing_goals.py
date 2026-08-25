@@ -100,6 +100,19 @@ class CrossHarnessGoalGuidanceTests(unittest.TestCase):
             self.assertIn(phrase, codex)
         self.assertNotIn("/goal pause", claude)
 
+    def test_codex_browser_evidence_uses_a_cli_compatible_surface(self):
+        codex = CODEX_ADAPTER.read_text(encoding="utf-8")
+        guidance = " ".join(section(codex, "## Browser evidence").split())
+
+        for requirement in (
+            "browser evidence",
+            "Codex CLI",
+            "headless browser automation",
+            "in-app browser connection",
+            "must not weaken acceptance",
+        ):
+            self.assertIn(requirement, guidance)
+
     def test_distribution_metadata_names_goal_guidance(self):
         marketplace = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
         entry = next(item for item in marketplace["plugins"] if item["name"] == "p")

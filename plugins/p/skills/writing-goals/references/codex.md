@@ -23,6 +23,14 @@ validate after meaningful changes, and keep a short progress record. State what
 counts as complete, `Review needed`, blocked, or stopped at a bound. A blocker
 must keep the outcome incomplete and include the exact resume check.
 
+## Browser evidence
+
+When success requires browser evidence, name an execution surface compatible
+with the active environment. In Codex CLI, allow locally launched headless
+browser automation when no in-app browser connection exists. Preserve the
+required browser interaction and durable visual or DOM evidence; changing the
+surface must not weaken acceptance.
+
 ## Lifecycle
 
 `/goal <objective>` sets the goal and `/goal` shows it. Use `/goal edit` to
