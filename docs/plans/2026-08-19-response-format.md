@@ -1,6 +1,6 @@
 # Response-format feature — design record
 
-2026-08-19, updated 2026-08-23. The `p` plugin makes every turn-ending reply
+2026-08-19, updated 2026-08-24. The `p` plugin makes every turn-ending reply
 open with a fixed triage block — FINDINGS, PROBLEMS, ASKS. Interim tool progress
 is one concise sentence instead. A horizontal rule separates optional detail
 only when such detail follows. An unimplemented material proposal expands its
@@ -35,8 +35,9 @@ session id from hook input JSON, while the skill side accepts the native Claude
 Code or Codex session environment. Unreadable hook input fails open to ON;
 flags older than 14 days are pruned on every toggle. A bad payload makes `gate`
 exit 1, not 2 — exit 2 from a UserPromptSubmit hook blocks processing and
-erases the user's prompt. Hook commands execute the controller directly through
-its Python 3 shebang.
+erases the user's prompt. Hook commands route the controller through
+`bin/python-launcher`, which resolves Python 3 without assuming the harness's
+PATH contains `python3`.
 
 ## Renderer facts the format is built around
 
@@ -82,6 +83,10 @@ embedded markdown-to-terminal renderer:
    ADD, CHANGE, REMOVE, and PRESERVE are all explicit, including `None.`. The
    expansion is proposal-only so completed work and read-only findings stay
    compact.
+9. Context budgets are enforced: a 4,200-byte ceiling for the full payload and
+   a 650-byte ceiling for the per-turn reminder. The current 3,564 and 649
+   bytes reduce one start plus ten turns by 34.6% from the measured baseline;
+   semantic contract tests prevent savings by deleting requirements.
 
 Sources: Anthropic prompt-engineering documentation (output consistency,
 examples, long-context tips); IFEval and successors; CFBench; RECAP; "Let Me
@@ -92,15 +97,19 @@ relied on above.
 ## Layout
 
 - `plugins/p/hooks/hooks.json` — registers both hooks; each command runs
-  `bin/format-ctl gate`, which prints its payload unless the session is
-  toggled off. A missing payload still surfaces as a failed hook.
+  `bin/format-ctl gate` through `bin/python-launcher`, which prints its payload
+  unless the session is toggled off. A missing payload still surfaces as a
+  failed hook.
+- `plugins/p/bin/python-launcher` — resolves a usable Python 3 interpreter
+  across POSIX and Windows harness environments without requiring `python3`
+  on PATH.
 - `plugins/p/bin/format-ctl` — the gate plus the `off`/`on`/`status`
   toggle (stdlib Python 3). Reconfigures stdio to UTF-8 first: piped stdout
   on Windows defaults to the ANSI code page and mangles non-ASCII payload
   bytes (caught by running the gate, invisible in file reads).
-- `plugins/p/bin/format-e2e` — 25-check end-to-end verifier: wiring,
-  gates byte-exact, UTF-8 validity, toggle lifecycle, exit-code contract,
-  catalog sync.
+- `plugins/p/bin/format-e2e` — 36-check end-to-end verifier: portable wiring,
+  activation coverage, gates byte-exact, UTF-8 validity, toggle lifecycles,
+  exit-code contracts, and catalog sync.
 - `plugins/p/skills/maintaining-the-format-plugin/` — mechanical and
   behavioral health checks, repair direction, deliberate-choices table, and
   full-removal checklist.

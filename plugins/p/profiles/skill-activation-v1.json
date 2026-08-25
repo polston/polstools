@@ -47,6 +47,10 @@
       "source": "skill",
       "requires": ["local-session-history"]
     },
+    "doctor": {
+      "source": "skill",
+      "requires": ["core"]
+    },
     "finding-friction-in-recent-sessions": {
       "source": "skill",
       "requires": ["local-session-history"]

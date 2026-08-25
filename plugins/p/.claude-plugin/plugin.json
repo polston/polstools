@@ -1,13 +1,15 @@
 {
   "name": "p",
-  "description": "Personal tooling for home/work skill activation, privacy audits, workflow analysis and evaluation, change-explicit response formatting, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
-  "version": "1.6.0",
+  "description": "Personal tooling for home/work skill activation, privacy audits, cross-harness diagnostics and goal design, workflow analysis and evaluation, change-explicit response formatting, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
+  "version": "1.7.0",
   "author": {
     "name": "polston"
   },
   "keywords": [
     "skills",
     "profiles",
+    "goals",
+    "diagnostics",
     "workflow",
     "privacy",
     "retrospective",

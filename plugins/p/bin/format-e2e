@@ -36,14 +36,8 @@ def run(cmd, stdin_text=None, env_extra=None, env_remove=(), binary=False):
 
 def hook_cmd(raw):
     """Substitute the plugin-root variable and split like a shell would."""
-    argv = shlex.split(raw.replace(
+    return shlex.split(raw.replace(
         "${CLAUDE_PLUGIN_ROOT}", ROOT.replace("\\", "/")))
-    # The harness executes hook commands through a POSIX-compatible command
-    # runner. Native Windows subprocess does not honor a Python shebang, so use
-    # the same interpreter explicitly while preserving every hook argument.
-    if os.name == "nt" and os.path.basename(argv[0]) == "format-ctl":
-        argv.insert(0, sys.executable)
-    return argv
 
 
 try:
@@ -58,18 +52,26 @@ check("hooks.json has SessionStart + UserPromptSubmit",
       set(events) == {"SessionStart", "UserPromptSubmit"}, str(set(events)))
 commands = {ev: events[ev][0]["hooks"][0]["command"] for ev in events}
 payloads = {}
+command_ready = []
+shell_root = ROOT.replace("\\", "/")
+launcher = shell_root + "/bin/python-launcher"
+controller = shell_root + "/bin/format-ctl"
 for ev, raw in commands.items():
     argv = hook_cmd(raw)
     payloads[ev] = argv[argv.index("gate") + 1]
-    check("payload exists for %s" % ev,
-          os.path.isfile(payloads[ev]), payloads[ev])
+    ready = (argv[:3] == ["sh", launcher, controller]
+             and os.path.isfile(launcher)
+             and os.path.isfile(payloads[ev]))
+    command_ready.append(ready)
+    check("portable command and payload exist for %s" % ev,
+          ready, raw)
 
-if not all(os.path.isfile(p) for p in payloads.values()):
-    # Bail before the byte-comparison sections traceback on the missing file.
+if not all(command_ready):
+    # Bail before the execution sections try to run an unusable command.
     for name, ok, detail in results:
         print("%s  %s%s" % ("PASS" if ok else "FAIL", name,
                             ("  [%s]" % detail) if detail else ""))
-    print("\naborted: missing payload; %d checks ran" % len(results))
+    print("\naborted: unusable hook command; %d checks ran" % len(results))
     sys.exit(1)
 
 # 2. Catalogs in step (only checkable in the repo layout, not an install copy)

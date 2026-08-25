@@ -67,6 +67,7 @@ says otherwise.
 
 | Looks wrong | Why it is right |
 |---|---|
+| Hooks invoke `format-ctl` through `sh bin/python-launcher` | Git Bash on Windows may have no `python3` on PATH; the launcher resolves installed Python locations before falling back to `uv` |
 | `gate` exits 1 on a bad payload while the toggles exit 2 | Exit 2 from a UserPromptSubmit hook blocks processing and erases the user's prompt |
 | Flag dir sits under the OS temp directory | Both harness sandboxes permit temp writes; config paths may be blocked or may themselves be repositories |
 | stdin/stdout reconfigured to UTF-8 at the top of `format-ctl` | Piped stdout on Windows defaults to the ANSI code page and mangles non-ASCII payload bytes |
