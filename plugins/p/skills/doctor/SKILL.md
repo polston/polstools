@@ -5,6 +5,10 @@ description: Use when a p hook fails, Claude and Codex may load different plugin
 
 # Diagnose p
 
+Before any other action, resolve the plugin root from this `SKILL.md` and run
+`<python> <plugin-root>/bin/skill-profile-ctl check doctor`. If it exits 1 or
+2, stop and report its output.
+
 Run this read-only command exactly:
 
 ```sh

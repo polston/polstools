@@ -5,14 +5,14 @@ description: Draft or review bounded autonomous /goal contracts for Claude Code,
 
 # Writing Goals
 
+Treat a `/goal` as the contract for one autonomous outcome, not as an
+open-ended backlog.
+
 Before any other action, resolve the plugin root from this `SKILL.md` and run
 `<python> <plugin-root>/bin/skill-profile-ctl check writing-goals`. If it exits
 1 or 2, stop and report its output.
 
 ## Overview
-
-Treat a `/goal` as the contract for one autonomous outcome, not as an
-open-ended backlog.
 
 ## Route before drafting
 

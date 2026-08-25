@@ -1,9 +1,10 @@
 # polstools
 
 One `p` plugin for Claude Code and Codex: home/work skill activation,
-repository safety, goal design, workflow evidence, evaluation, response
-formatting, aligned status lines, and small platform fixes. Runtime scripts use
-only POSIX shell or Python's standard library.
+repository safety, cross-harness diagnostics and goal design, workflow
+evidence, evaluation, response formatting, aligned status lines, and small
+platform fixes. Runtime scripts use only POSIX shell or Python's standard
+library.
 
 ## Install
 
@@ -88,6 +89,7 @@ Start a new session, then run the doctor against `<repo-root>`.
 | Area | Skills or commands | Purpose |
 |---|---|---|
 | Plugin health | `doctor` | Compare both live installs and execute both format hooks |
+| Skill activation | `home`, `work`, `managing-skill-activation` | Switch session profiles and manage defaults or overrides |
 | Repository safety | `auditing-a-repo-for-private-data`, `checking-branch-base-before-a-pr`, `finding-what-a-change-made-false` | Catch private data, branch-base mistakes, and documentation drift |
 | Workflow evidence | `auditing-workflow-rules-against-behavior`, `counting-stopped-promises`, `deciding-the-prompt-cache-ttl`, `finding-friction-in-recent-sessions`, `scouting-tools-for-open-frictions` | Measure recurring friction before changing rules or tools |
 | Goals and decisions | `writing-goals`, `robust-over-simple` | Bound autonomous work and preserve expandable design seams |

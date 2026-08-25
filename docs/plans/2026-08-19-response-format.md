@@ -107,9 +107,9 @@ relied on above.
   toggle (stdlib Python 3). Reconfigures stdio to UTF-8 first: piped stdout
   on Windows defaults to the ANSI code page and mangles non-ASCII payload
   bytes (caught by running the gate, invisible in file reads).
-- `plugins/p/bin/format-e2e` — 30-check end-to-end verifier: portable wiring,
-  gates byte-exact, UTF-8 validity, toggle lifecycle, exit-code contract,
-  catalog sync.
+- `plugins/p/bin/format-e2e` — 36-check end-to-end verifier: portable wiring,
+  activation coverage, gates byte-exact, UTF-8 validity, toggle lifecycles,
+  exit-code contracts, and catalog sync.
 - `plugins/p/skills/maintaining-the-format-plugin/` — mechanical and
   behavioral health checks, repair direction, deliberate-choices table, and
   full-removal checklist.

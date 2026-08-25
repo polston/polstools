@@ -137,7 +137,7 @@ class FormatContractTests(unittest.TestCase):
             self.assertNotIn(stale, self.design)
         self.assertIn("plugins/p/bin/python-launcher", self.design)
         self.assertIn("plugins/p/bin/format-e2e", self.design)
-        self.assertIn("30-check end-to-end verifier", self.design)
+        self.assertIn("36-check end-to-end verifier", self.design)
         self.assertIn("4,200-byte", self.design)
         self.assertIn("650-byte", self.design)
         self.assertIn("/p:fmt-off", self.design)
