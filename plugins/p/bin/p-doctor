@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""Read-only cross-harness health check for the p plugin.
+
+Checks installed versions, enabled state, obsolete polstools plugin IDs, and
+the exact SessionStart and UserPromptSubmit commands. Output never includes
+installation paths or raw command stderr.
+
+Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
+not complete an available harness check.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+from typing import NamedTuple
+
+
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_ID = "p@polstools"
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit")
+
+
+class Check(NamedTuple):
+    key: str
+    status: str
+    summary: str
+    fix: str = ""
+
+
+def _manifest_version(plugin_root=PLUGIN_ROOT):
+    path = Path(plugin_root) / ".claude-plugin" / "plugin.json"
+    with path.open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    version = value.get("version") if isinstance(value, dict) else None
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError("plugin manifest has no version")
+    return version
+
+
+def marketplace_version(root):
+    try:
+        path = Path(root) / ".claude-plugin" / "marketplace.json"
+        with path.open(encoding="utf-8") as handle:
+            value = json.load(handle)
+        entries = value.get("plugins") if isinstance(value, dict) else None
+        entry = next(
+            item for item in entries or []
+            if isinstance(item, dict) and item.get("name") == "p"
+        )
+        version = entry.get("version")
+        return version if isinstance(version, str) and version else None
+    except (OSError, ValueError, StopIteration, TypeError, json.JSONDecodeError):
+        return None
+
+
+def normalize_claude_plugins(payload):
+    if not isinstance(payload, list):
+        raise ValueError("Claude plugin list JSON must be an array")
+    result = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        result.append({
+            "id": item.get("id") or item.get("pluginId") or "",
+            "version": item.get("version") or "",
+            "enabled": bool(item.get("enabled")),
+            "root": item.get("installPath") or "",
+            "scope": item.get("scope") or "user",
+        })
+    return result
+
+
+def normalize_codex_plugins(payload):
+    if not isinstance(payload, dict) or not isinstance(payload.get("installed"), list):
+        raise ValueError("Codex plugin list JSON must contain installed[]")
+    result = []
+    for item in payload["installed"]:
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+        result.append({
+            "id": item.get("pluginId") or item.get("id") or "",
+            "version": item.get("version") or "",
+            "enabled": bool(item.get("enabled")),
+            "root": item.get("installedPath") or source.get("path") or "",
+            "scope": "user",
+        })
+    return result
+
+
+def _scope(value):
+    return value if value in {"user", "project", "local", "managed"} else "user"
+
+
+def _version_fix(harness, scope="user"):
+    if harness == "claude":
+        return "Run `claude plugin update p@polstools --scope %s`, then start a new session." % _scope(scope)
+    return (
+        "Run `codex plugin remove p@polstools`, then "
+        "`codex plugin add p@polstools`, then start a new session."
+    )
+
+
+def _remove_fix(harness, plugin_ids, scope="user"):
+    if harness == "claude":
+        commands = [
+            "`claude plugin uninstall %s --scope %s`" % (item, _scope(scope))
+            for item in plugin_ids
+        ]
+    else:
+        commands = ["`codex plugin remove %s`" % item for item in plugin_ids]
+    return "Run " + ", then ".join(commands) + "."
+
+
+def evaluate_harness(harness, plugins, expected_version):
+    checks = []
+    installed = [item for item in plugins if item.get("id") == PLUGIN_ID]
+    obsolete = sorted({
+        item.get("id") for item in plugins
+        if isinstance(item.get("id"), str)
+        and item.get("id").endswith("@polstools")
+        and item.get("id") != PLUGIN_ID
+    })
+    default_scope = installed[0].get("scope", "user") if installed else "user"
+
+    if not installed:
+        checks.append(Check(
+            harness + ".install", "SKIP",
+            "%s does not have p@polstools installed" % harness.capitalize(),
+        ))
+    elif len(installed) > 1:
+        checks.append(Check(
+            harness + ".install", "FAIL",
+            "%s reports duplicate p@polstools installations" % harness.capitalize(),
+            _version_fix(harness, default_scope),
+        ))
+    elif not installed[0].get("enabled"):
+        checks.append(Check(
+            harness + ".install", "FAIL",
+            "%s has p@polstools disabled" % harness.capitalize(),
+            "Enable p@polstools, then start a new session.",
+        ))
+    else:
+        checks.append(Check(
+            harness + ".install", "PASS",
+            "%s has one enabled p@polstools installation" % harness.capitalize(),
+        ))
+
+    if installed:
+        actual = str(installed[0].get("version") or "unknown")
+        if actual == expected_version:
+            checks.append(Check(
+                harness + ".version", "PASS",
+                "%s p version %s matches expected" % (harness.capitalize(), actual),
+            ))
+        else:
+            checks.append(Check(
+                harness + ".version", "FAIL",
+                "%s p version %s does not match expected %s"
+                % (harness.capitalize(), actual, expected_version),
+                _version_fix(harness, default_scope),
+            ))
+
+    if obsolete:
+        checks.append(Check(
+            harness + ".obsolete", "FAIL",
+            "%s still registers obsolete IDs: %s"
+            % (harness.capitalize(), ", ".join(obsolete)),
+            _remove_fix(harness, obsolete, default_scope),
+        ))
+    else:
+        checks.append(Check(
+            harness + ".obsolete", "PASS",
+            "%s has no obsolete polstools plugin IDs" % harness.capitalize(),
+        ))
+    return checks
+
+
+def _hook_command(raw, plugin_root):
+    replaced = raw.replace(
+        "${CLAUDE_PLUGIN_ROOT}", Path(plugin_root).resolve().as_posix()
+    )
+    return shlex.split(replaced, posix=True)
+
+
+def _event_key(event):
+    result = []
+    for char in event:
+        if char.isupper() and result:
+            result.append("_")
+        result.append(char.lower())
+    return "".join(result)
+
+
+def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run):
+    plugin_root = Path(plugin_root)
+    try:
+        with (plugin_root / "hooks" / "hooks.json").open(encoding="utf-8") as handle:
+            hooks = json.load(handle).get("hooks")
+        if not isinstance(hooks, dict) or set(hooks) != set(HOOK_EVENTS):
+            raise ValueError("hook catalog does not contain the two expected events")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return [Check(
+            harness + ".hooks", "ERROR",
+            "%s installed hook catalog cannot be read" % harness.capitalize(),
+            _version_fix(harness),
+        )]
+
+    checks = []
+    for event in HOOK_EVENTS:
+        key = "%s.hook.%s" % (harness, _event_key(event))
+        try:
+            raw = hooks[event][0]["hooks"][0]["command"]
+            argv = _hook_command(raw, plugin_root)
+            gate_at = argv.index("gate")
+            payload = Path(argv[gate_at + 1])
+            expected = payload.read_text(encoding="utf-8")
+        except (IndexError, KeyError, OSError, TypeError, ValueError):
+            checks.append(Check(
+                key, "ERROR", "%s %s hook definition is unreadable"
+                % (harness.capitalize(), event), _version_fix(harness),
+            ))
+            continue
+
+        env = dict(os.environ)
+        env.pop("RETRO_HOME", None)
+        env["CLAUDE_CODE_SESSION_ID" if harness == "claude" else "CODEX_SESSION_ID"] = (
+            "p-doctor-check"
+        )
+        try:
+            completed = runner(
+                argv,
+                input=json.dumps({
+                    "session_id": "p-doctor-check",
+                    "hook_event_name": event,
+                }),
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                env=env,
+            )
+        except OSError:
+            checks.append(Check(
+                key, "ERROR", "%s %s hook command could not start"
+                % (harness.capitalize(), event),
+                "Install a POSIX sh and Python 3, then rerun p doctor.",
+            ))
+            continue
+
+        stderr = str(getattr(completed, "stderr", "") or "")
+        code = int(getattr(completed, "returncode", 2))
+        if code != 0 and "python-launcher: Python 3 not found" in stderr:
+            checks.append(Check(
+                key, "FAIL", "%s %s hook failed because Python 3 is unavailable"
+                % (harness.capitalize(), event),
+                "Install Python 3 or set POLSTOOLS_PYTHON to one executable path, then rerun p doctor.",
+            ))
+        elif code != 0:
+            checks.append(Check(
+                key, "FAIL", "%s %s hook exited %d"
+                % (harness.capitalize(), event, code), _version_fix(harness),
+            ))
+        elif getattr(completed, "stdout", "") != expected:
+            checks.append(Check(
+                key, "FAIL", "%s %s hook output differs from its payload"
+                % (harness.capitalize(), event), _version_fix(harness),
+            ))
+        else:
+            checks.append(Check(
+                key, "PASS", "%s %s hook exits 0 with byte-exact output"
+                % (harness.capitalize(), event),
+            ))
+    return checks
+
+
+def _find_executable(name):
+    override = os.environ.get("P_DOCTOR_" + name.upper())
+    if override:
+        candidate = Path(override)
+        return str(candidate) if candidate.is_file() else None
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.name != "nt":
+        candidate = Path.home() / ".local" / "bin" / name
+        return str(candidate) if candidate.is_file() else None
+    if name == "claude":
+        candidates = [Path.home() / ".local" / "bin" / "claude.exe"]
+    else:
+        local = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        candidates = [
+            local / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
+        ]
+    return next((str(path) for path in candidates if path.is_file()), None)
+
+
+def _run_json(executable, args):
+    completed = subprocess.run(
+        [executable, *args], text=True, encoding="utf-8",
+        capture_output=True, check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("command exited %d" % completed.returncode)
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError("command returned invalid JSON") from error
+
+
+def _local_expected_version(harness, marketplaces):
+    if harness == "claude":
+        if not isinstance(marketplaces, list):
+            raise ValueError("Claude marketplace JSON must be an array")
+        item = next((row for row in marketplaces
+                     if isinstance(row, dict) and row.get("name") == "polstools"), None)
+        if item and item.get("source") in {"directory", "local"}:
+            return marketplace_version(item.get("path") or item.get("installLocation") or "")
+        return None
+    if not isinstance(marketplaces, dict) or not isinstance(
+        marketplaces.get("marketplaces"), list
+    ):
+        raise ValueError("Codex marketplace JSON must contain marketplaces[]")
+    item = next((row for row in marketplaces["marketplaces"]
+                 if isinstance(row, dict) and row.get("name") == "polstools"), None)
+    source = item.get("marketplaceSource") if isinstance(item, dict) else None
+    if item and isinstance(source, dict) and source.get("sourceType") == "local":
+        return marketplace_version(item.get("root") or "")
+    return None
+
+
+def exit_code(checks):
+    statuses = {check.status for check in checks}
+    if "ERROR" in statuses:
+        return 2
+    if "FAIL" in statuses:
+        return 1
+    return 0
+
+
+def render(checks, expected_version):
+    lines = ["p doctor — expected p %s" % expected_version]
+    for check in checks:
+        lines.append("[%s] %s — %s" % (check.status, check.key, check.summary))
+        if check.fix:
+            lines.append("  FIX " + check.fix)
+    counts = {status: 0 for status in ("PASS", "FAIL", "SKIP", "ERROR")}
+    for check in checks:
+        counts[check.status] = counts.get(check.status, 0) + 1
+    lines.append(
+        "RESULT: %d passed, %d flagged, %d skipped, %d unavailable"
+        % (counts["PASS"], counts["FAIL"], counts["SKIP"], counts["ERROR"])
+    )
+    return "\n".join(lines) + "\n"
+
+
+def collect(repo_root=None):
+    self_version = _manifest_version()
+    override_version = marketplace_version(repo_root) if repo_root else None
+    if repo_root and not override_version:
+        return self_version, [Check(
+            "repository.manifest", "ERROR",
+            "the requested repository marketplace manifest is unreadable",
+        )]
+    checks = [Check(
+        "package.manifest", "PASS",
+        "running package declares p version %s" % self_version,
+    )]
+    installed_by_harness = {}
+
+    for harness in ("claude", "codex"):
+        executable = _find_executable(harness)
+        if not executable:
+            checks.append(Check(
+                harness + ".cli", "SKIP",
+                "%s CLI is unavailable" % harness.capitalize(),
+            ))
+            installed_by_harness[harness] = []
+            continue
+        try:
+            plugin_payload = _run_json(executable, ["plugin", "list", "--json"])
+            market_payload = _run_json(
+                executable, ["plugin", "marketplace", "list", "--json"]
+            )
+            plugins = (
+                normalize_claude_plugins(plugin_payload)
+                if harness == "claude" else normalize_codex_plugins(plugin_payload)
+            )
+            local_version = _local_expected_version(harness, market_payload)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            checks.append(Check(
+                harness + ".query", "ERROR",
+                "%s plugin state could not be queried" % harness.capitalize(),
+                "Run `%s plugin list --json` directly, repair that error, then rerun p doctor."
+                % harness,
+            ))
+            installed_by_harness[harness] = []
+            continue
+
+        expected = override_version or local_version or self_version
+        checks.extend(evaluate_harness(harness, plugins, expected))
+        installed = [item for item in plugins if item.get("id") == PLUGIN_ID]
+        installed_by_harness[harness] = installed
+        if len(installed) == 1 and installed[0].get("enabled"):
+            root = installed[0].get("root")
+            if root:
+                checks.extend(probe_plugin_hooks(harness, root))
+            else:
+                checks.append(Check(
+                    harness + ".hooks", "ERROR",
+                    "%s did not report the installed plugin root" % harness.capitalize(),
+                    _version_fix(harness, installed[0].get("scope", "user")),
+                ))
+
+    versions = {
+        items[0].get("version") for items in installed_by_harness.values()
+        if len(items) == 1 and items[0].get("version")
+    }
+    if len(versions) > 1:
+        checks.append(Check(
+            "cross_harness.version", "FAIL",
+            "Claude and Codex load different p versions",
+            "Update both p@polstools installations, then start new sessions.",
+        ))
+    elif versions:
+        checks.append(Check(
+            "cross_harness.version", "PASS",
+            "installed harnesses agree on p version %s" % next(iter(versions)),
+        ))
+    return override_version or self_version, checks
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo-root",
+        help="compare installations with this local marketplace root",
+    )
+    parser.add_argument("--json", action="store_true", help="emit path-free JSON")
+    args = parser.parse_args(argv)
+    try:
+        expected, checks = collect(args.repo_root)
+    except (OSError, ValueError, json.JSONDecodeError):
+        print("p doctor: package manifest cannot be read", file=sys.stderr)
+        return 2
+    code = exit_code(checks)
+    if args.json:
+        print(json.dumps({
+            "expectedVersion": expected,
+            "checks": [check._asdict() for check in checks],
+            "exitCode": code,
+        }, indent=2, sort_keys=True))
+    else:
+        sys.stdout.write(render(checks, expected))
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
