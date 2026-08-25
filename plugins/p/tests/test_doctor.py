@@ -7,6 +7,7 @@ import unittest
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PLUGIN_ROOT.parents[1]
 DOCTOR_PATH = PLUGIN_ROOT / "bin" / "p-doctor"
 SKILL_PATH = PLUGIN_ROOT / "skills" / "doctor" / "SKILL.md"
 
@@ -229,6 +230,21 @@ class SchemaAndPackagingTests(unittest.TestCase):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/python-launcher", skill)
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/p-doctor", skill)
         self.assertIn("exit code", skill)
+
+    def test_release_metadata_uses_feature_version(self):
+        marketplace = json.loads(
+            (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        entry = next(item for item in marketplace["plugins"] if item["name"] == "p")
+        self.assertEqual("1.6.0", entry["version"])
+        self.assertEqual("1.6.0", manifest["version"])
 
 
 if __name__ == "__main__":
