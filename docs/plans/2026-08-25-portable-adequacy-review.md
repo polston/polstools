@@ -15,7 +15,7 @@ clusters, and deterministically applies agreement, ranking, and caps.
 | Outcome | Claude Code and Codex execute equivalent blinded ensemble review from one plugin-owned contract. |
 | Done when | Focused and full tests, format, installed-copy validation, privacy, diff hygiene, and Codex adequacy review pass on a committed branch. |
 | Protected scope | Preserve current review semantics, activation, command compatibility, dependency-free runtime, privacy, and unrelated plugin behavior. |
-| Review gate | Present the committed branch, this plan, exact validation, and Codex review evidence before local integration. |
+| Review gate | Present the committed branch, the sealed requirements specification, this progress plan, exact validation, and Codex review evidence before local integration. |
 
 ## Capability matrix
 
@@ -51,6 +51,9 @@ Sources:
    restates review policy.
 5. The legacy JavaScript workflow is removed after equivalent contract tests
    pass; it is not retained as a second editable recipe.
+6. `2026-08-25-portable-adequacy-review-spec.md` is the requirements-only
+   review input. This evolving plan is progress evidence and is never passed to
+   a cold reviewer.
 
 ## Implementation checklist and evidence
 
@@ -59,9 +62,9 @@ Sources:
 | Recover state and isolate work | Done | Main was clean and synchronized; task branch began at `2e6c053`. |
 | Verify current harness capabilities | Done | Official documentation supports skills plus native subagent orchestration in both harnesses. |
 | RED: portable contract and drift detection | Done | Initial run: 4 tests with 2 failures and 5 missing-file errors; validator RED: 9 tests with 2 drift-detection failures. |
-| GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; review-finding RED failed 4 assertions and 3 errors, then all 13 focused tests passed. |
+| GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; review-finding RED failed 4 assertions and 3 errors, then all 13 focused tests passed. Protocol RED then failed 5 assertions and 2 errors; all 17 focused tests now pass. |
 | Installed-copy and release wiring | Done | Source, Claude copy, and Codex copy pass 3/3; README, activation, auto-discovered CI tests, and 1.9.0 metadata agree. |
-| Codex adequacy review | In progress | First K=4 review found four stable important defects; all have focused regressions and fixes, with second review pending. |
+| Codex adequacy review | In progress | First K=4 review found four stable important defects; all have focused regressions and fixes. A contaminated rerun was discarded before a clean requirements-only rerun. |
 | Full validation and commit | In progress | Pre-review: 309 tests passed with one skip; format 36/36; privacy zero; diff check passed. |
 | Skill refinement review | Pending | Reusable drafting friction is assessed before completion. |
 
@@ -90,6 +93,8 @@ git diff --check
 | 2026-08-25 | Stale-doc sweep | Current workflow claims in AGENTS.md, CLAUDE.md, and README were replaced; historical plans remained unchanged. |
 | 2026-08-25 | Codex review 1 | K=4 found schema transport, exact-key consensus, multibyte fallback, and unchecked-disclosure defects at agreement 3/4, 4/4, 4/4, and 2/4. |
 | 2026-08-25 | Review-fix GREEN | Embedded schemas, native semantic clustering, Unicode-safe references, unchecked propagation, and complete schema validation pass 13 focused tests and installed copies 3/3. |
+| 2026-08-25 | Protocol RED | Requirements-only review input, mandatory unchecked disclosure, visible stable-cap truncation, and nested schema contradiction checks failed 5 assertions and 2 errors. |
+| 2026-08-25 | Protocol GREEN | A separate sealed specification plus contract validation and rendering changes pass 17 focused tests and installed copies 3/3; diff hygiene passes. |
 
 ## Protected scope
 

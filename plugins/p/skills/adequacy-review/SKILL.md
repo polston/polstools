@@ -15,7 +15,8 @@ restate either in an adapter or improvise their behavior.
 
 1. Parse the invocation arguments: the first token or tokens identify a file,
    directory, or Git range; an optional `spec:` value identifies the sealed
-   plan or specification.
+   requirements-only specification. Never pass an evolving plan, progress log,
+   author rationale, prior review, or remediation history as the sealed spec.
 2. Identify the active harness from session context. Read exactly one adapter:
    - Claude Code: `references/claude-code.md`
    - Codex: `references/codex.md`

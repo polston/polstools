@@ -5,12 +5,12 @@
   },
   "inputs": {
     "target": "A file, directory, or Git range.",
-    "spec": "Optional sealed specification path.",
+    "spec": "Optional sealed requirements-only specification path. It must exclude author rationale, progress, prior reviews, and remediation history.",
     "repo": "Repository root used for grounding. Infer it when omitted."
   },
   "reviewer_schema": {
     "type": "object",
-    "required": ["verdict", "findings"],
+    "required": ["verdict", "findings", "unchecked"],
     "properties": {
       "verdict": {
         "type": "string",
@@ -107,6 +107,7 @@
     "stable_heading": "Ensemble-stable findings",
     "contested_heading": "Contested / single-reviewer / taste",
     "unchecked_heading": "Unchecked behavior",
+    "stable_omitted_line": "Additional ensemble-stable findings omitted by cap: {count}.",
     "clean_line": "Clean: no important or critical finding reached ensemble agreement.",
     "semantic_instruction": "Group every finding exactly once by semantic root-cause equivalence. Match paraphrases of the same defect even when agreement_key differs; keep distinct defects separate even when a generic key matches. Return only finding references in the embedded schema."
   }

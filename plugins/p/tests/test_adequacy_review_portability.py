@@ -15,6 +15,9 @@ CONTRACT_PATH = SKILL_ROOT / "contract-v1.json"
 HELPER_PATH = SKILL_ROOT / "scripts" / "adequacy_review.py"
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "adequacy-review-v1.json"
 VALIDATOR_PATH = PLUGIN_ROOT / "bin" / "p_validate.py"
+SEALED_SPEC_PATH = (
+    REPO_ROOT / "docs" / "plans" / "2026-08-25-portable-adequacy-review-spec.md"
+)
 
 
 def load_helper():
@@ -43,7 +46,7 @@ class AdequacyReviewContractTests(unittest.TestCase):
             contract["distillation"]["severity_order"],
         )
         self.assertEqual(
-            ["verdict", "findings"],
+            ["verdict", "findings", "unchecked"],
             contract["reviewer_schema"]["required"],
         )
         finding = contract["reviewer_schema"]["properties"]["findings"]["items"]
@@ -86,6 +89,14 @@ class AdequacyReviewContractTests(unittest.TestCase):
     def test_legacy_claude_only_workflow_is_removed(self):
         self.assertFalse((PLUGIN_ROOT / "workflows" / "adequacy-review.js").exists())
 
+    def test_sealed_spec_contains_requirements_without_review_history(self):
+        spec = SEALED_SPEC_PATH.read_text(encoding="utf-8")
+        self.assertIn("## Requirements", spec)
+        self.assertIn("## Acceptance evidence", spec)
+        self.assertIn("## Protected scope", spec)
+        for leaked_history in ("Progress log", "Codex review", "review-fix", "commit `"):
+            self.assertNotIn(leaked_history, spec)
+
 
 class AdequacyReviewParityTests(unittest.TestCase):
     @classmethod
@@ -114,6 +125,11 @@ class AdequacyReviewParityTests(unittest.TestCase):
         self.assertIn("DISTILLER RESPONSE SCHEMA", request["prompt"])
         self.assertIn(json.dumps(request["schema"], sort_keys=True), request["prompt"])
         self.assertIn("Cache entries survive invalidation", request["prompt"])
+
+    def test_review_without_unchecked_disclosure_is_rejected(self):
+        review = {"verdict": "good", "findings": []}
+        with self.assertRaisesRegex(self.helper.ContractError, "unchecked"):
+            self.helper.build_distiller_request([review])
 
     def test_fake_reviewers_produce_equivalent_stable_and_contested_results(self):
         results = []
@@ -172,10 +188,45 @@ class AdequacyReviewParityTests(unittest.TestCase):
         self.assertEqual("缓存失效", result["contested"][0]["issue"])
         self.assertEqual(["Runtime integration was not executed."], result["unchecked"])
 
+    def test_stable_cap_is_disclosed_in_rendered_output(self):
+        reviews = []
+        for reviewer in range(2):
+            reviews.append(
+                {
+                    "verdict": "has-issues",
+                    "unchecked": [],
+                    "findings": [
+                        {
+                            "issue": "Reviewer %d issue %d" % (reviewer + 1, finding + 1),
+                            "severity": "important",
+                        }
+                        for finding in range(6)
+                    ],
+                }
+            )
+        clusters = {
+            "clusters": [
+                {
+                    "finding_refs": [
+                        {"review": 1, "finding": finding},
+                        {"review": 2, "finding": finding},
+                    ]
+                }
+                for finding in range(1, 7)
+            ]
+        }
+        result = self.helper.distill_reviews(reviews, clusters)
+        self.assertEqual(1, result["stable_omitted"])
+        self.assertIn(
+            "Additional ensemble-stable findings omitted by cap: 1.",
+            result["distilled"],
+        )
+
 
 class AdequacyReviewInstalledCopyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.helper = load_helper()
         cls.validator = load_validator()
 
     def test_helper_self_check_runs_from_an_installed_copy(self):
@@ -243,6 +294,26 @@ class AdequacyReviewInstalledCopyTests(unittest.TestCase):
             contract_path.write_text(json.dumps(contract), encoding="utf-8")
             errors = self.validator.validate_package(plugin)
         self.assertIn("adequacy-review contract self-check failed", errors)
+
+    def test_contract_rejects_nested_schema_contradictions(self):
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        mutations = {
+            "finding issue type": lambda value: value["reviewer_schema"]["properties"][
+                "findings"
+            ]["items"]["properties"]["issue"].update(type="integer"),
+            "clusters type": lambda value: value["distiller_schema"]["properties"][
+                "clusters"
+            ].update(type="string"),
+            "defaults container": lambda value: value.update(defaults=[]),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                changed = json.loads(json.dumps(contract))
+                mutate(changed)
+                path = Path(tmp) / "contract.json"
+                path.write_text(json.dumps(changed), encoding="utf-8")
+                with self.assertRaises(self.helper.ContractError):
+                    self.helper.load_contract(path)
 
 
 if __name__ == "__main__":

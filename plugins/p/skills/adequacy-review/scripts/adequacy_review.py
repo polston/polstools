@@ -47,6 +47,18 @@ def load_contract(path=CONTRACT_PATH):
     distiller_schema = contract["distiller_schema"]
     review = contract["review"]
     distillation = contract["distillation"]
+    if not all(
+        isinstance(value, dict)
+        for value in (
+            defaults,
+            inputs,
+            reviewer_schema,
+            distiller_schema,
+            review,
+            distillation,
+        )
+    ):
+        raise ContractError("adequacy-review contract containers are invalid")
     if not isinstance(defaults.get("reviewers"), int) or defaults["reviewers"] < 1:
         raise ContractError("default reviewer count must be positive")
     if not isinstance(inputs, dict) or set(inputs) != {"target", "spec", "repo"}:
@@ -64,32 +76,58 @@ def load_contract(path=CONTRACT_PATH):
     if reviewer_schema.get("type") != "object" or reviewer_schema.get("required") != [
         "verdict",
         "findings",
+        "unchecked",
     ]:
         raise ContractError("reviewer schema root is invalid")
-    if reviewer_properties.get("verdict", {}).get("enum") != ["good", "has-issues"]:
-        raise ContractError("reviewer verdict schema is invalid")
-    if findings_schema.get("type") != "array" or finding_schema.get("required") != [
-        "issue",
-        "severity",
+    verdict_schema = reviewer_properties.get("verdict", {})
+    if verdict_schema.get("type") != "string" or verdict_schema.get("enum") != [
+        "good",
+        "has-issues",
     ]:
+        raise ContractError("reviewer verdict schema is invalid")
+    if (
+        findings_schema.get("type") != "array"
+        or finding_schema.get("type") != "object"
+        or finding_schema.get("required") != ["issue", "severity"]
+    ):
         raise ContractError("reviewer finding schema is invalid")
-    if finding_schema.get("properties", {}).get("severity", {}).get("enum") != [
+    finding_properties = finding_schema.get("properties", {})
+    if not isinstance(finding_properties, dict):
+        raise ContractError("reviewer finding schema is invalid")
+    if finding_properties.get("issue", {}).get("type") != "string":
+        raise ContractError("reviewer issue schema is invalid")
+    severity_schema = finding_properties.get("severity", {})
+    if severity_schema.get("type") != "string" or severity_schema.get("enum") != [
         "critical",
         "important",
         "suggestion",
     ]:
         raise ContractError("reviewer severity schema is invalid")
+    for field in ("where", "agreement_key"):
+        if finding_properties.get(field, {}).get("type") != "string":
+            raise ContractError("reviewer optional field schema is invalid")
     if unchecked_schema.get("type") != "array" or unchecked_schema.get("items", {}).get(
         "type"
     ) != "string":
         raise ContractError("reviewer unchecked schema is invalid")
-    if distiller_schema.get("type") != "object" or distiller_schema.get("required") != [
-        "clusters"
-    ]:
+    clusters_schema = distiller_properties.get("clusters", {})
+    if (
+        distiller_schema.get("type") != "object"
+        or distiller_schema.get("required") != ["clusters"]
+        or clusters_schema.get("type") != "array"
+    ):
         raise ContractError("distiller schema root is invalid")
-    if cluster_schema.get("required") != ["finding_refs"]:
+    finding_refs_schema = cluster_schema.get("properties", {}).get("finding_refs", {})
+    if (
+        cluster_schema.get("type") != "object"
+        or cluster_schema.get("required") != ["finding_refs"]
+        or finding_refs_schema.get("type") != "array"
+    ):
         raise ContractError("distiller cluster schema is invalid")
-    if reference_schema.get("required") != ["review", "finding"]:
+    if reference_schema.get("type") != "object" or reference_schema.get("required") != [
+        "review",
+        "finding",
+    ]:
         raise ContractError("distiller finding reference schema is invalid")
     for field in ("review", "finding"):
         value = reference_schema.get("properties", {}).get(field, {})
@@ -128,6 +166,7 @@ def load_contract(path=CONTRACT_PATH):
         "stable_heading",
         "contested_heading",
         "unchecked_heading",
+        "stable_omitted_line",
         "clean_line",
         "semantic_instruction",
     ):
@@ -219,7 +258,7 @@ def _validate_review(review, index, contract):
     findings = review.get("findings")
     if not isinstance(findings, list):
         raise ContractError("review %d findings must be an array" % (index + 1))
-    unchecked = review.get("unchecked", [])
+    unchecked = review.get("unchecked")
     if not isinstance(unchecked, list) or not all(isinstance(item, str) for item in unchecked):
         raise ContractError("review %d unchecked must be an array of strings" % (index + 1))
     severities = set(contract["distillation"]["severity_order"])
@@ -401,17 +440,22 @@ def distill_reviews(reviews, clusters, unchecked=None):
             seen_unchecked.add(item)
             unchecked.append(item)
     important = any(item["severity"] in ("critical", "important") for item in stable)
+    stable_omitted = max(0, len(stable_groups) - stable_cap)
     sections = []
     if not important:
         sections.append(distillation["clean_line"])
     sections.extend(_render_findings(distillation["stable_heading"], stable))
+    if stable_omitted:
+        sections.append(
+            distillation["stable_omitted_line"].format(count=stable_omitted)
+        )
     sections.append("")
     sections.extend(_render_findings(distillation["contested_heading"], contested))
     sections.extend(["", "## " + distillation["unchecked_heading"]])
     sections.extend(["- " + item for item in unchecked] or ["None disclosed."])
     return {
         "stable": stable,
-        "stable_omitted": max(0, len(stable_groups) - stable_cap),
+        "stable_omitted": stable_omitted,
         "contested": contested,
         "unchecked": unchecked,
         "reviewer_verdicts": [review["verdict"] for review in checked],
