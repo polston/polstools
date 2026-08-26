@@ -47,7 +47,7 @@ class HarnessEvaluationTests(unittest.TestCase):
         self.assertEqual("PASS", found["claude.obsolete"].status)
         self.assertEqual(0, self.doctor.exit_code(checks))
 
-    def test_stale_install_is_flagged_with_harness_specific_repair(self):
+    def test_stale_install_is_flagged_with_guarded_cross_harness_repair(self):
         checks = self.doctor.evaluate_harness(
             "codex",
             [{
@@ -62,8 +62,7 @@ class HarnessEvaluationTests(unittest.TestCase):
         version = self._by_key(checks)["codex.version"]
         self.assertEqual("FAIL", version.status)
         self.assertIn("1.5.13", version.summary)
-        self.assertIn("codex plugin remove p@polstools", version.fix)
-        self.assertIn("codex plugin add p@polstools", version.fix)
+        self.assertIn("p-update", version.fix)
         self.assertEqual(1, self.doctor.exit_code(checks))
 
     def test_obsolete_polstools_ids_are_flagged(self):
@@ -270,9 +269,9 @@ class SchemaAndPackagingTests(unittest.TestCase):
             )
         )
         entry = next(item for item in marketplace["plugins"] if item["name"] == "p")
-        self.assertEqual("1.8.0", entry["version"])
-        self.assertEqual("1.8.0", manifest["version"])
-        self.assertEqual("1.8.0", codex_manifest["version"])
+        self.assertEqual("1.8.1", entry["version"])
+        self.assertEqual("1.8.1", manifest["version"])
+        self.assertEqual("1.8.1", codex_manifest["version"])
         self.assertEqual(manifest["description"], codex_manifest["description"])
 
 

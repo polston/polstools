@@ -113,6 +113,10 @@
       "source": "skill",
       "requires": ["core"]
     },
+    "update": {
+      "source": "skill",
+      "requires": ["control-plane"]
+    },
     "work": {
       "source": "skill",
       "requires": ["control-plane"]

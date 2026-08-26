@@ -163,12 +163,7 @@ def _scope(value):
 
 
 def _version_fix(harness, scope="user"):
-    if harness == "claude":
-        return "Run `claude plugin update p@polstools --scope %s`, then start a new session." % _scope(scope)
-    return (
-        "Run `codex plugin remove p@polstools`, then "
-        "`codex plugin add p@polstools`, then start a new session."
-    )
+    return "Run p's `p-update` guard, then start new sessions."
 
 
 def _remove_fix(harness, plugin_ids, scope="user"):
@@ -486,7 +481,7 @@ def collect(repo_root=None):
         checks.append(Check(
             "cross_harness.version", "FAIL",
             "Claude and Codex load different p versions",
-            "Update both p@polstools installations, then start new sessions.",
+            "Run p's `p-update` guard, then start new sessions.",
         ))
     elif versions:
         checks.append(Check(

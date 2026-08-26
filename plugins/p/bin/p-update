@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Update p across available harnesses without breaking live Codex sessions.
+
+Codex reinstalls replace its versioned plugin cache. Before that mutation this
+command copies every existing p snapshot to a durable recovery directory and
+restores any removed versions afterward. Sessions already using those paths
+therefore keep their original files; new sessions discover the new version.
+
+Exit: 0 updated and verified, 1 updated but doctor flagged drift, 2 could not
+complete safely.
+"""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+PLUGIN_ID = "p@polstools"
+MARKETPLACE = "polstools"
+
+
+class UpdateError(RuntimeError):
+    """A safe update precondition or command failed."""
+
+
+def _command_label(argv):
+    executable = Path(str(argv[0])).stem
+    return " ".join([executable, *[str(item) for item in argv[1:]]])
+
+
+def run_checked(argv):
+    completed = subprocess.run(
+        argv,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise UpdateError(
+            "%s exited %d" % (_command_label(argv), completed.returncode)
+        )
+    return completed
+
+
+def run_json(executable, args):
+    completed = run_checked([executable, *args])
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise UpdateError("%s returned invalid JSON" % _command_label([executable, *args])) from error
+
+
+def _installed(payload, harness):
+    items = payload if harness == "claude" else payload.get("installed", [])
+    if not isinstance(items, list):
+        raise UpdateError("%s plugin list has an unsupported shape" % harness.capitalize())
+    key = "id" if harness == "claude" else "pluginId"
+    matches = [item for item in items if isinstance(item, dict) and item.get(key) == PLUGIN_ID]
+    if len(matches) != 1:
+        raise UpdateError("%s must have exactly one p installation" % harness.capitalize())
+    return matches[0]
+
+
+def _codex_marketplace_is_git(payload):
+    rows = payload.get("marketplaces") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise UpdateError("Codex marketplace list has an unsupported shape")
+    item = next(
+        (row for row in rows if isinstance(row, dict) and row.get("name") == MARKETPLACE),
+        None,
+    )
+    if item is None:
+        raise UpdateError("Codex has no polstools marketplace")
+    source = item.get("marketplaceSource")
+    return isinstance(source, dict) and source.get("sourceType") == "git"
+
+
+def codex_cache_root(env=None):
+    env = os.environ if env is None else env
+    home = Path(env.get("CODEX_HOME") or (Path.home() / ".codex"))
+    return home / "plugins" / "cache" / MARKETPLACE / "p"
+
+
+def update_state_root(env=None):
+    env = os.environ if env is None else env
+    override = env.get("P_UPDATE_STATE_DIR")
+    if override:
+        return Path(override)
+    home = Path(env.get("CODEX_HOME") or (Path.home() / ".codex"))
+    return home / "p-update"
+
+
+def reconcile_cache_versions(cache_root, backup_root):
+    cache_root = Path(cache_root)
+    backup_root = Path(backup_root)
+    restored = []
+    if not backup_root.is_dir():
+        return restored
+    cache_root.mkdir(parents=True, exist_ok=True)
+    for source in sorted(path for path in backup_root.iterdir() if path.is_dir()):
+        target = cache_root / source.name
+        if not target.exists():
+            shutil.copytree(source, target, symlinks=True)
+            restored.append(source.name)
+    return restored
+
+
+@contextmanager
+def preserve_cache_versions(cache_root, backup_root):
+    cache_root = Path(cache_root)
+    backup_root = Path(backup_root)
+    reconcile_cache_versions(cache_root, backup_root)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    for source in sorted(path for path in cache_root.iterdir() if path.is_dir()):
+        target = backup_root / source.name
+        if not target.exists():
+            shutil.copytree(source, target, symlinks=True)
+    try:
+        yield
+    finally:
+        reconcile_cache_versions(cache_root, backup_root)
+
+
+def update_codex(
+    runner,
+    cache_root,
+    installed_version,
+    refresh_marketplace,
+    executable="codex",
+    backup_root=None,
+):
+    cache_root = Path(cache_root)
+    backup_root = Path(backup_root or (update_state_root() / "cache-snapshots"))
+    reconcile_cache_versions(cache_root, backup_root)
+    snapshot = cache_root / installed_version
+    if not snapshot.is_dir():
+        raise UpdateError(
+            "Codex cache snapshot for installed p %s is missing; refusing removal"
+            % installed_version
+        )
+    with preserve_cache_versions(cache_root, backup_root):
+        if refresh_marketplace:
+            runner([executable, "plugin", "marketplace", "upgrade", MARKETPLACE])
+        runner([executable, "plugin", "remove", PLUGIN_ID])
+        runner([executable, "plugin", "add", PLUGIN_ID])
+
+
+def update_claude(runner, scope, executable="claude"):
+    safe_scope = scope if scope in {"user", "project", "local", "managed"} else "user"
+    runner([executable, "plugin", "update", PLUGIN_ID, "--scope", safe_scope])
+
+
+def _find_executable(name):
+    override = os.environ.get("P_UPDATE_" + name.upper())
+    if override:
+        return override if Path(override).is_file() else None
+    return shutil.which(name)
+
+
+def _new_doctor_root(claude_item, codex_item):
+    if claude_item:
+        root = claude_item.get("installPath")
+        if root and (Path(root) / "bin" / "p-doctor").is_file():
+            return Path(root)
+    if codex_item:
+        source = codex_item.get("source")
+        root = source.get("path") if isinstance(source, dict) else None
+        if root and (Path(root) / "bin" / "p-doctor").is_file():
+            return Path(root)
+    raise UpdateError("updated p doctor could not be located")
+
+
+def _verify_versions(claude, codex):
+    installed = []
+    if claude:
+        installed.append(_installed(run_json(claude, ["plugin", "list", "--json"]), "claude"))
+    if codex:
+        installed.append(_installed(run_json(codex, ["plugin", "list", "--json"]), "codex"))
+    versions = {str(item.get("version") or "") for item in installed}
+    if len(versions) != 1 or "" in versions:
+        raise UpdateError("Claude and Codex did not converge on one p version")
+    return next(iter(versions))
+
+
+def run_doctor(plugin_root, runner=subprocess.run, stream=None):
+    stream = sys.stdout if stream is None else stream
+    completed = runner(
+        [sys.executable, str(Path(plugin_root) / "bin" / "p-doctor")],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+    if completed.stdout:
+        stream.write(completed.stdout)
+    return completed.returncode if completed.returncode in {0, 1, 2} else 2
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args(argv)
+    claude = _find_executable("claude")
+    codex = _find_executable("codex")
+    if not claude and not codex:
+        print("p update: neither Claude nor Codex CLI is available", file=sys.stderr)
+        return 2
+
+    try:
+        claude_item = None
+        codex_item = None
+        if claude:
+            claude_item = _installed(
+                run_json(claude, ["plugin", "list", "--json"]), "claude"
+            )
+            update_claude(run_checked, claude_item.get("scope", "user"), claude)
+            print("PASS Claude p update")
+
+        if codex:
+            codex_item = _installed(
+                run_json(codex, ["plugin", "list", "--json"]), "codex"
+            )
+            marketplaces = run_json(codex, ["plugin", "marketplace", "list", "--json"])
+            update_codex(
+                run_checked,
+                codex_cache_root(),
+                str(codex_item.get("version") or ""),
+                _codex_marketplace_is_git(marketplaces),
+                codex,
+            )
+            print("PASS Codex p update with live-session cache preservation")
+
+        version = _verify_versions(claude, codex)
+        current_claude = (
+            _installed(run_json(claude, ["plugin", "list", "--json"]), "claude")
+            if claude else None
+        )
+        current_codex = (
+            _installed(run_json(codex, ["plugin", "list", "--json"]), "codex")
+            if codex else None
+        )
+        doctor_root = _new_doctor_root(current_claude, current_codex)
+        doctor_code = run_doctor(doctor_root)
+        if doctor_code:
+            return doctor_code
+        print("PASS p update verified at %s; start new sessions to load it" % version)
+        return 0
+    except (OSError, UpdateError) as error:
+        print("p update: %s" % error, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

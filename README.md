@@ -44,21 +44,15 @@ harness could not be checked.
 
 ## Update
 
-Claude Code has a direct update command:
+Use the plugin-owned updater from a checkout or installed plugin root:
 
 ```sh
-claude plugin update p@polstools --scope user
+sh plugins/p/bin/python-launcher plugins/p/bin/p-update
 ```
 
-Codex refreshes the marketplace, then reinstalls the package from it:
-
-```sh
-codex plugin marketplace upgrade polstools
-codex plugin remove p@polstools
-codex plugin add p@polstools
-```
-
-Start a new session after either update.
+It updates both available harnesses, preserves prior Codex cache snapshots so
+already-running sessions keep valid skill paths, and finishes by running the
+newly installed doctor. Start new sessions to load the new version.
 
 ## Local development
 
@@ -89,7 +83,7 @@ Start a new session, then run the doctor against `<repo-root>`.
 
 | Area | Skills or commands | Purpose |
 |---|---|---|
-| Plugin health | `doctor` | Compare both live installs and execute both format hooks |
+| Plugin health | `doctor`, `update` | Compare both live installs, execute both format hooks, and update without breaking active sessions |
 | Skill activation | `home`, `work`, `managing-skill-activation` | Switch session profiles and manage defaults or overrides |
 | Repository safety | `auditing-a-repo-for-private-data`, `checking-branch-base-before-a-pr`, `finding-what-a-change-made-false` | Catch private data, branch-base mistakes, and documentation drift |
 | Workflow evidence | `auditing-workflow-rules-against-behavior`, `counting-stopped-promises`, `deciding-the-prompt-cache-ttl`, `finding-friction-in-recent-sessions`, `scouting-tools-for-open-frictions` | Measure recurring friction before changing rules or tools |
