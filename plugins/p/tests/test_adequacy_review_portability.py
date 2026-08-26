@@ -57,8 +57,12 @@ class AdequacyReviewContractTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            ["verdict", "findings", "unchecked"],
+            ["request_id", "verdict", "findings", "unchecked"],
             contract["reviewer_schema"]["required"],
+        )
+        self.assertEqual(
+            ["clusters", "reviews_sha256"],
+            contract["distiller_schema"]["required"],
         )
         finding = contract["reviewer_schema"]["properties"]["findings"]["items"]
         self.assertEqual(["issue", "severity"], finding["required"])
@@ -91,6 +95,7 @@ class AdequacyReviewContractTests(unittest.TestCase):
             )
             self.assertIn("--exclude", text)
             self.assertIn("--packet-file", text)
+            self.assertIn("canonical request order", text)
 
     def test_render_policy_is_not_duplicated_in_helper(self):
         helper = HELPER_PATH.read_text(encoding="utf-8")
@@ -141,6 +146,19 @@ class AdequacyReviewParityTests(unittest.TestCase):
         cls.helper = load_helper()
         cls.fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
+    def _bound_reviews(self, reviews, packet):
+        bound = copy.deepcopy(reviews)
+        requests = packet["canonical"]["review_requests"]
+        for review, request in zip(bound, requests):
+            review["request_id"] = request["request_id"]
+        return bound
+
+    @staticmethod
+    def _bound_clusters(clusters, distiller_request):
+        bound = copy.deepcopy(clusters)
+        bound["reviews_sha256"] = distiller_request["reviews_sha256"]
+        return bound
+
     def test_adapters_receive_equivalent_canonical_packets(self):
         invocation = self.fixture["invocation"]
         claude = self.helper.build_packet("claude-code", **invocation)
@@ -156,6 +174,14 @@ class AdequacyReviewParityTests(unittest.TestCase):
         self.assertIn("unchecked", request["prompt"])
         self.assertIn("EXCLUDED AUTHOR CONTEXT", request["prompt"])
         self.assertIn("docs/plans/progress.md", request["prompt"])
+        request_ids = [
+            item["request_id"] for item in packet["canonical"]["review_requests"]
+        ]
+        self.assertEqual(4, len(set(request_ids)))
+        self.assertEqual(
+            request_ids[0], request["schema"]["properties"]["request_id"]["const"]
+        )
+        self.assertIn(request_ids[0], request["prompt"])
         self.assertEqual(
             ["docs/plans/progress.md"],
             packet["canonical"]["input"]["exclusions"],
@@ -174,16 +200,24 @@ class AdequacyReviewParityTests(unittest.TestCase):
         packet = self.helper.build_packet(
             "codex", **self.fixture["invocation"]
         )
+        reviews = self._bound_reviews(self.fixture["reviews"], packet)
         request = self.helper.build_distiller_request(
-            self.fixture["reviews"], packet
+            reviews, packet
         )
         self.assertIn("DISTILLER RESPONSE SCHEMA", request["prompt"])
         self.assertIn(json.dumps(request["schema"], sort_keys=True), request["prompt"])
         self.assertIn("Cache entries survive invalidation", request["prompt"])
+        self.assertEqual(
+            request["reviews_sha256"],
+            request["schema"]["properties"]["reviews_sha256"]["const"],
+        )
 
     def test_review_without_unchecked_disclosure_is_rejected(self):
         review = {"verdict": "good", "findings": []}
         packet = self.helper.build_packet("codex", "example.py", reviewers=1)
+        review["request_id"] = packet["canonical"]["review_requests"][0][
+            "request_id"
+        ]
         with self.assertRaisesRegex(self.helper.ContractError, "unchecked"):
             self.helper.build_distiller_request([review], packet)
 
@@ -191,11 +225,12 @@ class AdequacyReviewParityTests(unittest.TestCase):
         packet = self.helper.build_packet(
             "codex", **self.fixture["invocation"]
         )
+        reviews = self._bound_reviews(self.fixture["reviews"], packet)
         with self.assertRaisesRegex(self.helper.ContractError, "expected 4 reviewer"):
-            self.helper.build_distiller_request(self.fixture["reviews"][:3], packet)
+            self.helper.build_distiller_request(reviews[:3], packet)
         with self.assertRaisesRegex(self.helper.ContractError, "expected 4 reviewer"):
             self.helper.distill_reviews(
-                self.fixture["reviews"][:3],
+                reviews[:3],
                 {"clusters": []},
                 packet=packet,
             )
@@ -208,6 +243,43 @@ class AdequacyReviewParityTests(unittest.TestCase):
         packet["canonical"]["contract_sha256"] = "0" * 64
         with self.assertRaisesRegex(self.helper.ContractError, "packet contract"):
             self.helper.build_distiller_request(self.fixture["reviews"], packet)
+
+    def test_packet_prompt_and_stale_review_results_are_rejected(self):
+        packet_a = self.helper.build_packet("codex", "a.py", reviewers=1)
+        packet_b = self.helper.build_packet("codex", "b.py", reviewers=1)
+        reviews_a = self._bound_reviews(
+            [{"verdict": "good", "findings": [], "unchecked": []}], packet_a
+        )
+        with self.assertRaisesRegex(self.helper.ContractError, "request identity"):
+            self.helper.build_distiller_request(reviews_a, packet_b)
+        changed = copy.deepcopy(packet_a)
+        changed["canonical"]["review_requests"][0]["prompt"] = "altered"
+        with self.assertRaisesRegex(self.helper.ContractError, "canonical"):
+            self.helper.build_distiller_request(reviews_a, changed)
+
+    def test_stale_clusters_are_rejected_for_changed_reviews(self):
+        packet = self.helper.build_packet("codex", "example.py", reviewers=1)
+        reviews = self._bound_reviews(
+            [
+                {
+                    "verdict": "has-issues",
+                    "findings": [{"issue": "First", "severity": "important"}],
+                    "unchecked": [],
+                }
+            ],
+            packet,
+        )
+        request = self.helper.build_distiller_request(reviews, packet)
+        clusters = self._bound_clusters(
+            {"clusters": [{"finding_refs": [{"review": 1, "finding": 1}]}]},
+            request,
+        )
+        changed_reviews = copy.deepcopy(reviews)
+        changed_reviews[0]["findings"][0]["issue"] = "Changed"
+        with self.assertRaisesRegex(self.helper.ContractError, "reviews digest"):
+            self.helper.distill_reviews(
+                changed_reviews, clusters, packet=packet
+            )
 
     def test_multiline_reviewer_text_is_rejected_before_markdown_rendering(self):
         packet = self.helper.build_packet("codex", "example.py", reviewers=1)
@@ -223,11 +295,22 @@ class AdequacyReviewParityTests(unittest.TestCase):
                 agreement_key="key\rhidden"
             ),
             "unchecked": lambda review: review.update(unchecked=["x\n- injected"]),
+            "unicode separator": lambda review: review["findings"][0].update(
+                issue="x\u2028## injected"
+            ),
+            "next line": lambda review: review["findings"][0].update(
+                where="x.py:1\u0085hidden"
+            ),
+            "vertical tab": lambda review: review.update(unchecked=["x\vhidden"]),
+            "form feed": lambda review: review["findings"][0].update(
+                agreement_key="x\fhidden"
+            ),
         }
         for label, mutate in mutations.items():
             with self.subTest(label=label):
                 review = copy.deepcopy(base)
                 mutate(review)
+                review = self._bound_reviews([review], packet)[0]
                 with self.assertRaisesRegex(self.helper.ContractError, "single line"):
                     self.helper.build_distiller_request([review], packet)
 
@@ -284,6 +367,9 @@ class AdequacyReviewParityTests(unittest.TestCase):
             ]
         }
         packet = self.helper.build_packet("codex", "example.py", reviewers=2)
+        reviews = self._bound_reviews(reviews, packet)
+        request = self.helper.build_distiller_request(reviews, packet)
+        clusters = self._bound_clusters(clusters, request)
         result = self.helper.distill_reviews(reviews, clusters, packet=packet)
         self.assertEqual("2/2", result["stable"][0]["agreement"])
         self.assertEqual("缓存失效", result["contested"][0]["issue"])
@@ -317,6 +403,9 @@ class AdequacyReviewParityTests(unittest.TestCase):
             ]
         }
         packet = self.helper.build_packet("codex", "example.py", reviewers=2)
+        reviews = self._bound_reviews(reviews, packet)
+        request = self.helper.build_distiller_request(reviews, packet)
+        clusters = self._bound_clusters(clusters, request)
         result = self.helper.distill_reviews(reviews, clusters, packet=packet)
         self.assertEqual(1, result["stable_omitted"])
         self.assertIn(
@@ -413,6 +502,14 @@ class AdequacyReviewInstalledCopyTests(unittest.TestCase):
             "review step container": lambda value: value["review"].update(
                 required_steps=[7, 8]
             ),
+            "unsupported findings constraint": lambda value: value[
+                "reviewer_schema"
+            ]["properties"]["findings"].update(maxItems=0),
+            "unsupported reference constraint": lambda value: value[
+                "distiller_schema"
+            ]["properties"]["clusters"]["items"]["properties"][
+                "finding_refs"
+            ]["items"]["properties"]["review"].update(maximum=1),
         }
         for label, mutate in mutations.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:

@@ -62,9 +62,9 @@ Sources:
 | Recover state and isolate work | Done | Main was clean and synchronized; task branch began at `2e6c053`. |
 | Verify current harness capabilities | Done | Official documentation supports skills plus native subagent orchestration in both harnesses. |
 | RED: portable contract and drift detection | Done | Initial run: 4 tests with 2 failures and 5 missing-file errors; validator RED: 9 tests with 2 drift-detection failures. |
-| GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; successive review-driven RED waves failed 4 assertions/3 errors, 5 assertions/2 errors, 5 failures/8 errors, and 10 failures/5 errors; all 24 focused tests now pass. |
+| GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; successive review-driven RED waves failed 4 assertions/3 errors, 5 assertions/2 errors, 5 failures/8 errors, 10 failures/5 errors, and 4 failures/16 errors; all 26 focused tests now pass. |
 | Installed-copy and release wiring | Done | Source, Claude copy, and Codex copy pass 3/3; README, activation, auto-discovered CI tests, and 1.9.0 metadata agree. |
-| Codex adequacy review | In progress | Filtered-target K=4 review found two stable important defects; contract-owned prompt/ranking policy and single-line rendering now pass focused and installed-copy tests. |
+| Codex adequacy review | In progress | Packet-bound K=4 review found two stable important defects; end-to-end provenance identities/digests and Unicode line-boundary rejection now pass focused and installed-copy tests. |
 | Full validation and commit | In progress | Pre-review: 309 tests passed with one skip; format 36/36; privacy zero; diff check passed. |
 | Skill refinement review | Pending | Reusable drafting friction is assessed before completion. |
 
@@ -99,6 +99,8 @@ git diff --check
 | 2026-08-25 | Stable-fix RED/GREEN | Five failures and eight missing-signature errors preceded explicit exclusions, exact reviewer-count binding, validated templates, and contract-owned rendering; 22 focused tests and installed copies 3/3 now pass. |
 | 2026-08-25 | Filtered-target review | Native K=4 reviewers plus one semantic distiller found prompt/ranking policy outside the contract at 3/4 and multiline rendering injection at 2/4. |
 | 2026-08-25 | Stable-fix 2 RED/GREEN | Ten failures and five errors preceded packet-file provenance, contract-owned prompt/ranking/verdict policy, nested-shape validation, and single-line text rejection; 24 focused tests and installed copies 3/3 pass. |
+| 2026-08-25 | Packet-bound review | Native K=4 reviewers plus one semantic distiller found stale intermediate acceptance and Unicode line-boundary injection, both at 3/4. |
+| 2026-08-25 | Stable-fix 3 RED/GREEN | Four failures and sixteen missing-provenance errors preceded request IDs, ordered-review digests, canonical packet reconstruction, supported-schema keyword checks, and Unicode boundary rejection; 26 focused tests and installed copies 3/3 pass. |
 
 ## Protected scope
 

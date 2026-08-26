@@ -12,8 +12,12 @@
   },
   "reviewer_schema": {
     "type": "object",
-    "required": ["verdict", "findings", "unchecked"],
+    "required": ["request_id", "verdict", "findings", "unchecked"],
     "properties": {
+      "request_id": {
+        "type": "string",
+        "description": "Exact per-request identity embedded by the packet renderer."
+      },
       "verdict": {
         "type": "string",
         "enum": ["good", "has-issues"]
@@ -53,7 +57,7 @@
   },
   "distiller_schema": {
     "type": "object",
-    "required": ["clusters"],
+    "required": ["clusters", "reviews_sha256"],
     "properties": {
       "clusters": {
         "type": "array",
@@ -80,6 +84,10 @@
             }
           }
         }
+      },
+      "reviews_sha256": {
+        "type": "string",
+        "description": "Exact digest of the validated, canonically ordered reviewer results."
       }
     }
   },
@@ -105,7 +113,7 @@
         "instruction": "Reason through concrete boundary inputs including empty, exact-limit, zero or negative, and multibyte cases. Execute a small confirmation only in an isolated sandbox, never through a host shell or host language runtime. Otherwise reason by reading and identify unchecked behavior."
       }
     ],
-    "report": "Report real correctness or quality issues with severity and location. Add an unchecked array naming behavior you could not verify. If the target is solid, set verdict to good and invent nothing. Return only JSON matching the embedded reviewer schema.",
+    "report": "Report real correctness or quality issues with severity and location. Add an unchecked array naming behavior you could not verify. Echo the schema's request_id exactly. If the target is solid, set verdict to good and invent nothing. Return only JSON matching the embedded reviewer schema.",
     "reviewer_schema_heading": "RESPONSE SCHEMA (return JSON only):"
   },
   "distillation": {
@@ -125,7 +133,7 @@
     "clean_blocking_severities": ["critical", "important"],
     "section_order": ["stable", "contested", "unchecked", "verdicts"],
     "clean_line": "Clean: no important or critical finding reached ensemble agreement.",
-    "semantic_instruction": "Group every finding exactly once by semantic root-cause equivalence. Match paraphrases of the same defect even when agreement_key differs; keep distinct defects separate even when a generic key matches. Return only finding references in the embedded schema.",
+    "semantic_instruction": "Group every finding exactly once by semantic root-cause equivalence. Match paraphrases of the same defect even when agreement_key differs; keep distinct defects separate even when a generic key matches. Echo the schema's reviews_sha256 exactly and return only the embedded schema.",
     "reviews_heading": "REVIEWS:",
     "distiller_schema_heading": "DISTILLER RESPONSE SCHEMA (return JSON only):",
     "ranking_tiebreakers": ["severity", "agreement_desc", "first_seen"],

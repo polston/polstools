@@ -19,9 +19,10 @@ plugin-owned contract while using their native subagent transports.
 3. Claude Code and Codex adapters contain only native spawn, wait, model,
    result-transfer, semantic-distiller, and temporary-file mechanics. They do
    not restate review policy.
-4. The default run uses four cold reviewers. The emitted packet file binds its
-   contract digest and reviewer count to result collection, semantic
-   distillation, and final distillation; stale, partial, or excess input fails.
+4. The default run uses four cold reviewers. The emitted packet deterministically
+   binds its complete canonical prompts and per-request identities to ordered
+   reviewer results; a digest then binds those results to semantic clusters.
+   Stale, modified, reordered, partial, or excess input fails.
 5. Reviewers receive no conversation history or author rationale. The target
    itself and repository grounding exclude evolving plans, progress, prior
    reviews, and remediation history through explicit path exclusions.
@@ -40,7 +41,8 @@ plugin-owned contract while using their native subagent transports.
     severities, and section order are versioned contract policy, not helper
     literals. Required format placeholders are validated before rendering.
 11. Reviewer-authored issue, location, agreement-key, and unchecked text must
-    be single-line before Markdown rendering; newline injection is rejected.
+    be single-line before Markdown rendering; ASCII, control, and Unicode line
+    boundaries are rejected.
 12. The helper never executes reviewed code. A reviewer may run a small trace
    only in an isolated harness sandbox and otherwise discloses the unchecked
    behavior.
@@ -54,7 +56,8 @@ plugin-owned contract while using their native subagent transports.
 1. Focused tests demonstrate equivalent canonical packets and deterministic
    results for both adapters, validated semantic clusters over paraphrased
    inputs, multibyte safety, mandatory disclosure, visible cap truncation,
-   packet binding, single-line safety, and contract-drift rejection.
+   packet/request/review-digest binding, single-line safety, and complete
+   supported-schema drift rejection.
 2. The full unit suite, format checks, package validation, privacy audit, and
    Git diff hygiene pass from the isolated task branch.
 3. A cold Codex-path adequacy review exercises native reviewers and the native
