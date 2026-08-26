@@ -1,7 +1,7 @@
 # Portable adequacy review
 
-Date: 2026-08-25. Status: implementation in progress on the isolated task
-branch; integration and publication have not occurred.
+Date: 2026-08-25. Status: candidate committed and validated on the isolated
+task branch; local integration awaits explicit approval and publication has not occurred.
 
 ## Recommendation
 
@@ -65,7 +65,7 @@ Sources:
 | GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; successive review-driven RED waves culminated in 14 failures and one error for closed-schema and contract-policy regressions; all 32 focused tests now pass. |
 | Installed-copy and release wiring | Done | Source, Claude copy, and Codex copy pass 3/3; README, activation, auto-discovered CI tests, and 1.9.0 metadata agree. |
 | Codex adequacy review | Done | Final native K=4 review plus semantic distiller reported zero ensemble-stable findings; three distinct important findings remained contested at 1/4 each. |
-| Full validation and commit | In progress | Post-fix: 332 tests passed with one skip; format 36/36; installed copies 3/3; privacy zero; diff check passed. |
+| Full validation and commit | Done | Final committed branch: 32 focused and 332 full tests passed with one skip; format 36/36; installed copies 3/3; privacy zero; diff hygiene clean. |
 | Skill refinement review | Done | Propose requiring a separate requirements-only sealed review specification and explicit author-context exclusions when an evolving plan accompanies blinded review. |
 
 ## Verification contract
@@ -105,6 +105,7 @@ git diff --check
 | 2026-08-26 | Stable-fix 4 RED/GREEN | Fourteen failures and one malformed-severity error preceded contract-driven ranking, generic supported-schema enforcement, closed reviewer/distiller objects, exact v1 containers, and nonblank unchecked disclosures; 32 focused and 332 full tests pass. |
 | 2026-08-26 | Final Codex review | Native K=4 reviewers plus one semantic distiller reported zero ensemble-stable findings; three distinct important findings were contested at 1/4 each. |
 | 2026-08-26 | Draft-goal refinement audit | The evolving evidence plan contaminated an earlier blinded review; a reusable sealed-spec and author-context-exclusion rule is proposed for user approval, not edited automatically. |
+| 2026-08-26 | Final validation | Committed branch passed 32 focused and 332 full tests with one skip, format 36/36, installed copies 3/3, privacy zero, and clean diff hygiene. |
 
 ## Protected scope
 
