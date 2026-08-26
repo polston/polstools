@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -89,7 +90,7 @@ class AdequacyReviewContractTests(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("--exclude", text)
-            self.assertIn("--reviewers", text)
+            self.assertIn("--packet-file", text)
 
     def test_render_policy_is_not_duplicated_in_helper(self):
         helper = HELPER_PATH.read_text(encoding="utf-8")
@@ -98,6 +99,11 @@ class AdequacyReviewContractTests(unittest.TestCase):
             '"None."',
             '"None disclosed."',
             '("critical", "important")',
+            '"TARGET: "',
+            '"Two non-negotiable steps:"',
+            '"REVIEWS:"',
+            '"RESPONSE SCHEMA (return JSON only):"',
+            '"DISTILLER RESPONSE SCHEMA (return JSON only):"',
         ):
             self.assertNotIn(policy_literal, helper)
 
@@ -165,8 +171,11 @@ class AdequacyReviewParityTests(unittest.TestCase):
         self.assertNotIn("state what you inferred", prompt)
 
     def test_distiller_packet_embeds_schema_and_reviews(self):
+        packet = self.helper.build_packet(
+            "codex", **self.fixture["invocation"]
+        )
         request = self.helper.build_distiller_request(
-            self.fixture["reviews"], reviewers=4
+            self.fixture["reviews"], packet
         )
         self.assertIn("DISTILLER RESPONSE SCHEMA", request["prompt"])
         self.assertIn(json.dumps(request["schema"], sort_keys=True), request["prompt"])
@@ -174,20 +183,53 @@ class AdequacyReviewParityTests(unittest.TestCase):
 
     def test_review_without_unchecked_disclosure_is_rejected(self):
         review = {"verdict": "good", "findings": []}
+        packet = self.helper.build_packet("codex", "example.py", reviewers=1)
         with self.assertRaisesRegex(self.helper.ContractError, "unchecked"):
-            self.helper.build_distiller_request([review], reviewers=1)
+            self.helper.build_distiller_request([review], packet)
 
     def test_distillation_requires_the_packet_reviewer_count(self):
+        packet = self.helper.build_packet(
+            "codex", **self.fixture["invocation"]
+        )
         with self.assertRaisesRegex(self.helper.ContractError, "expected 4 reviewer"):
-            self.helper.build_distiller_request(
-                self.fixture["reviews"][:3], reviewers=4
-            )
+            self.helper.build_distiller_request(self.fixture["reviews"][:3], packet)
         with self.assertRaisesRegex(self.helper.ContractError, "expected 4 reviewer"):
             self.helper.distill_reviews(
                 self.fixture["reviews"][:3],
                 {"clusters": []},
-                reviewers=4,
+                packet=packet,
             )
+
+    def test_distillation_rejects_a_packet_from_another_contract(self):
+        packet = self.helper.build_packet(
+            "codex", **self.fixture["invocation"]
+        )
+        packet = copy.deepcopy(packet)
+        packet["canonical"]["contract_sha256"] = "0" * 64
+        with self.assertRaisesRegex(self.helper.ContractError, "packet contract"):
+            self.helper.build_distiller_request(self.fixture["reviews"], packet)
+
+    def test_multiline_reviewer_text_is_rejected_before_markdown_rendering(self):
+        packet = self.helper.build_packet("codex", "example.py", reviewers=1)
+        base = {
+            "verdict": "has-issues",
+            "unchecked": [],
+            "findings": [{"issue": "Issue", "severity": "important"}],
+        }
+        mutations = {
+            "issue": lambda review: review["findings"][0].update(issue="x\n## injected"),
+            "where": lambda review: review["findings"][0].update(where="x.py:1\n2"),
+            "agreement key": lambda review: review["findings"][0].update(
+                agreement_key="key\rhidden"
+            ),
+            "unchecked": lambda review: review.update(unchecked=["x\n- injected"]),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                review = copy.deepcopy(base)
+                mutate(review)
+                with self.assertRaisesRegex(self.helper.ContractError, "single line"):
+                    self.helper.build_distiller_request([review], packet)
 
     def test_fake_reviewers_produce_equivalent_stable_and_contested_results(self):
         results = []
@@ -241,7 +283,8 @@ class AdequacyReviewParityTests(unittest.TestCase):
                 {"finding_refs": [{"review": 1, "finding": 2}]},
             ]
         }
-        result = self.helper.distill_reviews(reviews, clusters, reviewers=2)
+        packet = self.helper.build_packet("codex", "example.py", reviewers=2)
+        result = self.helper.distill_reviews(reviews, clusters, packet=packet)
         self.assertEqual("2/2", result["stable"][0]["agreement"])
         self.assertEqual("缓存失效", result["contested"][0]["issue"])
         self.assertEqual(["Runtime integration was not executed."], result["unchecked"])
@@ -273,7 +316,8 @@ class AdequacyReviewParityTests(unittest.TestCase):
                 for finding in range(1, 7)
             ]
         }
-        result = self.helper.distill_reviews(reviews, clusters, reviewers=2)
+        packet = self.helper.build_packet("codex", "example.py", reviewers=2)
+        result = self.helper.distill_reviews(reviews, clusters, packet=packet)
         self.assertEqual(1, result["stable_omitted"])
         self.assertIn(
             "Additional ensemble-stable findings omitted by cap: 1.",
@@ -363,6 +407,12 @@ class AdequacyReviewInstalledCopyTests(unittest.TestCase):
                 "clusters"
             ].update(type="string"),
             "defaults container": lambda value: value.update(defaults=[]),
+            "finding schema container": lambda value: value["reviewer_schema"][
+                "properties"
+            ]["findings"].update(items=[]),
+            "review step container": lambda value: value["review"].update(
+                required_steps=[7, 8]
+            ),
         }
         for label, mutate in mutations.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:

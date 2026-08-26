@@ -95,6 +95,6 @@
       "good"
     ],
     "raw_finding_counts": [1, 1, 1, 0],
-    "distilled": "## Ensemble-stable findings\n1. [important] Cache entries survive invalidation (2/4) - cache.py:41\n\n## Contested / single-reviewer / taste\n1. [suggestion] Rename helper for clarity (1/4) - helper.py:8\n\n## Unchecked behavior\n- End-to-end service integration was not executed."
+    "distilled": "## Ensemble-stable findings\n1. [important] Cache entries survive invalidation (2/4) - cache.py:41\n\n## Contested / single-reviewer / taste\n1. [suggestion] Rename helper for clarity (1/4) - helper.py:8\n\n## Unchecked behavior\n- End-to-end service integration was not executed.\n\n## Reviewer verdicts\n1. has-issues\n2. has-issues\n3. has-issues\n4. good"
   }
 }

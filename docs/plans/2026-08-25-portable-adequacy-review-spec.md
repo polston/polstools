@@ -19,9 +19,9 @@ plugin-owned contract while using their native subagent transports.
 3. Claude Code and Codex adapters contain only native spawn, wait, model,
    result-transfer, semantic-distiller, and temporary-file mechanics. They do
    not restate review policy.
-4. The default run uses four cold reviewers. One explicit reviewer count binds
-   packet rendering, result collection, semantic distillation, and final
-   distillation; a partial or excess result set is rejected.
+4. The default run uses four cold reviewers. The emitted packet file binds its
+   contract digest and reviewer count to result collection, semantic
+   distillation, and final distillation; stale, partial, or excess input fails.
 5. Reviewers receive no conversation history or author rationale. The target
    itself and repository grounding exclude evolving plans, progress, prior
    reviews, and remediation history through explicit path exclusions.
@@ -35,26 +35,31 @@ plugin-owned contract while using their native subagent transports.
    five and any omitted count is visible in the rendered output.
 9. Contested findings, unchecked behavior, and reviewer verdicts remain visible.
    A clean line appears only when no important or critical stable finding exists.
-10. Rendered headings, finding lines, empty-section text, clean-blocking
+10. Reviewer/distiller prompt labels, ranking tie-breakers, rendered headings,
+    finding lines, reviewer verdicts, empty-section text, clean-blocking
     severities, and section order are versioned contract policy, not helper
     literals. Required format placeholders are validated before rendering.
-11. The helper never executes reviewed code. A reviewer may run a small trace
+11. Reviewer-authored issue, location, agreement-key, and unchecked text must
+    be single-line before Markdown rendering; newline injection is rejected.
+12. The helper never executes reviewed code. A reviewer may run a small trace
    only in an isolated harness sandbox and otherwise discloses the unchecked
    behavior.
-12. The legacy Claude-only workflow is removed after equivalent portable
+13. The legacy Claude-only workflow is removed after equivalent portable
     behavior and package-drift checks pass.
-13. Source, Claude-installed, and Codex-installed package validation agree, and
+14. Source, Claude-installed, and Codex-installed package validation agree, and
     plugin metadata remains synchronized at version 1.9.0.
 
 ## Acceptance evidence
 
 1. Focused tests demonstrate equivalent canonical packets and deterministic
-   results for both adapters, semantic paraphrase handling, multibyte safety,
-   mandatory disclosure, visible cap truncation, and contract-drift rejection.
+   results for both adapters, validated semantic clusters over paraphrased
+   inputs, multibyte safety, mandatory disclosure, visible cap truncation,
+   packet binding, single-line safety, and contract-drift rejection.
 2. The full unit suite, format checks, package validation, privacy audit, and
    Git diff hygiene pass from the isolated task branch.
-3. A cold Codex-path adequacy review reports no unresolved ensemble-stable
-   important or critical defect.
+3. A cold Codex-path adequacy review exercises native reviewers and the native
+   semantic distiller, then reports no unresolved ensemble-stable important or
+   critical defect.
 4. The branch is committed and clean before local integration is offered.
 
 ## Protected scope

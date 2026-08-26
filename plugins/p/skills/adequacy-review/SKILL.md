@@ -26,7 +26,7 @@ restate either in an adapter or improvise their behavior.
 3. Follow that adapter with the filtered `target`, optional `spec`, inferred
    repository root, every exclusion, and optional reviewer count. The skill
    explicitly authorizes the adapter's native parallel subagent calls.
-4. Report the helper result's `distilled` field verbatim, followed by its
+4. Report the helper result's `distilled` field verbatim. It already contains
    reviewer verdicts. Do not editorialize or re-rank the result.
 
 The helper never executes reviewed code. Reviewers may execute a small trace

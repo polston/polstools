@@ -85,6 +85,7 @@
   },
   "review": {
     "preamble": "You are a BLINDED code reviewer. You receive only the target and its intended behavior, never author rationale or a commit message. Judge it cold, like a stranger opening the change.",
+    "target_line": "TARGET: {target}",
     "target_instruction": "If TARGET is a Git range, inspect only its filtered diff. If it is a file or directory, read it. Never inspect an excluded path while grounding.",
     "spec_present": "SEALED SPEC: {spec} - this is the reference the target must satisfy.",
     "spec_absent": "No separate spec was given. Infer intended behavior from the target's docstrings, types, names, and tests, and use that inference as the evaluation basis.",
@@ -92,6 +93,8 @@
     "repo_absent": "Determine the repository root from the target and ground against it.",
     "exclusions_present": "EXCLUDED AUTHOR CONTEXT (do not inspect or use for grounding): {exclusions}",
     "exclusions_absent": "No author-context exclusions were supplied. If the target contains rationale, progress, prior reviews, or remediation history, report a blinding failure.",
+    "steps_heading": "Two non-negotiable steps:",
+    "step_line_template": "{index}. {label} - {instruction}",
     "required_steps": [
       {
         "label": "GROUND",
@@ -102,7 +105,8 @@
         "instruction": "Reason through concrete boundary inputs including empty, exact-limit, zero or negative, and multibyte cases. Execute a small confirmation only in an isolated sandbox, never through a host shell or host language runtime. Otherwise reason by reading and identify unchecked behavior."
       }
     ],
-    "report": "Report real correctness or quality issues with severity and location. Add an unchecked array naming behavior you could not verify. If the target is solid, set verdict to good and invent nothing. Return only JSON matching the embedded reviewer schema."
+    "report": "Report real correctness or quality issues with severity and location. Add an unchecked array naming behavior you could not verify. If the target is solid, set verdict to good and invent nothing. Return only JSON matching the embedded reviewer schema.",
+    "reviewer_schema_heading": "RESPONSE SCHEMA (return JSON only):"
   },
   "distillation": {
     "agreement_threshold": 2,
@@ -119,8 +123,13 @@
     "empty_findings_line": "None.",
     "empty_unchecked_line": "None disclosed.",
     "clean_blocking_severities": ["critical", "important"],
-    "section_order": ["stable", "contested", "unchecked"],
+    "section_order": ["stable", "contested", "unchecked", "verdicts"],
     "clean_line": "Clean: no important or critical finding reached ensemble agreement.",
-    "semantic_instruction": "Group every finding exactly once by semantic root-cause equivalence. Match paraphrases of the same defect even when agreement_key differs; keep distinct defects separate even when a generic key matches. Return only finding references in the embedded schema."
+    "semantic_instruction": "Group every finding exactly once by semantic root-cause equivalence. Match paraphrases of the same defect even when agreement_key differs; keep distinct defects separate even when a generic key matches. Return only finding references in the embedded schema.",
+    "reviews_heading": "REVIEWS:",
+    "distiller_schema_heading": "DISTILLER RESPONSE SCHEMA (return JSON only):",
+    "ranking_tiebreakers": ["severity", "agreement_desc", "first_seen"],
+    "reviewer_verdicts_heading": "Reviewer verdicts",
+    "verdict_line_template": "{index}. {verdict}"
   }
 }

@@ -90,10 +90,29 @@ def load_contract(path=CONTRACT_PATH):
         finding_schema = findings_schema["items"]
         unchecked_schema = reviewer_properties["unchecked"]
         distiller_properties = distiller_schema["properties"]
-        cluster_schema = distiller_properties["clusters"]["items"]
-        reference_schema = cluster_schema["properties"]["finding_refs"]["items"]
+        clusters_schema = distiller_properties["clusters"]
+        cluster_schema = clusters_schema["items"]
+        cluster_properties = cluster_schema["properties"]
+        finding_refs_schema = cluster_properties["finding_refs"]
+        reference_schema = finding_refs_schema["items"]
     except (KeyError, TypeError):
         raise ContractError("reviewer or distiller schema is incomplete") from None
+    if not all(
+        isinstance(value, dict)
+        for value in (
+            reviewer_properties,
+            findings_schema,
+            finding_schema,
+            unchecked_schema,
+            distiller_properties,
+            clusters_schema,
+            cluster_schema,
+            cluster_properties,
+            finding_refs_schema,
+            reference_schema,
+        )
+    ):
+        raise ContractError("reviewer or distiller schema containers are invalid")
     if reviewer_schema.get("type") != "object" or reviewer_schema.get("required") != [
         "verdict",
         "findings",
@@ -131,14 +150,12 @@ def load_contract(path=CONTRACT_PATH):
         "type"
     ) != "string":
         raise ContractError("reviewer unchecked schema is invalid")
-    clusters_schema = distiller_properties.get("clusters", {})
     if (
         distiller_schema.get("type") != "object"
         or distiller_schema.get("required") != ["clusters"]
         or clusters_schema.get("type") != "array"
     ):
         raise ContractError("distiller schema root is invalid")
-    finding_refs_schema = cluster_schema.get("properties", {}).get("finding_refs", {})
     if (
         cluster_schema.get("type") != "object"
         or cluster_schema.get("required") != ["finding_refs"]
@@ -156,6 +173,7 @@ def load_contract(path=CONTRACT_PATH):
             raise ContractError("distiller finding reference schema is invalid")
     required_review_fields = {
         "preamble",
+        "target_line",
         "target_instruction",
         "spec_present",
         "spec_absent",
@@ -163,16 +181,24 @@ def load_contract(path=CONTRACT_PATH):
         "repo_absent",
         "exclusions_present",
         "exclusions_absent",
+        "steps_heading",
+        "step_line_template",
         "required_steps",
         "report",
+        "reviewer_schema_heading",
     }
     if not isinstance(review, dict) or not required_review_fields.issubset(review):
         raise ContractError("review prompt contract is incomplete")
     steps = review["required_steps"]
-    if not isinstance(steps, list) or [step.get("label") for step in steps] != [
+    if (
+        not isinstance(steps, list)
+        or not all(isinstance(step, dict) for step in steps)
+        or [step.get("label") for step in steps]
+        != [
         "GROUND",
         "TRACE",
-    ]:
+        ]
+    ):
         raise ContractError("review steps are invalid")
     for field in required_review_fields - {"required_steps"}:
         if not isinstance(review[field], str) or not review[field].strip():
@@ -181,8 +207,14 @@ def load_contract(path=CONTRACT_PATH):
         raise ContractError("review steps are invalid")
     _validate_template(review["spec_present"], {"spec"}, "spec_present")
     _validate_template(review["repo_present"], {"repo"}, "repo_present")
+    _validate_template(review["target_line"], {"target"}, "target_line")
     _validate_template(
         review["exclusions_present"], {"exclusions"}, "exclusions_present"
+    )
+    _validate_template(
+        review["step_line_template"],
+        {"index", "label", "instruction"},
+        "step_line",
     )
     if distillation.get("agreement_threshold") != 2:
         raise ContractError("agreement threshold must be 2")
@@ -203,13 +235,28 @@ def load_contract(path=CONTRACT_PATH):
         "empty_unchecked_line",
         "clean_line",
         "semantic_instruction",
+        "reviews_heading",
+        "distiller_schema_heading",
+        "reviewer_verdicts_heading",
+        "verdict_line_template",
     ):
         if not isinstance(distillation.get(field), str) or not distillation[field].strip():
             raise ContractError("distillation text is invalid")
     if distillation.get("clean_blocking_severities") != ["critical", "important"]:
         raise ContractError("clean blocking severities are invalid")
-    if distillation.get("section_order") != ["stable", "contested", "unchecked"]:
+    if distillation.get("section_order") != [
+        "stable",
+        "contested",
+        "unchecked",
+        "verdicts",
+    ]:
         raise ContractError("distillation section order is invalid")
+    if distillation.get("ranking_tiebreakers") != [
+        "severity",
+        "agreement_desc",
+        "first_seen",
+    ]:
+        raise ContractError("distillation ranking policy is invalid")
     _validate_template(
         distillation["stable_omitted_line"], {"count"}, "stable_omitted_line"
     )
@@ -225,6 +272,9 @@ def load_contract(path=CONTRACT_PATH):
     _validate_template(
         distillation["unchecked_item_template"], {"item"}, "unchecked_item"
     )
+    _validate_template(
+        distillation["verdict_line_template"], {"index", "verdict"}, "verdict_line"
+    )
     return contract
 
 
@@ -235,22 +285,35 @@ def contract_sha256(path=CONTRACT_PATH):
 def _required_text(value, label):
     if not isinstance(value, str) or not value.strip():
         raise ContractError(label + " must be non-empty")
+    if "\n" in value or "\r" in value:
+        raise ContractError(label + " must be a single line")
+    return value.strip()
+
+
+def _optional_text(value, label):
+    if not isinstance(value, str):
+        raise ContractError(label + " must be a string")
+    if "\n" in value or "\r" in value:
+        raise ContractError(label + " must be a single line")
     return value.strip()
 
 
 def _normalize_exclusions(exclusions):
     if exclusions is None:
         return []
-    if not isinstance(exclusions, list) or not all(
-        isinstance(item, str) and item.strip() for item in exclusions
-    ):
+    if not isinstance(exclusions, list):
         raise ContractError("exclusions must be an array of non-empty strings")
-    return [item.strip() for item in exclusions]
+    return [_required_text(item, "exclusion") for item in exclusions]
 
 
 def _reviewer_prompt(contract, target, spec, repo, exclusions):
     review = contract["review"]
-    lines = [review["preamble"], "", "TARGET: " + target, review["target_instruction"]]
+    lines = [
+        review["preamble"],
+        "",
+        review["target_line"].format(target=target),
+        review["target_instruction"],
+    ]
     lines.append(
         review["spec_present"].format(spec=spec)
         if spec
@@ -268,15 +331,21 @@ def _reviewer_prompt(contract, target, spec, repo, exclusions):
         if exclusions
         else review["exclusions_absent"]
     )
-    lines.extend(["", "Two non-negotiable steps:"])
+    lines.extend(["", review["steps_heading"]])
     for index, step in enumerate(review["required_steps"], start=1):
-        lines.append("%d. %s - %s" % (index, step["label"], step["instruction"]))
+        lines.append(
+            review["step_line_template"].format(
+                index=index,
+                label=step["label"],
+                instruction=step["instruction"],
+            )
+        )
     lines.extend(
         [
             "",
             review["report"],
             "",
-            "RESPONSE SCHEMA (return JSON only):",
+            review["reviewer_schema_heading"],
             json.dumps(contract["reviewer_schema"], sort_keys=True),
         ]
     )
@@ -288,14 +357,14 @@ def build_packet(harness, target, spec="", repo="", reviewers=None, exclusions=N
         raise ContractError("unsupported harness: " + str(harness))
     contract = load_contract()
     target = _required_text(target, "target")
-    if not isinstance(spec, str) or not isinstance(repo, str):
-        raise ContractError("spec and repo must be strings")
+    spec = _optional_text(spec, "spec")
+    repo = _optional_text(repo, "repo")
     exclusions = _normalize_exclusions(exclusions)
     count = contract["defaults"]["reviewers"] if reviewers is None else reviewers
     if not isinstance(count, int) or isinstance(count, bool) or count < 1:
         raise ContractError("reviewer count must be a positive integer")
     prompt = _reviewer_prompt(
-        contract, target, spec.strip(), repo.strip(), exclusions
+        contract, target, spec, repo, exclusions
     )
     requests = []
     for index in range(count):
@@ -311,8 +380,8 @@ def build_packet(harness, target, spec="", repo="", reviewers=None, exclusions=N
         "contract_sha256": contract_sha256(),
         "input": {
             "target": target,
-            "spec": spec.strip(),
-            "repo": repo.strip(),
+            "spec": spec,
+            "repo": repo,
             "exclusions": exclusions,
             "reviewers": count,
         },
@@ -333,8 +402,9 @@ def _validate_review(review, index, contract):
     if not isinstance(findings, list):
         raise ContractError("review %d findings must be an array" % (index + 1))
     unchecked = review.get("unchecked")
-    if not isinstance(unchecked, list) or not all(isinstance(item, str) for item in unchecked):
+    if not isinstance(unchecked, list):
         raise ContractError("review %d unchecked must be an array of strings" % (index + 1))
+    unchecked = [_optional_text(item, "unchecked item") for item in unchecked]
     severities = set(contract["distillation"]["severity_order"])
     normalized = []
     for finding_index, finding in enumerate(findings):
@@ -344,16 +414,16 @@ def _validate_review(review, index, contract):
         severity = finding.get("severity")
         if severity not in severities:
             raise ContractError("finding severity is invalid")
-        where = finding.get("where", "")
-        agreement_key = finding.get("agreement_key", "")
-        if not isinstance(where, str) or not isinstance(agreement_key, str):
-            raise ContractError("finding where and agreement_key must be strings")
+        where = _optional_text(finding.get("where", ""), "finding where")
+        agreement_key = _optional_text(
+            finding.get("agreement_key", ""), "finding agreement_key"
+        )
         normalized.append(
             {
                 "issue": issue,
                 "severity": severity,
-                "where": where.strip(),
-                "agreement_key": agreement_key.strip(),
+                "where": where,
+                "agreement_key": agreement_key,
                 "reviewer": index,
                 "order": finding_index,
             }
@@ -361,23 +431,50 @@ def _validate_review(review, index, contract):
     return {
         "verdict": review["verdict"],
         "findings": normalized,
-        "unchecked": [item.strip() for item in unchecked if item.strip()],
+        "unchecked": [item for item in unchecked if item],
     }
 
 
-def _require_reviewer_count(reviews, reviewers):
-    if type(reviewers) is not int or reviewers < 1:
-        raise ContractError("reviewer count must be a positive integer")
+def _packet_reviewer_count(packet, contract):
+    if not isinstance(packet, dict) or not isinstance(packet.get("canonical"), dict):
+        raise ContractError("packet must contain canonical review data")
+    canonical = packet["canonical"]
+    if (
+        canonical.get("contract_version") != contract["contract_version"]
+        or canonical.get("contract_sha256") != contract_sha256()
+    ):
+        raise ContractError("packet contract does not match the active contract")
+    invocation = canonical.get("input")
+    requests = canonical.get("review_requests")
+    if not isinstance(invocation, dict) or not isinstance(requests, list):
+        raise ContractError("packet canonical review data is invalid")
+    reviewers = invocation.get("reviewers")
+    if type(reviewers) is not int or reviewers < 1 or len(requests) != reviewers:
+        raise ContractError("packet reviewer count is invalid")
+    for index, request in enumerate(requests, start=1):
+        if (
+            not isinstance(request, dict)
+            or request.get("label") != "review:%d" % index
+            or request.get("schema") != contract["reviewer_schema"]
+            or not isinstance(request.get("prompt"), str)
+        ):
+            raise ContractError("packet review request is invalid")
+    return reviewers
+
+
+def _require_reviewer_count(reviews, packet, contract):
+    reviewers = _packet_reviewer_count(packet, contract)
     if not isinstance(reviews, list) or len(reviews) != reviewers:
         raise ContractError(
             "expected %d reviewer results, received %d"
             % (reviewers, len(reviews) if isinstance(reviews, list) else 0)
         )
+    return reviewers
 
 
-def build_distiller_request(reviews, reviewers):
+def build_distiller_request(reviews, packet):
     contract = load_contract()
-    _require_reviewer_count(reviews, reviewers)
+    _require_reviewer_count(reviews, packet, contract)
     checked = [_validate_review(review, index, contract) for index, review in enumerate(reviews)]
     public_reviews = []
     for review in checked:
@@ -399,10 +496,10 @@ def build_distiller_request(reviews, reviewers):
         [
             contract["distillation"]["semantic_instruction"],
             "",
-            "REVIEWS:",
+            contract["distillation"]["reviews_heading"],
             json.dumps(public_reviews, ensure_ascii=False, sort_keys=True),
             "",
-            "DISTILLER RESPONSE SCHEMA (return JSON only):",
+            contract["distillation"]["distiller_schema_heading"],
             json.dumps(schema, sort_keys=True),
         ]
     )
@@ -484,9 +581,9 @@ def _render_findings(distillation, title, findings):
     return lines
 
 
-def distill_reviews(reviews, clusters, unchecked=None, reviewers=None):
+def distill_reviews(reviews, clusters, unchecked=None, packet=None):
     contract = load_contract()
-    _require_reviewer_count(reviews, reviewers)
+    _require_reviewer_count(reviews, packet, contract)
     checked = [_validate_review(review, index, contract) for index, review in enumerate(reviews)]
     groups = _cluster_groups(checked, clusters)
     distillation = contract["distillation"]
@@ -514,8 +611,9 @@ def distill_reviews(reviews, clusters, unchecked=None, reviewers=None):
     ]
     if unchecked is None:
         unchecked = []
-    if not isinstance(unchecked, list) or not all(isinstance(item, str) for item in unchecked):
+    if not isinstance(unchecked, list):
         raise ContractError("unchecked must be an array of strings")
+    unchecked = [_optional_text(item, "unchecked item") for item in unchecked]
     combined_unchecked = [item for review in checked for item in review["unchecked"]]
     combined_unchecked.extend(item.strip() for item in unchecked if item.strip())
     unchecked = []
@@ -556,6 +654,18 @@ def distill_reviews(reviews, clusters, unchecked=None, reviewers=None):
                 or [distillation["empty_unchecked_line"]]
             ),
         ],
+        "verdicts": [
+            distillation["heading_template"].format(
+                heading=distillation["reviewer_verdicts_heading"]
+            ),
+            *[
+                distillation["verdict_line_template"].format(
+                    index=index,
+                    verdict=review["verdict"],
+                )
+                for index, review in enumerate(checked, start=1)
+            ],
+        ],
     }
     for index, section in enumerate(distillation["section_order"]):
         if index:
@@ -574,9 +684,8 @@ def distill_reviews(reviews, clusters, unchecked=None, reviewers=None):
 
 def run_fixture(harness, invocation, reviews, clusters, unchecked):
     packet = build_packet(harness, **invocation)
-    reviewers = packet["canonical"]["input"]["reviewers"]
-    build_distiller_request(reviews, reviewers)
-    return distill_reviews(reviews, clusters, unchecked, reviewers)
+    build_distiller_request(reviews, packet)
+    return distill_reviews(reviews, clusters, unchecked, packet)
 
 
 def _write_json(value):
@@ -596,11 +705,11 @@ def _parser():
     packet.add_argument("-k", "--reviewers", type=int)
     distiller_packet = subparsers.add_parser("distiller-packet")
     distiller_packet.add_argument("--reviews-file", type=Path, required=True)
-    distiller_packet.add_argument("-k", "--reviewers", type=int, required=True)
+    distiller_packet.add_argument("--packet-file", type=Path, required=True)
     distill = subparsers.add_parser("distill")
     distill.add_argument("--reviews-file", type=Path, required=True)
     distill.add_argument("--clusters-file", type=Path, required=True)
-    distill.add_argument("-k", "--reviewers", type=int, required=True)
+    distill.add_argument("--packet-file", type=Path, required=True)
     distill.add_argument("--unchecked", action="append", default=[])
     fixture = subparsers.add_parser("fixture")
     fixture.add_argument("--harness", choices=sorted(ADAPTERS), required=True)
@@ -623,13 +732,13 @@ def main(argv=None):
             )
         elif args.command == "distiller-packet":
             reviews = json.loads(args.reviews_file.read_text(encoding="utf-8"))
-            result = build_distiller_request(reviews, args.reviewers)
+            packet = json.loads(args.packet_file.read_text(encoding="utf-8"))
+            result = build_distiller_request(reviews, packet)
         elif args.command == "distill":
             reviews = json.loads(args.reviews_file.read_text(encoding="utf-8"))
             clusters = json.loads(args.clusters_file.read_text(encoding="utf-8"))
-            result = distill_reviews(
-                reviews, clusters, args.unchecked, args.reviewers
-            )
+            packet = json.loads(args.packet_file.read_text(encoding="utf-8"))
+            result = distill_reviews(reviews, clusters, args.unchecked, packet)
         elif args.command == "fixture":
             value = json.loads(args.fixture.read_text(encoding="utf-8"))
             result = run_fixture(
@@ -644,8 +753,11 @@ def main(argv=None):
             for harness in ADAPTERS:
                 build_packet(harness, "main...HEAD")
             sample_reviews = [{"verdict": "good", "findings": [], "unchecked": []}]
-            build_distiller_request(sample_reviews, 1)
-            distill_reviews(sample_reviews, {"clusters": []}, reviewers=1)
+            sample_packet = build_packet("codex", "main...HEAD", reviewers=1)
+            build_distiller_request(sample_reviews, sample_packet)
+            distill_reviews(
+                sample_reviews, {"clusters": []}, packet=sample_packet
+            )
             result = {
                 "contract_version": contract["contract_version"],
                 "contract_sha256": contract_sha256(),
