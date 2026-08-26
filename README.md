@@ -91,7 +91,7 @@ Start a new session, then run the doctor against `<repo-root>`.
 | Response format | `fmt-off`, `fmt-on`, `maintaining-the-format-plugin` | Toggle, test, and audit the structured response format |
 | Interface fixes | `aligning-statuslines`, `shift-enter-in-windows-terminal` | Align harness status information and repair multiline input |
 | Evaluation | `reviewing-evaluation-taxonomies` | Resume controlled local taxonomy review |
-| Review command | `adequacy-review` | Run the deterministic blinded review workflow |
+| Review command | `adequacy-review` | Run portable blinded ensemble review from one versioned contract |
 | Statusline commands | `statusline-apply`, `statusline-check`, `statusline-preview`, `statusline-restore` | Apply, inspect, preview, or restore aligned status lines |
 
 ## Validate a checkout
@@ -107,9 +107,10 @@ sh plugins/p/bin/repo-privacy-audit -C .
 git diff --check
 ```
 
-`p-validate` checks both metadata systems, canonical skill adapters, activation
-coverage, and fresh temporary installed copies for Claude Code and Codex. It
-does not register, install, publish, or otherwise change either harness.
+`p-validate` checks both metadata systems, canonical skill adapters, the
+adequacy-review contract and native adapters, activation coverage, and fresh
+temporary installed copies for Claude Code and Codex. It does not register,
+install, publish, or otherwise change either harness.
 
 Use `/p:work` or `$p:work` to keep repository-publication audits and local
 session-history workflows out of the current work session. Use `/p:home` or

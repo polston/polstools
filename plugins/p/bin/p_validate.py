@@ -92,6 +92,67 @@ def _validate_skill(skill_path, errors):
         errors.append("skill %s has no frontmatter description" % skill_path.parent.name)
 
 
+def _validate_adequacy_review(plugin_root, errors):
+    skill_root = plugin_root / "skills" / "adequacy-review"
+    skill_path = skill_root / "SKILL.md"
+    contract_path = skill_root / "contract-v1.json"
+    helper_path = skill_root / "scripts" / "adequacy_review.py"
+    adapters = {
+        "Claude Code": skill_root / "references" / "claude-code.md",
+        "Codex": skill_root / "references" / "codex.md",
+    }
+    if (plugin_root / "workflows" / "adequacy-review.js").exists():
+        errors.append("legacy Claude-only adequacy-review workflow still exists")
+    try:
+        skill = skill_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append("adequacy-review canonical skill is unreadable")
+    else:
+        for expected in (
+            "contract-v1.json",
+            "references/claude-code.md",
+            "references/codex.md",
+            "Read exactly one adapter",
+        ):
+            if expected not in skill:
+                errors.append("adequacy-review canonical skill does not route through " + expected)
+        if "workflows/adequacy-review.js" in skill:
+            errors.append("adequacy-review canonical skill still routes to the legacy workflow")
+    for label, adapter_path in adapters.items():
+        try:
+            adapter = adapter_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(label + " adequacy-review adapter is unreadable")
+            continue
+        if "contract-v1.json" not in adapter:
+            errors.append(label + " adequacy-review adapter does not load contract-v1.json")
+        if "scripts/adequacy_review.py" not in adapter:
+            errors.append(label + " adequacy-review adapter does not use the canonical helper")
+        duplicated = [
+            token
+            for token in ("agreement_threshold", "stable_cap", "GROUND", "TRACE")
+            if token in adapter
+        ]
+        if duplicated:
+            errors.append(label + " adequacy-review adapter duplicates review policy")
+    if not contract_path.is_file() or not helper_path.is_file():
+        errors.append("adequacy-review contract or helper is missing")
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, "-B", str(helper_path), "self-check"],
+            cwd=plugin_root,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+        )
+    except (OSError, UnicodeError):
+        errors.append("adequacy-review contract self-check could not run")
+    else:
+        if result.returncode != 0:
+            errors.append("adequacy-review contract self-check failed")
+
+
 def validate_package(plugin_root):
     plugin_root = Path(plugin_root)
     errors = []
@@ -182,6 +243,8 @@ def validate_package(plugin_root):
         expected_path = "${CLAUDE_PLUGIN_ROOT}/skills/%s/SKILL.md" % name
         if expected_path not in command or "$ARGUMENTS" not in command:
             errors.append("Claude command does not forward to canonical skill " + name)
+
+    _validate_adequacy_review(plugin_root, errors)
 
     hooks = _read_json(plugin_root / "hooks" / "hooks.json", "hook manifest", errors)
     if hooks is not None and set(hooks.get("hooks", {})) != {

@@ -55,10 +55,10 @@ substitution is silent, and nobody re-reads metadata.
   namespaced as `/p:<command>`, which forward to matching canonical skills.
   Refer to plugin files as `${CLAUDE_PLUGIN_ROOT}/…`, never by a path under
   the author's home directory.
-- `plugins/p/workflows/` — deterministic multi-agent workflow scripts, run by
-  the harness rather than executed directly. A canonical skill invokes one
-  instead of restating its recipe in prose, so the procedure cannot drift from
-  one model reading it to the next.
+- Complex cross-harness skills keep canonical policy beside `SKILL.md` in a
+  versioned contract. Thin files under `references/` own harness transport;
+  helpers under `scripts/` own deterministic computation without duplicating
+  the policy.
 - `plugins/p/tests/` — stdlib `unittest`, no runner or dependency. Run with
   `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests`.
 - `docs/plans/` — design documents, filename dated.

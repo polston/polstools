@@ -1,0 +1,73 @@
+{
+  "contract_version": 1,
+  "defaults": {
+    "reviewers": 4
+  },
+  "inputs": {
+    "target": "A file, directory, or Git range.",
+    "spec": "Optional sealed specification path.",
+    "repo": "Repository root used for grounding. Infer it when omitted."
+  },
+  "reviewer_schema": {
+    "type": "object",
+    "required": ["verdict", "findings"],
+    "properties": {
+      "verdict": {
+        "type": "string",
+        "enum": ["good", "has-issues"]
+      },
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["issue", "severity"],
+          "properties": {
+            "issue": {
+              "type": "string"
+            },
+            "severity": {
+              "type": "string",
+              "enum": ["critical", "important", "suggestion"]
+            },
+            "where": {
+              "type": "string",
+              "description": "A file:line or function locator."
+            },
+            "agreement_key": {
+              "type": "string",
+              "description": "Optional concise root-cause key used only for deterministic agreement grouping."
+            }
+          }
+        }
+      }
+    }
+  },
+  "review": {
+    "preamble": "You are a BLINDED code reviewer. You receive only the target and its intended behavior, never author rationale or a commit message. Judge it cold, like a stranger opening the change.",
+    "target_instruction": "If TARGET is a Git range, inspect its diff. If it is a file or directory, read it.",
+    "spec_present": "SEALED SPEC: {spec} - this is the reference the target must satisfy.",
+    "spec_absent": "No separate spec was given. Infer intended behavior from the target's docstrings, types, names, and tests, and state what you inferred.",
+    "repo_present": "REPO (for grounding): {repo}",
+    "repo_absent": "Determine the repository root from the target and ground against it.",
+    "required_steps": [
+      {
+        "label": "GROUND",
+        "instruction": "Before calling anything reinvented, inconsistent, or over-complex, search and read the repository for existing utilities, conventions, and patterns the target should reuse. Judge against repository evidence, not generic opinion."
+      },
+      {
+        "label": "TRACE",
+        "instruction": "Reason through concrete boundary inputs including empty, exact-limit, zero or negative, and multibyte cases. Execute a small confirmation only in an isolated sandbox, never through a host shell or host language runtime. Otherwise reason by reading and identify unchecked behavior."
+      }
+    ],
+    "report": "Report real correctness or quality issues with severity and location. Use the same agreement_key for the same root cause when evidence supports it. If the target is solid, set verdict to good and invent nothing. Return only JSON matching the reviewer schema."
+  },
+  "distillation": {
+    "agreement_threshold": 2,
+    "stable_cap": 5,
+    "severity_order": ["critical", "important", "suggestion"],
+    "stable_heading": "Ensemble-stable findings",
+    "contested_heading": "Contested / single-reviewer / taste",
+    "unchecked_heading": "Unchecked behavior",
+    "clean_line": "Clean: no important or critical finding reached ensemble agreement."
+  }
+}

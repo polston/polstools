@@ -1,0 +1,80 @@
+{
+  "invocation": {
+    "target": "main...HEAD",
+    "spec": "docs/plans/example.md",
+    "repo": ".",
+    "reviewers": 4
+  },
+  "reviews": [
+    {
+      "verdict": "has-issues",
+      "findings": [
+        {
+          "issue": "Cache entries survive invalidation",
+          "severity": "important",
+          "where": "cache.py:41",
+          "agreement_key": "stale-cache-invalidation"
+        }
+      ]
+    },
+    {
+      "verdict": "has-issues",
+      "findings": [
+        {
+          "issue": "Invalidation leaves stale cache entries",
+          "severity": "important",
+          "where": "cache.py:41",
+          "agreement_key": "stale-cache-invalidation"
+        }
+      ]
+    },
+    {
+      "verdict": "has-issues",
+      "findings": [
+        {
+          "issue": "Rename helper for clarity",
+          "severity": "suggestion",
+          "where": "helper.py:8",
+          "agreement_key": "helper-name"
+        }
+      ]
+    },
+    {
+      "verdict": "good",
+      "findings": []
+    }
+  ],
+  "unchecked": [
+    "End-to-end service integration was not executed."
+  ],
+  "expected": {
+    "stable": [
+      {
+        "issue": "Cache entries survive invalidation",
+        "severity": "important",
+        "where": "cache.py:41",
+        "agreement": "2/4"
+      }
+    ],
+    "stable_omitted": 0,
+    "contested": [
+      {
+        "issue": "Rename helper for clarity",
+        "severity": "suggestion",
+        "where": "helper.py:8",
+        "agreement": "1/4"
+      }
+    ],
+    "unchecked": [
+      "End-to-end service integration was not executed."
+    ],
+    "reviewer_verdicts": [
+      "has-issues",
+      "has-issues",
+      "has-issues",
+      "good"
+    ],
+    "raw_finding_counts": [1, 1, 1, 0],
+    "distilled": "## Ensemble-stable findings\n1. [important] Cache entries survive invalidation (2/4) - cache.py:41\n\n## Contested / single-reviewer / taste\n1. [suggestion] Rename helper for clarity (1/4) - helper.py:8\n\n## Unchecked behavior\n- End-to-end service integration was not executed."
+  }
+}

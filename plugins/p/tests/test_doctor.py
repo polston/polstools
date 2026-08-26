@@ -269,9 +269,9 @@ class SchemaAndPackagingTests(unittest.TestCase):
             )
         )
         entry = next(item for item in marketplace["plugins"] if item["name"] == "p")
-        self.assertEqual("1.8.1", entry["version"])
-        self.assertEqual("1.8.1", manifest["version"])
-        self.assertEqual("1.8.1", codex_manifest["version"])
+        self.assertEqual("1.9.0", entry["version"])
+        self.assertEqual("1.9.0", manifest["version"])
+        self.assertEqual("1.9.0", codex_manifest["version"])
         self.assertEqual(manifest["description"], codex_manifest["description"])
 
 
