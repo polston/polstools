@@ -62,9 +62,9 @@ Sources:
 | Recover state and isolate work | Done | Main was clean and synchronized; task branch began at `2e6c053`. |
 | Verify current harness capabilities | Done | Official documentation supports skills plus native subagent orchestration in both harnesses. |
 | RED: portable contract and drift detection | Done | Initial run: 4 tests with 2 failures and 5 missing-file errors; validator RED: 9 tests with 2 drift-detection failures. |
-| GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; review-finding RED failed 4 assertions and 3 errors, then all 13 focused tests passed. Protocol RED then failed 5 assertions and 2 errors; all 17 focused tests now pass. |
+| GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; review-finding RED failed 4 assertions and 3 errors, then all 13 focused tests passed. Later protocol RED runs failed 5 assertions and 2 errors, then 5 failures and 8 errors; all 22 focused tests now pass. |
 | Installed-copy and release wiring | Done | Source, Claude copy, and Codex copy pass 3/3; README, activation, auto-discovered CI tests, and 1.9.0 metadata agree. |
-| Codex adequacy review | In progress | First K=4 review found four stable important defects; all have focused regressions and fixes. A contaminated rerun was discarded before a clean requirements-only rerun. |
+| Codex adequacy review | In progress | Requirements-only K=4 review found three stable important protocol defects; exclusion-aware blinding, exact result counts, and complete template validation now pass focused tests. |
 | Full validation and commit | In progress | Pre-review: 309 tests passed with one skip; format 36/36; privacy zero; diff check passed. |
 | Skill refinement review | Pending | Reusable drafting friction is assessed before completion. |
 
@@ -95,6 +95,8 @@ git diff --check
 | 2026-08-25 | Review-fix GREEN | Embedded schemas, native semantic clustering, Unicode-safe references, unchecked propagation, and complete schema validation pass 13 focused tests and installed copies 3/3. |
 | 2026-08-25 | Protocol RED | Requirements-only review input, mandatory unchecked disclosure, visible stable-cap truncation, and nested schema contradiction checks failed 5 assertions and 2 errors. |
 | 2026-08-25 | Protocol GREEN | A separate sealed specification plus contract validation and rendering changes pass 17 focused tests and installed copies 3/3; diff hygiene passes. |
+| 2026-08-25 | Requirements-only review | Native K=4 reviewers plus one semantic distiller found target-history leakage at 2/4, placeholder drift at 3/4, and reviewer-input drift at 2/4. |
+| 2026-08-25 | Stable-fix RED/GREEN | Five failures and eight missing-signature errors preceded explicit exclusions, exact reviewer-count binding, validated templates, and contract-owned rendering; 22 focused tests and installed copies 3/3 now pass. |
 
 ## Protected scope
 

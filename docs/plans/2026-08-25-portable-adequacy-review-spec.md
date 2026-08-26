@@ -19,24 +19,31 @@ plugin-owned contract while using their native subagent transports.
 3. Claude Code and Codex adapters contain only native spawn, wait, model,
    result-transfer, semantic-distiller, and temporary-file mechanics. They do
    not restate review policy.
-4. The default run uses four cold reviewers. Reviewers receive no conversation
-   history or author rationale and must return the contract's embedded schema.
-5. Every reviewer must disclose unchecked runtime, integration, or
+4. The default run uses four cold reviewers. One explicit reviewer count binds
+   packet rendering, result collection, semantic distillation, and final
+   distillation; a partial or excess result set is rejected.
+5. Reviewers receive no conversation history or author rationale. The target
+   itself and repository grounding exclude evolving plans, progress, prior
+   reviews, and remediation history through explicit path exclusions.
+6. Every reviewer must disclose unchecked runtime, integration, or
    specification behavior, including an explicit empty array when none exists.
-6. Semantic clustering matches root-cause-equivalent paraphrases without
+7. Semantic clustering matches root-cause-equivalent paraphrases without
    treating reviewer-authored keys as authoritative. Every finding belongs to
    exactly one cluster.
-7. Two reviewers establish ensemble agreement. Stable findings are ranked by
+8. Two reviewers establish ensemble agreement. Stable findings are ranked by
    critical, important, then suggestion; the visible stable list is capped at
    five and any omitted count is visible in the rendered output.
-8. Contested findings, unchecked behavior, and reviewer verdicts remain visible.
+9. Contested findings, unchecked behavior, and reviewer verdicts remain visible.
    A clean line appears only when no important or critical stable finding exists.
-9. The helper never executes reviewed code. A reviewer may run a small trace
+10. Rendered headings, finding lines, empty-section text, clean-blocking
+    severities, and section order are versioned contract policy, not helper
+    literals. Required format placeholders are validated before rendering.
+11. The helper never executes reviewed code. A reviewer may run a small trace
    only in an isolated harness sandbox and otherwise discloses the unchecked
    behavior.
-10. The legacy Claude-only workflow is removed after equivalent portable
+12. The legacy Claude-only workflow is removed after equivalent portable
     behavior and package-drift checks pass.
-11. Source, Claude-installed, and Codex-installed package validation agree, and
+13. Source, Claude-installed, and Codex-installed package validation agree, and
     plugin metadata remains synchronized at version 1.9.0.
 
 ## Acceptance evidence

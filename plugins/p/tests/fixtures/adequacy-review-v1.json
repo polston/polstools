@@ -3,6 +3,7 @@
     "target": "main...HEAD",
     "spec": "docs/plans/example.md",
     "repo": ".",
+    "exclusions": ["docs/plans/progress.md"],
     "reviewers": 4
   },
   "reviews": [

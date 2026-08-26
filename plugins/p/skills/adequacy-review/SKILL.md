@@ -15,14 +15,17 @@ restate either in an adapter or improvise their behavior.
 
 1. Parse the invocation arguments: the first token or tokens identify a file,
    directory, or Git range; an optional `spec:` value identifies the sealed
-   requirements-only specification. Never pass an evolving plan, progress log,
-   author rationale, prior review, or remediation history as the sealed spec.
+   requirements-only specification; zero or more `exclude:` values identify
+   author-only context. Exclude author rationale, progress, prior reviews, and
+   remediation history from the target itself and from repository grounding.
+   For a Git range, append matching pathspec exclusions before packet rendering.
+   Never rely only on keeping the sealed spec clean.
 2. Identify the active harness from session context. Read exactly one adapter:
    - Claude Code: `references/claude-code.md`
    - Codex: `references/codex.md`
-3. Follow that adapter with `target`, optional `spec`, inferred repository root,
-   and optional reviewer count. The skill explicitly authorizes the adapter's
-   native parallel subagent calls.
+3. Follow that adapter with the filtered `target`, optional `spec`, inferred
+   repository root, every exclusion, and optional reviewer count. The skill
+   explicitly authorizes the adapter's native parallel subagent calls.
 4. Report the helper result's `distilled` field verbatim, followed by its
    reviewer verdicts. Do not editorialize or re-rank the result.
 

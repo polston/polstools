@@ -46,6 +46,16 @@ class AdequacyReviewContractTests(unittest.TestCase):
             contract["distillation"]["severity_order"],
         )
         self.assertEqual(
+            {"target", "spec", "repo", "exclusions", "reviewers"},
+            set(contract["inputs"]),
+        )
+        self.assertTrue(
+            all(
+                isinstance(description, str) and description.strip()
+                for description in contract["inputs"].values()
+            )
+        )
+        self.assertEqual(
             ["verdict", "findings", "unchecked"],
             contract["reviewer_schema"]["required"],
         )
@@ -69,6 +79,27 @@ class AdequacyReviewContractTests(unittest.TestCase):
         self.assertIn("Read exactly one adapter", skill)
         self.assertIn("contract-v1.json", skill)
         self.assertNotIn("workflows/adequacy-review.js", skill)
+
+    def test_skill_requires_author_context_exclusions_from_target_and_grounding(self):
+        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("target itself", skill)
+        self.assertIn("grounding", skill)
+        for adapter in ("claude-code", "codex"):
+            text = (SKILL_ROOT / "references" / (adapter + ".md")).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("--exclude", text)
+            self.assertIn("--reviewers", text)
+
+    def test_render_policy_is_not_duplicated_in_helper(self):
+        helper = HELPER_PATH.read_text(encoding="utf-8")
+        for policy_literal in (
+            '"## "',
+            '"None."',
+            '"None disclosed."',
+            '("critical", "important")',
+        ):
+            self.assertNotIn(policy_literal, helper)
 
     def test_native_adapters_contain_transport_not_review_policy(self):
         adapters = {
@@ -117,11 +148,26 @@ class AdequacyReviewParityTests(unittest.TestCase):
         self.assertIn("RESPONSE SCHEMA", request["prompt"])
         self.assertIn(json.dumps(request["schema"], sort_keys=True), request["prompt"])
         self.assertIn("unchecked", request["prompt"])
+        self.assertIn("EXCLUDED AUTHOR CONTEXT", request["prompt"])
+        self.assertIn("docs/plans/progress.md", request["prompt"])
+        self.assertEqual(
+            ["docs/plans/progress.md"],
+            packet["canonical"]["input"]["exclusions"],
+        )
         self.assertNotIn("model", packet["transport"])
         self.assertNotIn("parallel", packet["transport"])
 
+    def test_no_spec_prompt_does_not_require_an_unreportable_inference(self):
+        packet = self.helper.build_packet(
+            "codex", "example.py", repo=".", reviewers=1
+        )
+        prompt = packet["canonical"]["review_requests"][0]["prompt"]
+        self.assertNotIn("state what you inferred", prompt)
+
     def test_distiller_packet_embeds_schema_and_reviews(self):
-        request = self.helper.build_distiller_request(self.fixture["reviews"])
+        request = self.helper.build_distiller_request(
+            self.fixture["reviews"], reviewers=4
+        )
         self.assertIn("DISTILLER RESPONSE SCHEMA", request["prompt"])
         self.assertIn(json.dumps(request["schema"], sort_keys=True), request["prompt"])
         self.assertIn("Cache entries survive invalidation", request["prompt"])
@@ -129,7 +175,19 @@ class AdequacyReviewParityTests(unittest.TestCase):
     def test_review_without_unchecked_disclosure_is_rejected(self):
         review = {"verdict": "good", "findings": []}
         with self.assertRaisesRegex(self.helper.ContractError, "unchecked"):
-            self.helper.build_distiller_request([review])
+            self.helper.build_distiller_request([review], reviewers=1)
+
+    def test_distillation_requires_the_packet_reviewer_count(self):
+        with self.assertRaisesRegex(self.helper.ContractError, "expected 4 reviewer"):
+            self.helper.build_distiller_request(
+                self.fixture["reviews"][:3], reviewers=4
+            )
+        with self.assertRaisesRegex(self.helper.ContractError, "expected 4 reviewer"):
+            self.helper.distill_reviews(
+                self.fixture["reviews"][:3],
+                {"clusters": []},
+                reviewers=4,
+            )
 
     def test_fake_reviewers_produce_equivalent_stable_and_contested_results(self):
         results = []
@@ -183,7 +241,7 @@ class AdequacyReviewParityTests(unittest.TestCase):
                 {"finding_refs": [{"review": 1, "finding": 2}]},
             ]
         }
-        result = self.helper.distill_reviews(reviews, clusters)
+        result = self.helper.distill_reviews(reviews, clusters, reviewers=2)
         self.assertEqual("2/2", result["stable"][0]["agreement"])
         self.assertEqual("缓存失效", result["contested"][0]["issue"])
         self.assertEqual(["Runtime integration was not executed."], result["unchecked"])
@@ -215,7 +273,7 @@ class AdequacyReviewParityTests(unittest.TestCase):
                 for finding in range(1, 7)
             ]
         }
-        result = self.helper.distill_reviews(reviews, clusters)
+        result = self.helper.distill_reviews(reviews, clusters, reviewers=2)
         self.assertEqual(1, result["stable_omitted"])
         self.assertIn(
             "Additional ensemble-stable findings omitted by cap: 1.",
@@ -305,6 +363,34 @@ class AdequacyReviewInstalledCopyTests(unittest.TestCase):
                 "clusters"
             ].update(type="string"),
             "defaults container": lambda value: value.update(defaults=[]),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                changed = json.loads(json.dumps(contract))
+                mutate(changed)
+                path = Path(tmp) / "contract.json"
+                path.write_text(json.dumps(changed), encoding="utf-8")
+                with self.assertRaises(self.helper.ContractError):
+                    self.helper.load_contract(path)
+
+    def test_contract_rejects_prompt_template_drift(self):
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        mutations = {
+            "missing spec placeholder": lambda value: value["review"].update(
+                spec_present="SEALED SPEC"
+            ),
+            "unknown repo placeholder": lambda value: value["review"].update(
+                repo_present="REPO: {project}"
+            ),
+            "missing count placeholder": lambda value: value["distillation"].update(
+                stable_omitted_line="Additional findings omitted."
+            ),
+            "wrong heading placeholder": lambda value: value["distillation"].update(
+                heading_template="## {title}"
+            ),
+            "incomplete finding template": lambda value: value["distillation"].update(
+                finding_line_template="{index}. {issue}"
+            ),
         }
         for label, mutate in mutations.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:

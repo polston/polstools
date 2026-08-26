@@ -6,7 +6,9 @@
   "inputs": {
     "target": "A file, directory, or Git range.",
     "spec": "Optional sealed requirements-only specification path. It must exclude author rationale, progress, prior reviews, and remediation history.",
-    "repo": "Repository root used for grounding. Infer it when omitted."
+    "repo": "Repository root used for grounding. Infer it when omitted.",
+    "exclusions": "Paths containing author rationale, progress, prior reviews, or remediation history; exclude them from the target and repository grounding.",
+    "reviewers": "Positive reviewer count; the same count must bind packet rendering, collection, semantic distillation, and final distillation."
   },
   "reviewer_schema": {
     "type": "object",
@@ -83,11 +85,13 @@
   },
   "review": {
     "preamble": "You are a BLINDED code reviewer. You receive only the target and its intended behavior, never author rationale or a commit message. Judge it cold, like a stranger opening the change.",
-    "target_instruction": "If TARGET is a Git range, inspect its diff. If it is a file or directory, read it.",
+    "target_instruction": "If TARGET is a Git range, inspect only its filtered diff. If it is a file or directory, read it. Never inspect an excluded path while grounding.",
     "spec_present": "SEALED SPEC: {spec} - this is the reference the target must satisfy.",
-    "spec_absent": "No separate spec was given. Infer intended behavior from the target's docstrings, types, names, and tests, and state what you inferred.",
+    "spec_absent": "No separate spec was given. Infer intended behavior from the target's docstrings, types, names, and tests, and use that inference as the evaluation basis.",
     "repo_present": "REPO (for grounding): {repo}",
     "repo_absent": "Determine the repository root from the target and ground against it.",
+    "exclusions_present": "EXCLUDED AUTHOR CONTEXT (do not inspect or use for grounding): {exclusions}",
+    "exclusions_absent": "No author-context exclusions were supplied. If the target contains rationale, progress, prior reviews, or remediation history, report a blinding failure.",
     "required_steps": [
       {
         "label": "GROUND",
@@ -108,6 +112,14 @@
     "contested_heading": "Contested / single-reviewer / taste",
     "unchecked_heading": "Unchecked behavior",
     "stable_omitted_line": "Additional ensemble-stable findings omitted by cap: {count}.",
+    "heading_template": "## {heading}",
+    "finding_line_template": "{index}. [{severity}] {issue} ({agreement}){location_suffix}",
+    "location_suffix_template": " - {where}",
+    "unchecked_item_template": "- {item}",
+    "empty_findings_line": "None.",
+    "empty_unchecked_line": "None disclosed.",
+    "clean_blocking_severities": ["critical", "important"],
+    "section_order": ["stable", "contested", "unchecked"],
     "clean_line": "Clean: no important or critical finding reached ensemble agreement.",
     "semantic_instruction": "Group every finding exactly once by semantic root-cause equivalence. Match paraphrases of the same defect even when agreement_key differs; keep distinct defects separate even when a generic key matches. Return only finding references in the embedded schema."
   }
