@@ -64,9 +64,9 @@ Sources:
 | RED: portable contract and drift detection | Done | Initial run: 4 tests with 2 failures and 5 missing-file errors; validator RED: 9 tests with 2 drift-detection failures. |
 | GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; successive review-driven RED waves culminated in 14 failures and one error for closed-schema and contract-policy regressions; all 32 focused tests now pass. |
 | Installed-copy and release wiring | Done | Source, Claude copy, and Codex copy pass 3/3; README, activation, auto-discovered CI tests, and 1.9.0 metadata agree. |
-| Codex adequacy review | In progress | Latest K=4 review found three stable important defects in exact schema handling and contract-driven ranking; fixes pass focused validation and await a fresh cold review. |
+| Codex adequacy review | Done | Final native K=4 review plus semantic distiller reported zero ensemble-stable findings; three distinct important findings remained contested at 1/4 each. |
 | Full validation and commit | In progress | Post-fix: 332 tests passed with one skip; format 36/36; installed copies 3/3; privacy zero; diff check passed. |
-| Skill refinement review | Pending | Reusable drafting friction is assessed before completion. |
+| Skill refinement review | Done | Propose requiring a separate requirements-only sealed review specification and explicit author-context exclusions when an evolving plan accompanies blinded review. |
 
 ## Verification contract
 
@@ -103,6 +103,8 @@ git diff --check
 | 2026-08-25 | Stable-fix 3 RED/GREEN | Four failures and sixteen missing-provenance errors preceded request IDs, ordered-review digests, canonical packet reconstruction, supported-schema keyword checks, and Unicode boundary rejection; 26 focused tests and installed copies 3/3 pass. |
 | 2026-08-26 | Exact-schema review | Native K=4 reviewers plus one semantic distiller found contract-policy duplication, incomplete contract-shape validation, and permissive result-shape validation, each at 2/4. |
 | 2026-08-26 | Stable-fix 4 RED/GREEN | Fourteen failures and one malformed-severity error preceded contract-driven ranking, generic supported-schema enforcement, closed reviewer/distiller objects, exact v1 containers, and nonblank unchecked disclosures; 32 focused and 332 full tests pass. |
+| 2026-08-26 | Final Codex review | Native K=4 reviewers plus one semantic distiller reported zero ensemble-stable findings; three distinct important findings were contested at 1/4 each. |
+| 2026-08-26 | Draft-goal refinement audit | The evolving evidence plan contaminated an earlier blinded review; a reusable sealed-spec and author-context-exclusion rule is proposed for user approval, not edited automatically. |
 
 ## Protected scope
 
