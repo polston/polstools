@@ -20,7 +20,7 @@
   },
   "components": {
     "adequacy-review": {
-      "source": "command",
+      "source": "skill",
       "requires": ["core"]
     },
     "aligning-statuslines": {
@@ -98,19 +98,19 @@
       "requires": ["core"]
     },
     "statusline-apply": {
-      "source": "command",
+      "source": "skill",
       "requires": ["core"]
     },
     "statusline-check": {
-      "source": "command",
+      "source": "skill",
       "requires": ["core"]
     },
     "statusline-preview": {
-      "source": "command",
+      "source": "skill",
       "requires": ["core"]
     },
     "statusline-restore": {
-      "source": "command",
+      "source": "skill",
       "requires": ["core"]
     },
     "work": {

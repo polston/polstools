@@ -35,9 +35,10 @@ checkout, compare the live installations with that checkout directly:
 sh plugins/p/bin/python-launcher plugins/p/bin/p-doctor --repo-root .
 ```
 
-The doctor reports installed-version drift, disabled or obsolete polstools
-plugins, Python discovery failures, and byte-exact execution of both live format
-hooks. It is read-only and omits installation paths and raw command errors.
+The doctor reports package-metadata drift, installed-version drift, disabled or
+obsolete polstools plugins, Python discovery failures, and byte-exact execution
+of both live format hooks. It is read-only and omits installation paths and raw
+command errors.
 Exit 0 is healthy, exit 1 found actionable drift, and exit 2 means an available
 harness could not be checked.
 
@@ -105,11 +106,16 @@ The CI workflow runs these commands on Windows and Linux. Run the same contract
 locally before integration:
 
 ```sh
-python -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
-python -B plugins/p/bin/format-e2e
+sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
+sh plugins/p/bin/python-launcher -B plugins/p/bin/format-e2e
+sh plugins/p/bin/p-validate
 sh plugins/p/bin/repo-privacy-audit -C .
 git diff --check
 ```
+
+`p-validate` checks both metadata systems, canonical skill adapters, activation
+coverage, and fresh temporary installed copies for Claude Code and Codex. It
+does not register, install, publish, or otherwise change either harness.
 
 Use `/p:work` or `$p:work` to keep repository-publication audits and local
 session-history workflows out of the current work session. Use `/p:home` or

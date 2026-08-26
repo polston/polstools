@@ -33,10 +33,13 @@ jobs:
           python-version: "3.12"
 
       - name: Unit tests
-        run: python -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
+        run: sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
 
       - name: Hook and manifest end-to-end checks
-        run: python -B plugins/p/bin/format-e2e
+        run: sh plugins/p/bin/python-launcher -B plugins/p/bin/format-e2e
+
+      - name: Universal source and installed-copy checks
+        run: sh plugins/p/bin/p-validate
 
       - name: Repository privacy audit
         shell: bash

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Read-only cross-harness health check for the p plugin.
 
-Checks installed versions, enabled state, obsolete polstools plugin IDs, and
-the exact SessionStart and UserPromptSubmit commands. Output never includes
-installation paths or raw command stderr.
+Checks package metadata, installed versions, enabled state, obsolete polstools
+plugin IDs, and the exact SessionStart and UserPromptSubmit commands. Output
+never includes installation paths or raw command stderr.
 
 Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
 not complete an available harness check.
@@ -47,6 +47,64 @@ def _manifest_version(plugin_root=PLUGIN_ROOT):
     if not isinstance(version, str) or not version.strip():
         raise ValueError("plugin manifest has no version")
     return version
+
+
+def _read_plugin_manifest(path):
+    with Path(path).open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError("plugin manifest must be an object")
+    for field in ("name", "version", "description"):
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            raise ValueError("plugin manifest field is missing")
+    return value
+
+
+def package_metadata_checks(plugin_root=PLUGIN_ROOT):
+    root = Path(plugin_root)
+    try:
+        claude = _read_plugin_manifest(root / ".claude-plugin" / "plugin.json")
+    except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
+        return [
+            Check(
+                "package.claude_manifest",
+                "ERROR",
+                "the Claude plugin manifest is missing or malformed",
+            ),
+            Check(
+                "package.universal_manifest",
+                "ERROR",
+                "universal metadata cannot be compared without the Claude manifest",
+            ),
+        ]
+    checks = [Check(
+        "package.claude_manifest",
+        "PASS",
+        "Claude package metadata declares p version %s" % claude["version"],
+    )]
+    try:
+        universal = _read_plugin_manifest(root / ".codex-plugin" / "plugin.json")
+    except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
+        checks.append(Check(
+            "package.universal_manifest",
+            "ERROR",
+            "the universal plugin manifest is missing or malformed",
+        ))
+        return checks
+    matches = all(
+        universal.get(field) == claude.get(field)
+        for field in ("name", "version", "description")
+    )
+    checks.append(Check(
+        "package.universal_manifest",
+        "PASS" if matches else "FAIL",
+        (
+            "universal metadata matches the Claude package"
+            if matches
+            else "universal metadata version or description differs from Claude"
+        ),
+    ))
+    return checks
 
 
 def marketplace_version(root):
@@ -373,10 +431,7 @@ def collect(repo_root=None):
             "repository.manifest", "ERROR",
             "the requested repository marketplace manifest is unreadable",
         )]
-    checks = [Check(
-        "package.manifest", "PASS",
-        "running package declares p version %s" % self_version,
-    )]
+    checks = package_metadata_checks()
     installed_by_harness = {}
 
     for harness in ("claude", "codex"):

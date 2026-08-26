@@ -36,8 +36,9 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
 
     def test_runs_the_repository_validation_contract(self):
         commands = (
-            "python -B -m unittest discover -s plugins/p/tests -t plugins/p/tests",
-            "python -B plugins/p/bin/format-e2e",
+            "sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests",
+            "sh plugins/p/bin/python-launcher -B plugins/p/bin/format-e2e",
+            "sh plugins/p/bin/p-validate",
             "sh plugins/p/bin/repo-privacy-audit -C .",
             "git diff --check",
         )

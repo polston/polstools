@@ -3,8 +3,22 @@
 # override is a single executable path, not a shell fragment.
 set -eu
 
-if [ -n "${POLSTOOLS_PYTHON:-}" ] && [ -x "$POLSTOOLS_PYTHON" ]; then
-  exec "$POLSTOOLS_PYTHON" "$@"
+shell_path() {
+  value=$1
+  case "$value" in
+    [A-Za-z]:\\* | [A-Za-z]:/*)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -u "$value"
+        return
+      fi
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+python_override=$(shell_path "${POLSTOOLS_PYTHON:-}")
+if [ -n "$python_override" ] && [ -x "$python_override" ]; then
+  exec "$python_override" "$@"
 fi
 
 for name in python3 python; do
@@ -18,15 +32,28 @@ if command -v py >/dev/null 2>&1; then
 fi
 
 # uv-managed Windows installations are intentionally not required to be on
-# PATH. The wildcard stays below the platform-owned uv directory.
-for candidate in "${APPDATA:-}/uv/python"/*/python.exe \
-                 "${LOCALAPPDATA:-}/Programs/Python"/Python*/python.exe; do
-  if [ -x "$candidate" ]; then
-    exec "$candidate" "$@"
-  fi
-done
+# PATH. Normalize native environment paths before globbing from POSIX sh.
+app_data=$(shell_path "${APPDATA:-}")
+local_app_data=$(shell_path "${LOCALAPPDATA:-}")
+if [ -n "$app_data" ]; then
+  for candidate in "$app_data"/uv/python/*/python.exe; do
+    if [ -x "$candidate" ]; then
+      exec "$candidate" "$@"
+    fi
+  done
+fi
+if [ -n "$local_app_data" ]; then
+  for candidate in "$local_app_data"/Programs/Python/Python*/python.exe; do
+    if [ -x "$candidate" ]; then
+      exec "$candidate" "$@"
+    fi
+  done
+fi
 
 if command -v uv >/dev/null 2>&1; then
+  cache_base=$(shell_path "${TMPDIR:-${TEMP:-/tmp}}")
+  UV_CACHE_DIR=${UV_CACHE_DIR:-${POLSTOOLS_UV_CACHE:-$cache_base/polstools-uv-cache}}
+  export UV_CACHE_DIR
   exec uv run --no-project python "$@"
 fi
 

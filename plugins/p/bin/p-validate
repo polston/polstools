@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec sh "$script_dir/python-launcher" -B "$script_dir/p_validate.py" "$@"

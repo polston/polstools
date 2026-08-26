@@ -40,23 +40,27 @@ substitution is silent, and nobody re-reads metadata.
 
 ## Layout and conventions
 
-- `.claude-plugin/marketplace.json` lists the `p` plugin; its manifest is
-  `plugins/p/.claude-plugin/plugin.json`. Both must stay in step.
-- `plugins/p/skills/<skill>/SKILL.md` — one directory per skill.
+- `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json` list
+  the same `p` source for Claude and universal Codex packaging respectively.
+- `plugins/p/.claude-plugin/plugin.json` and
+  `plugins/p/.codex-plugin/plugin.json` are the harness manifests; release
+  metadata must stay in step across both and the Claude marketplace entry.
+- `plugins/p/skills/<skill>/SKILL.md` — one directory per canonical skill.
 - `plugins/p/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
   dependencies, no compiled artifacts.
 - `plugins/p/hooks/hooks.json` — hook wiring for session events;
   commands reference plugin files via `${CLAUDE_PLUGIN_ROOT}` (the format hooks
   print payload files kept under `style/`).
-- `plugins/p/commands/<command>.md` — one file per slash command,
-  namespaced as `/p:<command>`. Refer to files inside the plugin as
-  `${CLAUDE_PLUGIN_ROOT}/…`, never by a path under the author's home directory.
-- `plugins/p/workflows/` — deterministic multi-agent workflow scripts,
-  run by the harness rather than executed directly. A command invokes one
+- `plugins/p/commands/<command>.md` — Claude compatibility adapters,
+  namespaced as `/p:<command>`, which forward to matching canonical skills.
+  Refer to plugin files as `${CLAUDE_PLUGIN_ROOT}/…`, never by a path under
+  the author's home directory.
+- `plugins/p/workflows/` — deterministic multi-agent workflow scripts, run by
+  the harness rather than executed directly. A canonical skill invokes one
   instead of restating its recipe in prose, so the procedure cannot drift from
   one model reading it to the next.
-- `plugins/p/tests/` — stdlib `unittest`, no runner or dependency. Run
-  with `python -m unittest discover -s plugins/p/tests -t plugins/p/tests`.
+- `plugins/p/tests/` — stdlib `unittest`, no runner or dependency. Run with
+  `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests`.
 - `docs/plans/` — design documents, filename dated.
 
 Scripts in any `bin/` share one exit-code convention: `0` ran clean and flagged

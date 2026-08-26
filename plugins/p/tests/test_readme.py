@@ -6,6 +6,8 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "p"
 README_PATH = REPO_ROOT / "README.md"
+AGENTS_PATH = REPO_ROOT / "AGENTS.md"
+CLAUDE_PATH = REPO_ROOT / "CLAUDE.md"
 
 
 class ReadmeContractTests(unittest.TestCase):
@@ -33,10 +35,11 @@ class ReadmeContractTests(unittest.TestCase):
         self.assertIn("$p:doctor", self.readme)
         self.assertIn("plugins/p/bin/p-doctor --repo-root .", self.readme)
         self.assertIn(
-            "python -B -m unittest discover -s plugins/p/tests -t plugins/p/tests",
+            "sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests",
             self.readme,
         )
-        self.assertIn("python -B plugins/p/bin/format-e2e", self.readme)
+        self.assertIn("sh plugins/p/bin/python-launcher -B plugins/p/bin/format-e2e", self.readme)
+        self.assertIn("sh plugins/p/bin/p-validate", self.readme)
         self.assertIn("sh plugins/p/bin/repo-privacy-audit -C .", self.readme)
 
     def test_capability_catalogue_names_every_skill_and_command(self):
@@ -52,6 +55,17 @@ class ReadmeContractTests(unittest.TestCase):
         self.assertIsNone(
             re.search(r"[A-Za-z]:[\\/](?:Users|home)[\\/][A-Za-z0-9_.-]+", self.readme)
         )
+
+    def test_agent_instruction_files_remain_identical_in_substance(self):
+        agents = AGENTS_PATH.read_text(encoding="utf-8").splitlines()[1:]
+        claude = CLAUDE_PATH.read_text(encoding="utf-8").splitlines()[1:]
+        trailer = agents.index("This file is kept identical in substance to `CLAUDE.md`; edit both together.")
+        agents = agents[: trailer - 2]
+        while agents and not agents[-1]:
+            agents.pop()
+        while claude and not claude[-1]:
+            claude.pop()
+        self.assertEqual(claude, agents)
 
 
 if __name__ == "__main__":

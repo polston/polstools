@@ -214,6 +214,28 @@ class SchemaAndPackagingTests(unittest.TestCase):
             )
             self.assertEqual("1.5.14", self.doctor.marketplace_version(root))
 
+    def test_package_metadata_check_requires_synchronized_universal_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = Path(tmp) / "p"
+            (plugin / ".claude-plugin").mkdir(parents=True)
+            (plugin / ".codex-plugin").mkdir()
+            base = {"name": "p", "version": "1.8.0", "description": "fixture"}
+            (plugin / ".claude-plugin" / "plugin.json").write_text(
+                json.dumps(base), encoding="utf-8"
+            )
+            (plugin / ".codex-plugin" / "plugin.json").write_text(
+                json.dumps(base), encoding="utf-8"
+            )
+            checks = self.doctor.package_metadata_checks(plugin)
+            self.assertEqual(["PASS", "PASS"], [check.status for check in checks])
+            drifted = dict(base, version="1.7.0")
+            (plugin / ".codex-plugin" / "plugin.json").write_text(
+                json.dumps(drifted), encoding="utf-8"
+            )
+            checks = self.doctor.package_metadata_checks(plugin)
+            self.assertEqual("FAIL", checks[1].status)
+            self.assertIn("version or description differs", checks[1].summary)
+
     def test_error_dominates_fail_and_fail_dominates_skip(self):
         Check = self.doctor.Check
         self.assertEqual(2, self.doctor.exit_code([Check("a", "ERROR", "x")]))
@@ -242,9 +264,16 @@ class SchemaAndPackagingTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        codex_manifest = json.loads(
+            (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
         entry = next(item for item in marketplace["plugins"] if item["name"] == "p")
-        self.assertEqual("1.7.0", entry["version"])
-        self.assertEqual("1.7.0", manifest["version"])
+        self.assertEqual("1.8.0", entry["version"])
+        self.assertEqual("1.8.0", manifest["version"])
+        self.assertEqual("1.8.0", codex_manifest["version"])
+        self.assertEqual(manifest["description"], codex_manifest["description"])
 
 
 if __name__ == "__main__":
