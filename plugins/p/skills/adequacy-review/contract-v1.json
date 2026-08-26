@@ -12,10 +12,12 @@
   },
   "reviewer_schema": {
     "type": "object",
+    "additionalProperties": false,
     "required": ["request_id", "verdict", "findings", "unchecked"],
     "properties": {
       "request_id": {
         "type": "string",
+        "minLength": 1,
         "description": "Exact per-request identity embedded by the packet renderer."
       },
       "verdict": {
@@ -26,10 +28,12 @@
         "type": "array",
         "items": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["issue", "severity"],
           "properties": {
             "issue": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             },
             "severity": {
               "type": "string",
@@ -50,25 +54,29 @@
         "type": "array",
         "description": "Runtime, integration, or specification behavior this reviewer could not verify.",
         "items": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         }
       }
     }
   },
   "distiller_schema": {
     "type": "object",
+    "additionalProperties": false,
     "required": ["clusters", "reviews_sha256"],
     "properties": {
       "clusters": {
         "type": "array",
         "items": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["finding_refs"],
           "properties": {
             "finding_refs": {
               "type": "array",
               "items": {
                 "type": "object",
+                "additionalProperties": false,
                 "required": ["review", "finding"],
                 "properties": {
                   "review": {

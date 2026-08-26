@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -220,6 +221,161 @@ class AdequacyReviewParityTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(self.helper.ContractError, "unchecked"):
             self.helper.build_distiller_request([review], packet)
+
+    def test_reviewer_results_reject_excess_fields_and_blank_disclosures(self):
+        packet = self.helper.build_packet("codex", "example.py", reviewers=1)
+        base = self._bound_reviews(
+            [{"verdict": "good", "findings": [], "unchecked": []}], packet
+        )[0]
+        mutations = {
+            "review": lambda value: value.update(extra=True),
+            "finding": lambda value: value.update(
+                verdict="has-issues",
+                findings=[{"issue": "Issue", "severity": "important", "extra": True}],
+            ),
+            "blank unchecked": lambda value: value.update(unchecked=[""]),
+            "non-string severity": lambda value: value.update(
+                verdict="has-issues",
+                findings=[{"issue": "Issue", "severity": []}],
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                review = copy.deepcopy(base)
+                mutate(review)
+                with self.assertRaises(self.helper.ContractError):
+                    self.helper.build_distiller_request([review], packet)
+
+    def test_distiller_results_reject_excess_fields(self):
+        packet = self.helper.build_packet("codex", "example.py", reviewers=1)
+        reviews = self._bound_reviews(
+            [
+                {
+                    "verdict": "has-issues",
+                    "findings": [{"issue": "Issue", "severity": "important"}],
+                    "unchecked": [],
+                }
+            ],
+            packet,
+        )
+        request = self.helper.build_distiller_request(reviews, packet)
+        base = self._bound_clusters(
+            {"clusters": [{"finding_refs": [{"review": 1, "finding": 1}]}]},
+            request,
+        )
+        mutations = {
+            "result": lambda value: value.update(extra=True),
+            "cluster": lambda value: value["clusters"][0].update(extra=True),
+            "reference": lambda value: value["clusters"][0]["finding_refs"][0].update(
+                extra=True
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                clusters = copy.deepcopy(base)
+                mutate(clusters)
+                with self.assertRaises(self.helper.ContractError):
+                    self.helper.distill_reviews(reviews, clusters, packet=packet)
+
+    def test_supported_schema_constraints_are_enforced_at_runtime(self):
+        contract = self.helper.load_contract()
+        contract = copy.deepcopy(contract)
+        contract["reviewer_schema"]["properties"]["findings"]["items"][
+            "properties"
+        ]["issue"]["enum"] = ["Allowed"]
+        with mock.patch.object(self.helper, "load_contract", return_value=contract):
+            packet = self.helper.build_packet("codex", "example.py", reviewers=1)
+            review = self._bound_reviews(
+                [
+                    {
+                        "verdict": "has-issues",
+                        "findings": [
+                            {"issue": "Not allowed", "severity": "important"}
+                        ],
+                        "unchecked": [],
+                    }
+                ],
+                packet,
+            )
+            with self.assertRaises(self.helper.ContractError):
+                self.helper.build_distiller_request(review, packet)
+
+    def test_contract_verdicts_and_step_labels_drive_runtime_behavior(self):
+        contract = copy.deepcopy(self.helper.load_contract())
+        contract["reviewer_schema"]["properties"]["verdict"]["enum"] = [
+            "accepted",
+            "rejected",
+        ]
+        contract["review"]["required_steps"][0]["label"] = "SEARCH"
+        with mock.patch.object(self.helper, "load_contract", return_value=contract):
+            packet = self.helper.build_packet("codex", "example.py", reviewers=1)
+            self.assertIn("1. SEARCH -", packet["canonical"]["review_requests"][0]["prompt"])
+            review = self._bound_reviews(
+                [{"verdict": "accepted", "findings": [], "unchecked": []}], packet
+            )
+            request = self.helper.build_distiller_request(review, packet)
+        self.assertEqual(64, len(request["reviews_sha256"]))
+
+    def test_contract_ranking_policy_drives_result_order(self):
+        contract = copy.deepcopy(self.helper.load_contract())
+        contract["distillation"]["ranking_tiebreakers"] = [
+            "agreement_desc",
+            "severity",
+            "first_seen",
+        ]
+        with mock.patch.object(self.helper, "load_contract", return_value=contract):
+            packet = self.helper.build_packet("codex", "example.py", reviewers=3)
+            reviews = self._bound_reviews(
+                [
+                    {
+                        "verdict": "has-issues",
+                        "findings": [
+                            {"issue": "Critical pair", "severity": "critical"},
+                            {"issue": "Suggestion trio", "severity": "suggestion"},
+                        ],
+                        "unchecked": [],
+                    },
+                    {
+                        "verdict": "has-issues",
+                        "findings": [
+                            {"issue": "Critical pair", "severity": "critical"},
+                            {"issue": "Suggestion trio", "severity": "suggestion"},
+                        ],
+                        "unchecked": [],
+                    },
+                    {
+                        "verdict": "has-issues",
+                        "findings": [
+                            {"issue": "Suggestion trio", "severity": "suggestion"}
+                        ],
+                        "unchecked": [],
+                    },
+                ],
+                packet,
+            )
+            request = self.helper.build_distiller_request(reviews, packet)
+            clusters = self._bound_clusters(
+                {
+                    "clusters": [
+                        {
+                            "finding_refs": [
+                                {"review": 1, "finding": 1},
+                                {"review": 2, "finding": 1},
+                            ]
+                        },
+                        {
+                            "finding_refs": [
+                                {"review": 1, "finding": 2},
+                                {"review": 2, "finding": 2},
+                                {"review": 3, "finding": 1},
+                            ]
+                        },
+                    ]
+                },
+                request,
+            )
+            result = self.helper.distill_reviews(reviews, clusters, packet=packet)
+        self.assertEqual("Suggestion trio", result["stable"][0]["issue"])
 
     def test_distillation_requires_the_packet_reviewer_count(self):
         packet = self.helper.build_packet(
@@ -470,7 +626,7 @@ class AdequacyReviewInstalledCopyTests(unittest.TestCase):
             shutil.copytree(PLUGIN_ROOT, plugin)
             contract_path = plugin / "skills" / "adequacy-review" / "contract-v1.json"
             contract = json.loads(contract_path.read_text(encoding="utf-8"))
-            contract["distillation"]["agreement_threshold"] = 3
+            contract["distillation"]["agreement_threshold"] = 0
             contract_path.write_text(json.dumps(contract), encoding="utf-8")
             errors = self.validator.validate_package(plugin)
         self.assertIn("adequacy-review contract self-check failed", errors)
@@ -514,6 +670,29 @@ class AdequacyReviewInstalledCopyTests(unittest.TestCase):
         for label, mutate in mutations.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
                 changed = json.loads(json.dumps(contract))
+                mutate(changed)
+                path = Path(tmp) / "contract.json"
+                path.write_text(json.dumps(changed), encoding="utf-8")
+                with self.assertRaises(self.helper.ContractError):
+                    self.helper.load_contract(path)
+
+    def test_contract_rejects_excess_v1_fields(self):
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        mutations = {
+            "root": lambda value: value.update(extra=True),
+            "defaults": lambda value: value["defaults"].update(extra=True),
+            "review": lambda value: value["review"].update(extra=True),
+            "distillation": lambda value: value["distillation"].update(extra=True),
+            "reviewer property": lambda value: value["reviewer_schema"][
+                "properties"
+            ].update(extra={"type": "string"}),
+            "distiller property": lambda value: value["distiller_schema"][
+                "properties"
+            ].update(extra={"type": "string"}),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                changed = copy.deepcopy(contract)
                 mutate(changed)
                 path = Path(tmp) / "contract.json"
                 path.write_text(json.dumps(changed), encoding="utf-8")

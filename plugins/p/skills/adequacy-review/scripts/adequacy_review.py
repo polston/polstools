@@ -25,14 +25,18 @@ class ContractError(ValueError):
 
 
 SCHEMA_KEYWORDS = {
+    "additionalProperties",
+    "const",
     "description",
     "enum",
     "items",
+    "minLength",
     "minimum",
     "properties",
     "required",
     "type",
 }
+SCHEMA_TYPES = {"array", "integer", "object", "string"}
 LINE_BOUNDARIES = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
@@ -41,14 +45,100 @@ def _validate_schema_keywords(schema, label):
         raise ContractError(label + " schema must be an object")
     if set(schema) - SCHEMA_KEYWORDS:
         raise ContractError(label + " schema uses unsupported constraints")
+    schema_type = schema.get("type")
+    if schema_type not in SCHEMA_TYPES:
+        raise ContractError(label + " schema type is invalid")
+    if "additionalProperties" in schema and (
+        schema_type != "object" or type(schema["additionalProperties"]) is not bool
+    ):
+        raise ContractError(label + " schema additionalProperties is invalid")
+    if "required" in schema and (
+        schema_type != "object"
+        or not isinstance(schema["required"], list)
+        or not all(isinstance(item, str) for item in schema["required"])
+        or len(schema["required"]) != len(set(schema["required"]))
+    ):
+        raise ContractError(label + " schema required fields are invalid")
+    if "enum" in schema and (
+        not isinstance(schema["enum"], list)
+        or not schema["enum"]
+        or any(not _schema_type_matches(item, schema_type) for item in schema["enum"])
+        or len({json.dumps(item, sort_keys=True) for item in schema["enum"]})
+        != len(schema["enum"])
+    ):
+        raise ContractError(label + " schema enum is invalid")
+    if "const" in schema and not _schema_type_matches(schema["const"], schema_type):
+        raise ContractError(label + " schema const is invalid")
+    if "minLength" in schema and (
+        schema_type != "string"
+        or type(schema["minLength"]) is not int
+        or schema["minLength"] < 0
+    ):
+        raise ContractError(label + " schema minLength is invalid")
+    if "minimum" in schema and (
+        schema_type != "integer"
+        or type(schema["minimum"]) is not int
+    ):
+        raise ContractError(label + " schema minimum is invalid")
     properties = schema.get("properties")
     if properties is not None:
         if not isinstance(properties, dict):
             raise ContractError(label + " schema properties are invalid")
+        if schema_type != "object":
+            raise ContractError(label + " schema properties are invalid")
+        required = schema.get("required", [])
+        if set(required) - set(properties):
+            raise ContractError(label + " schema required fields are invalid")
         for name, nested in properties.items():
             _validate_schema_keywords(nested, label + "." + name)
     if "items" in schema:
+        if schema_type != "array":
+            raise ContractError(label + " schema items are invalid")
         _validate_schema_keywords(schema["items"], label + ".items")
+
+
+def _schema_type_matches(value, schema_type):
+    return {
+        "array": isinstance(value, list),
+        "integer": type(value) is int,
+        "object": isinstance(value, dict),
+        "string": isinstance(value, str),
+    }.get(schema_type, False)
+
+
+def _validate_schema_value(value, schema, label):
+    schema_type = schema["type"]
+    if not _schema_type_matches(value, schema_type):
+        raise ContractError(label + " has an invalid type")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ContractError(label + " is outside the contract enum")
+    if "const" in schema and value != schema["const"]:
+        if label.endswith(".request_id"):
+            raise ContractError(
+                label.rsplit(".", 1)[0] + " request identity does not match contract"
+            )
+        if label.endswith(".reviews_sha256"):
+            raise ContractError("distiller reviews digest does not match review results")
+        raise ContractError(label + " does not match the contract identity")
+    if schema_type == "string" and len(value) < schema.get("minLength", 0):
+        raise ContractError(label + " is shorter than the contract minimum")
+    if schema_type == "integer" and value < schema.get("minimum", value):
+        raise ContractError(label + " is below the contract minimum")
+    if schema_type == "object":
+        properties = schema.get("properties", {})
+        missing = [name for name in schema.get("required", []) if name not in value]
+        if missing:
+            raise ContractError(
+                label + " is missing required fields: " + ", ".join(missing)
+            )
+        if schema.get("additionalProperties") is False and set(value) - set(properties):
+            raise ContractError(label + " contains excess fields")
+        for name, nested in properties.items():
+            if name in value:
+                _validate_schema_value(value[name], nested, label + "." + name)
+    if schema_type == "array":
+        for index, item in enumerate(value):
+            _validate_schema_value(item, schema["items"], "%s[%d]" % (label, index))
 
 
 def _validate_template(value, expected_fields, label):
@@ -83,7 +173,7 @@ def load_contract(path=CONTRACT_PATH):
         "review",
         "distillation",
     }
-    if not isinstance(contract, dict) or not required.issubset(contract):
+    if not isinstance(contract, dict) or set(contract) != required:
         raise ContractError("adequacy-review contract is incomplete")
     if contract["contract_version"] != 1:
         raise ContractError("unsupported adequacy-review contract version")
@@ -105,7 +195,11 @@ def load_contract(path=CONTRACT_PATH):
         )
     ):
         raise ContractError("adequacy-review contract containers are invalid")
-    if type(defaults.get("reviewers")) is not int or defaults["reviewers"] < 1:
+    if (
+        set(defaults) != {"reviewers"}
+        or type(defaults.get("reviewers")) is not int
+        or defaults["reviewers"] < 1
+    ):
         raise ContractError("default reviewer count must be positive")
     if set(inputs) != {"target", "spec", "repo", "exclusions", "reviewers"} or not all(
         isinstance(value, str) and value.strip() for value in inputs.values()
@@ -142,38 +236,44 @@ def load_contract(path=CONTRACT_PATH):
         )
     ):
         raise ContractError("reviewer or distiller schema containers are invalid")
-    if reviewer_schema.get("type") != "object" or reviewer_schema.get("required") != [
-        "request_id",
-        "verdict",
-        "findings",
-        "unchecked",
-    ]:
+    if (
+        reviewer_schema.get("type") != "object"
+        or reviewer_schema.get("additionalProperties") is not False
+        or reviewer_schema.get("required")
+        != ["request_id", "verdict", "findings", "unchecked"]
+        or set(reviewer_properties)
+        != {"request_id", "verdict", "findings", "unchecked"}
+    ):
         raise ContractError("reviewer schema root is invalid")
     if reviewer_properties.get("request_id", {}).get("type") != "string":
         raise ContractError("reviewer request identity schema is invalid")
     verdict_schema = reviewer_properties.get("verdict", {})
-    if verdict_schema.get("type") != "string" or verdict_schema.get("enum") != [
-        "good",
-        "has-issues",
-    ]:
+    if (
+        verdict_schema.get("type") != "string"
+        or not isinstance(verdict_schema.get("enum"), list)
+        or not verdict_schema["enum"]
+    ):
         raise ContractError("reviewer verdict schema is invalid")
     if (
         findings_schema.get("type") != "array"
         or finding_schema.get("type") != "object"
+        or finding_schema.get("additionalProperties") is not False
         or finding_schema.get("required") != ["issue", "severity"]
     ):
         raise ContractError("reviewer finding schema is invalid")
     finding_properties = finding_schema.get("properties", {})
     if not isinstance(finding_properties, dict):
         raise ContractError("reviewer finding schema is invalid")
+    if set(finding_properties) != {"issue", "severity", "where", "agreement_key"}:
+        raise ContractError("reviewer finding schema is invalid")
     if finding_properties.get("issue", {}).get("type") != "string":
         raise ContractError("reviewer issue schema is invalid")
     severity_schema = finding_properties.get("severity", {})
-    if severity_schema.get("type") != "string" or severity_schema.get("enum") != [
-        "critical",
-        "important",
-        "suggestion",
-    ]:
+    if (
+        severity_schema.get("type") != "string"
+        or not isinstance(severity_schema.get("enum"), list)
+        or not severity_schema["enum"]
+    ):
         raise ContractError("reviewer severity schema is invalid")
     for field in ("where", "agreement_key"):
         if finding_properties.get(field, {}).get("type") != "string":
@@ -184,7 +284,9 @@ def load_contract(path=CONTRACT_PATH):
         raise ContractError("reviewer unchecked schema is invalid")
     if (
         distiller_schema.get("type") != "object"
+        or distiller_schema.get("additionalProperties") is not False
         or distiller_schema.get("required") != ["clusters", "reviews_sha256"]
+        or set(distiller_properties) != {"clusters", "reviews_sha256"}
         or clusters_schema.get("type") != "array"
     ):
         raise ContractError("distiller schema root is invalid")
@@ -192,14 +294,18 @@ def load_contract(path=CONTRACT_PATH):
         raise ContractError("distiller reviews digest schema is invalid")
     if (
         cluster_schema.get("type") != "object"
+        or cluster_schema.get("additionalProperties") is not False
         or cluster_schema.get("required") != ["finding_refs"]
+        or set(cluster_properties) != {"finding_refs"}
         or finding_refs_schema.get("type") != "array"
     ):
         raise ContractError("distiller cluster schema is invalid")
-    if reference_schema.get("type") != "object" or reference_schema.get("required") != [
-        "review",
-        "finding",
-    ]:
+    if (
+        reference_schema.get("type") != "object"
+        or reference_schema.get("additionalProperties") is not False
+        or reference_schema.get("required") != ["review", "finding"]
+        or set(reference_schema.get("properties", {})) != {"review", "finding"}
+    ):
         raise ContractError("distiller finding reference schema is invalid")
     for field in ("review", "finding"):
         value = reference_schema.get("properties", {}).get(field, {})
@@ -221,17 +327,21 @@ def load_contract(path=CONTRACT_PATH):
         "report",
         "reviewer_schema_heading",
     }
-    if not isinstance(review, dict) or not required_review_fields.issubset(review):
+    if not isinstance(review, dict) or set(review) != required_review_fields:
         raise ContractError("review prompt contract is incomplete")
     steps = review["required_steps"]
     if (
         not isinstance(steps, list)
-        or not all(isinstance(step, dict) for step in steps)
-        or [step.get("label") for step in steps]
-        != [
-        "GROUND",
-        "TRACE",
-        ]
+        or not steps
+        or not all(
+            isinstance(step, dict) and set(step) == {"label", "instruction"}
+            for step in steps
+        )
+        or not all(
+            isinstance(step["label"], str) and step["label"].strip()
+            for step in steps
+        )
+        or len({step["label"] for step in steps}) != len(steps)
     ):
         raise ContractError("review steps are invalid")
     for field in required_review_fields - {"required_steps"}:
@@ -250,13 +360,10 @@ def load_contract(path=CONTRACT_PATH):
         {"index", "label", "instruction"},
         "step_line",
     )
-    if distillation.get("agreement_threshold") != 2:
-        raise ContractError("agreement threshold must be 2")
-    if distillation.get("stable_cap") != 5:
-        raise ContractError("stable finding cap must be 5")
-    if distillation.get("severity_order") != ["critical", "important", "suggestion"]:
-        raise ContractError("severity order is invalid")
-    for field in (
+    required_distillation_fields = {
+        "agreement_threshold",
+        "stable_cap",
+        "severity_order",
         "stable_heading",
         "contested_heading",
         "unchecked_heading",
@@ -273,23 +380,59 @@ def load_contract(path=CONTRACT_PATH):
         "distiller_schema_heading",
         "reviewer_verdicts_heading",
         "verdict_line_template",
+        "clean_blocking_severities",
+        "section_order",
+        "ranking_tiebreakers",
+    }
+    if set(distillation) != required_distillation_fields:
+        raise ContractError("distillation contract fields are invalid")
+    if (
+        type(distillation["agreement_threshold"]) is not int
+        or distillation["agreement_threshold"] < 1
     ):
+        raise ContractError("agreement threshold must be positive")
+    if type(distillation["stable_cap"]) is not int or distillation["stable_cap"] < 1:
+        raise ContractError("stable finding cap must be positive")
+    severity_order = distillation["severity_order"]
+    if (
+        not isinstance(severity_order, list)
+        or not severity_order
+        or not all(isinstance(item, str) and item.strip() for item in severity_order)
+        or len(severity_order) != len(set(severity_order))
+        or severity_schema["enum"] != severity_order
+    ):
+        raise ContractError("severity order is invalid")
+    for field in required_distillation_fields - {
+        "agreement_threshold",
+        "stable_cap",
+        "severity_order",
+        "clean_blocking_severities",
+        "section_order",
+        "ranking_tiebreakers",
+    }:
         if not isinstance(distillation.get(field), str) or not distillation[field].strip():
             raise ContractError("distillation text is invalid")
-    if distillation.get("clean_blocking_severities") != ["critical", "important"]:
+    blocking = distillation["clean_blocking_severities"]
+    if (
+        not isinstance(blocking, list)
+        or not all(item in severity_order for item in blocking)
+        or len(blocking) != len(set(blocking))
+    ):
         raise ContractError("clean blocking severities are invalid")
-    if distillation.get("section_order") != [
-        "stable",
-        "contested",
-        "unchecked",
-        "verdicts",
-    ]:
+    section_order = distillation["section_order"]
+    if (
+        not isinstance(section_order, list)
+        or len(section_order) != 4
+        or set(section_order) != {"stable", "contested", "unchecked", "verdicts"}
+    ):
         raise ContractError("distillation section order is invalid")
-    if distillation.get("ranking_tiebreakers") != [
-        "severity",
-        "agreement_desc",
-        "first_seen",
-    ]:
+    ranking_tiebreakers = distillation["ranking_tiebreakers"]
+    if (
+        not isinstance(ranking_tiebreakers, list)
+        or len(ranking_tiebreakers) != 3
+        or set(ranking_tiebreakers)
+        != {"severity", "agreement_desc", "first_seen"}
+    ):
         raise ContractError("distillation ranking policy is invalid")
     _validate_template(
         distillation["stable_omitted_line"], {"count"}, "stable_omitted_line"
@@ -449,28 +592,15 @@ def build_packet(harness, target, spec="", repo="", reviewers=None, exclusions=N
 
 
 def _validate_review(review, index, contract, request_id):
-    if not isinstance(review, dict):
-        raise ContractError("review %d must be an object" % (index + 1))
-    if review.get("verdict") not in ("good", "has-issues"):
-        raise ContractError("review %d has an invalid verdict" % (index + 1))
-    findings = review.get("findings")
-    if not isinstance(findings, list):
-        raise ContractError("review %d findings must be an array" % (index + 1))
-    unchecked = review.get("unchecked")
-    if not isinstance(unchecked, list):
-        raise ContractError("review %d unchecked must be an array of strings" % (index + 1))
-    unchecked = [_optional_text(item, "unchecked item") for item in unchecked]
-    if review.get("request_id") != request_id:
-        raise ContractError("review %d request identity is invalid" % (index + 1))
-    severities = set(contract["distillation"]["severity_order"])
+    schema = copy.deepcopy(contract["reviewer_schema"])
+    schema["properties"]["request_id"]["const"] = request_id
+    _validate_schema_value(review, schema, "review %d" % (index + 1))
+    findings = review["findings"]
+    unchecked = [_required_text(item, "unchecked item") for item in review["unchecked"]]
     normalized = []
     for finding_index, finding in enumerate(findings):
-        if not isinstance(finding, dict):
-            raise ContractError("review finding must be an object")
         issue = _required_text(finding.get("issue"), "finding issue")
         severity = finding.get("severity")
-        if severity not in severities:
-            raise ContractError("finding severity is invalid")
         where = _optional_text(finding.get("where", ""), "finding where")
         agreement_key = _optional_text(
             finding.get("agreement_key", ""), "finding agreement_key"
@@ -489,7 +619,7 @@ def _validate_review(review, index, contract, request_id):
         "request_id": request_id,
         "verdict": review["verdict"],
         "findings": normalized,
-        "unchecked": [item for item in unchecked if item],
+        "unchecked": unchecked,
     }
 
 
@@ -587,13 +717,10 @@ def build_distiller_request(reviews, packet):
     }
 
 
-def _cluster_groups(checked, cluster_result, reviews_sha256):
-    if not isinstance(cluster_result, dict) or not isinstance(
-        cluster_result.get("clusters"), list
-    ):
-        raise ContractError("distiller result must contain a clusters array")
-    if cluster_result.get("reviews_sha256") != reviews_sha256:
-        raise ContractError("distiller reviews digest does not match review results")
+def _cluster_groups(checked, cluster_result, reviews_sha256, contract):
+    schema = copy.deepcopy(contract["distiller_schema"])
+    schema["properties"]["reviews_sha256"]["const"] = reviews_sha256
+    _validate_schema_value(cluster_result, schema, "distiller result")
     expected = {
         (review_index + 1, finding_index + 1)
         for review_index, review in enumerate(checked)
@@ -602,18 +729,12 @@ def _cluster_groups(checked, cluster_result, reviews_sha256):
     used = set()
     groups = []
     for cluster in cluster_result["clusters"]:
-        if not isinstance(cluster, dict) or not isinstance(cluster.get("finding_refs"), list):
-            raise ContractError("distiller cluster must contain finding_refs")
         if not cluster["finding_refs"]:
             raise ContractError("distiller cluster cannot be empty")
         group = []
         for reference in cluster["finding_refs"]:
-            if not isinstance(reference, dict):
-                raise ContractError("distiller finding reference must be an object")
             review_number = reference.get("review")
             finding_number = reference.get("finding")
-            if type(review_number) is not int or type(finding_number) is not int:
-                raise ContractError("distiller finding reference must use integers")
             identity = (review_number, finding_number)
             if identity not in expected:
                 raise ContractError("distiller finding reference is out of range")
@@ -668,7 +789,7 @@ def distill_reviews(reviews, clusters, unchecked=None, packet=None):
     contract = load_contract()
     checked = _checked_reviews(reviews, packet, contract)
     reviews_sha256 = _json_sha256(_public_reviews(checked))
-    groups = _cluster_groups(checked, clusters, reviews_sha256)
+    groups = _cluster_groups(checked, clusters, reviews_sha256, contract)
     distillation = contract["distillation"]
     severity_rank = {
         severity: index for index, severity in enumerate(distillation["severity_order"])
@@ -678,18 +799,33 @@ def distill_reviews(reviews, clusters, unchecked=None, packet=None):
         reviewers = len({item["reviewer"] for item in group})
         severity = min(severity_rank[item["severity"]] for item in group)
         first_seen = min((item["reviewer"], item["order"]) for item in group)
-        ranked.append((severity, -reviewers, first_seen, group))
-    ranked.sort()
+        ranked.append(
+            {
+                "agreement": reviewers,
+                "group": group,
+                "ranking": {
+                    "severity": severity,
+                    "agreement_desc": -reviewers,
+                    "first_seen": first_seen,
+                },
+            }
+        )
+    ranked.sort(
+        key=lambda item: tuple(
+            item["ranking"][name]
+            for name in distillation["ranking_tiebreakers"]
+        )
+    )
     threshold = distillation["agreement_threshold"]
-    stable_groups = [item for item in ranked if -item[1] >= threshold]
-    contested_groups = [item for item in ranked if -item[1] < threshold]
+    stable_groups = [item for item in ranked if item["agreement"] >= threshold]
+    contested_groups = [item for item in ranked if item["agreement"] < threshold]
     stable_cap = distillation["stable_cap"]
     stable = [
-        _display_finding(item[3], len(checked), severity_rank)
+        _display_finding(item["group"], len(checked), severity_rank)
         for item in stable_groups[:stable_cap]
     ]
     contested = [
-        _display_finding(item[3], len(checked), severity_rank)
+        _display_finding(item["group"], len(checked), severity_rank)
         for item in contested_groups
     ]
     if unchecked is None:
