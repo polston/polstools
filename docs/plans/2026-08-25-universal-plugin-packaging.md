@@ -1,7 +1,7 @@
 # Universal plugin packaging
 
-Date: 2026-08-25. Status: implementation green; merge review pending on
-`universal-plugin-packaging`.
+Date: 2026-08-25. Status: integrated and validated on local `main`; publication
+remains outside this plan.
 
 ## Recommendation
 
@@ -43,7 +43,8 @@ temporary installed-copy layouts.
 | Update doctor, README, CI, and release metadata | Done | Dual manifests and marketplaces, doctor metadata checks, portable CI commands, documentation, and version 1.8.0 are synchronized. |
 | Full source and installed-copy validation | Done | 292 tests passed with one declared skip; format 36/36; source and two installed copies 3/3; official ingestion validation, privacy, and diff checks passed. |
 | Refinement review | Done | Skill refinement: no change proposed; the Goal correctly bounded scope, evidence, review authority, and publication exclusions. |
-| Commit and review gate | Ready | All implementation evidence is green; commit the branch, verify it is clean, and present the exact diff/results before integration. |
+| Commit and review gate | Done | Commit `2a4f879` was approved and fast-forwarded into local `main` after remote-base counts confirmed 0 ahead and 0 behind. |
+| Post-merge validation | Done | On `main`: 292 tests passed with one declared skip; format 36/36; source and installed copies 3/3; official ingestion validation passed. |
 
 ## Evidence of success
 
@@ -71,6 +72,8 @@ approval.
 | 2026-08-25 | GREEN | Launcher auto-discovery succeeded without an override; the 57-test focused suite passed. |
 | 2026-08-25 | Full validation | 292 tests passed with one declared skip; format 36/36; source plus Claude/Codex installed-copy checks 3/3. |
 | 2026-08-25 | External contract | The current official plugin-ingestion validator passed; the repository privacy audit found zero findings across every category and place. |
+| 2026-08-25 | Integration | Approval received; local `main` fast-forwarded from `6615300` to `2a4f879` with no unrelated commits or checkout changes. |
+| 2026-08-25 | Post-merge validation | On local `main`, 292 tests passed with one declared skip; format 36/36; source plus Claude/Codex installed-copy checks 3/3; official ingestion validation passed. |
 
 ## Skill refinement review
 
