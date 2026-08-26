@@ -7,8 +7,8 @@ branch; integration and publication have not occurred.
 
 Make the skill the portable entry point, keep review policy in one versioned
 JSON contract, and put only native subagent transport in harness references.
-A small standard-library helper renders canonical prompts and deterministically
-distills structured findings.
+A standard-library helper renders canonical prompts, validates native semantic
+clusters, and deterministically applies agreement, ranking, and caps.
 
 | Contract | Decision |
 |---|---|
@@ -42,10 +42,11 @@ Sources:
 
 1. `contract-v1.json` owns inputs, defaults, prompts, schemas, agreement,
    ranking, caps, contested output, and unchecked-behavior disclosure.
-2. `scripts/adequacy_review.py` validates the contract, renders reviewer
-   packets, validates structured responses, and distills findings.
+2. `scripts/adequacy_review.py` validates the contract, embeds schemas in
+   reviewer and distiller prompts, validates semantic clusters, and applies the
+   deterministic filtering, ranking, cap, and output rules.
 3. `references/claude-code.md` and `references/codex.md` own only native spawn,
-   wait, model, and result-transfer mechanics.
+   wait, model, semantic-distiller, and result-transfer mechanics.
 4. `SKILL.md` detects the active harness, loads exactly one adapter, and never
    restates review policy.
 5. The legacy JavaScript workflow is removed after equivalent contract tests
@@ -58,9 +59,9 @@ Sources:
 | Recover state and isolate work | Done | Main was clean and synchronized; task branch began at `2e6c053`. |
 | Verify current harness capabilities | Done | Official documentation supports skills plus native subagent orchestration in both harnesses. |
 | RED: portable contract and drift detection | Done | Initial run: 4 tests with 2 failures and 5 missing-file errors; validator RED: 9 tests with 2 drift-detection failures. |
-| GREEN: contract, helper, and adapters | Done | Focused portability suite passes 9 tests, including installed-copy self-check and validator drift cases. |
+| GREEN: contract, helper, and adapters | Done | Initial 9 tests passed; review-finding RED failed 4 assertions and 3 errors, then all 13 focused tests passed. |
 | Installed-copy and release wiring | Done | Source, Claude copy, and Codex copy pass 3/3; README, activation, auto-discovered CI tests, and 1.9.0 metadata agree. |
-| Codex adequacy review | Pending | Stable important or critical findings are resolved or invalidated with evidence. |
+| Codex adequacy review | In progress | First K=4 review found four stable important defects; all have focused regressions and fixes, with second review pending. |
 | Full validation and commit | In progress | Pre-review: 309 tests passed with one skip; format 36/36; privacy zero; diff check passed. |
 | Skill refinement review | Pending | Reusable drafting friction is assessed before completion. |
 
@@ -87,6 +88,8 @@ git diff --check
 | 2026-08-25 | Installed copies | Source, temporary Claude, and temporary Codex package checks passed 3/3. |
 | 2026-08-25 | Pre-review validation | 309 tests passed with one skip; format 36/36; privacy zero; diff hygiene passed. |
 | 2026-08-25 | Stale-doc sweep | Current workflow claims in AGENTS.md, CLAUDE.md, and README were replaced; historical plans remained unchanged. |
+| 2026-08-25 | Codex review 1 | K=4 found schema transport, exact-key consensus, multibyte fallback, and unchecked-disclosure defects at agreement 3/4, 4/4, 4/4, and 2/4. |
+| 2026-08-25 | Review-fix GREEN | Embedded schemas, native semantic clustering, Unicode-safe references, unchecked propagation, and complete schema validation pass 13 focused tests and installed copies 3/3. |
 
 ## Protected scope
 

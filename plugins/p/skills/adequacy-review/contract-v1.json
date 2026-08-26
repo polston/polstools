@@ -35,7 +35,46 @@
             },
             "agreement_key": {
               "type": "string",
-              "description": "Optional concise root-cause key used only for deterministic agreement grouping."
+              "description": "Optional reviewer-authored root-cause hint for semantic distillation; never an authoritative grouping key."
+            }
+          }
+        }
+      },
+      "unchecked": {
+        "type": "array",
+        "description": "Runtime, integration, or specification behavior this reviewer could not verify.",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "distiller_schema": {
+    "type": "object",
+    "required": ["clusters"],
+    "properties": {
+      "clusters": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["finding_refs"],
+          "properties": {
+            "finding_refs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["review", "finding"],
+                "properties": {
+                  "review": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "finding": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
             }
           }
         }
@@ -59,7 +98,7 @@
         "instruction": "Reason through concrete boundary inputs including empty, exact-limit, zero or negative, and multibyte cases. Execute a small confirmation only in an isolated sandbox, never through a host shell or host language runtime. Otherwise reason by reading and identify unchecked behavior."
       }
     ],
-    "report": "Report real correctness or quality issues with severity and location. Use the same agreement_key for the same root cause when evidence supports it. If the target is solid, set verdict to good and invent nothing. Return only JSON matching the reviewer schema."
+    "report": "Report real correctness or quality issues with severity and location. Add an unchecked array naming behavior you could not verify. If the target is solid, set verdict to good and invent nothing. Return only JSON matching the embedded reviewer schema."
   },
   "distillation": {
     "agreement_threshold": 2,
@@ -68,6 +107,7 @@
     "stable_heading": "Ensemble-stable findings",
     "contested_heading": "Contested / single-reviewer / taste",
     "unchecked_heading": "Unchecked behavior",
-    "clean_line": "Clean: no important or critical finding reached ensemble agreement."
+    "clean_line": "Clean: no important or critical finding reached ensemble agreement.",
+    "semantic_instruction": "Group every finding exactly once by semantic root-cause equivalence. Match paraphrases of the same defect even when agreement_key differs; keep distinct defects separate even when a generic key matches. Return only finding references in the embedded schema."
   }
 }

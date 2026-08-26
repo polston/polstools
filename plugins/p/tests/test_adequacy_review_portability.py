@@ -78,6 +78,7 @@ class AdequacyReviewContractTests(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
                 self.assertIn("scripts/adequacy_review.py", text)
                 self.assertIn("contract-v1.json", text)
+                self.assertIn("distiller-packet", text)
                 self.assertTrue(all(token not in text for token in forbidden))
         self.assertIn("Agent", adapters["claude-code"].read_text(encoding="utf-8"))
         self.assertIn("spawn_agent", adapters["codex"].read_text(encoding="utf-8"))
@@ -99,6 +100,21 @@ class AdequacyReviewParityTests(unittest.TestCase):
         self.assertNotEqual(claude["transport"], codex["transport"])
         self.assertEqual(claude["canonical"], codex["canonical"])
 
+    def test_packet_embeds_schema_for_schema_less_native_transports(self):
+        packet = self.helper.build_packet("codex", **self.fixture["invocation"])
+        request = packet["canonical"]["review_requests"][0]
+        self.assertIn("RESPONSE SCHEMA", request["prompt"])
+        self.assertIn(json.dumps(request["schema"], sort_keys=True), request["prompt"])
+        self.assertIn("unchecked", request["prompt"])
+        self.assertNotIn("model", packet["transport"])
+        self.assertNotIn("parallel", packet["transport"])
+
+    def test_distiller_packet_embeds_schema_and_reviews(self):
+        request = self.helper.build_distiller_request(self.fixture["reviews"])
+        self.assertIn("DISTILLER RESPONSE SCHEMA", request["prompt"])
+        self.assertIn(json.dumps(request["schema"], sort_keys=True), request["prompt"])
+        self.assertIn("Cache entries survive invalidation", request["prompt"])
+
     def test_fake_reviewers_produce_equivalent_stable_and_contested_results(self):
         results = []
         for harness in ("claude-code", "codex"):
@@ -107,11 +123,54 @@ class AdequacyReviewParityTests(unittest.TestCase):
                     harness,
                     self.fixture["invocation"],
                     self.fixture["reviews"],
+                    self.fixture["clusters"],
                     self.fixture["unchecked"],
                 )
             )
         self.assertEqual(results[0], results[1])
         self.assertEqual(self.fixture["expected"], results[0])
+
+    def test_semantic_clusters_preserve_paraphrases_multibyte_and_unchecked(self):
+        reviews = [
+            {
+                "verdict": "has-issues",
+                "unchecked": ["Runtime integration was not executed."],
+                "findings": [
+                    {
+                        "issue": "Cache entries survive invalidation",
+                        "severity": "important",
+                        "agreement_key": "stale-cache",
+                    },
+                    {"issue": "缓存失效", "severity": "suggestion"},
+                ],
+            },
+            {
+                "verdict": "has-issues",
+                "unchecked": [],
+                "findings": [
+                    {
+                        "issue": "Invalidation leaves stale cache entries",
+                        "severity": "important",
+                        "agreement_key": "cache-invalidation-stale",
+                    }
+                ],
+            },
+        ]
+        clusters = {
+            "clusters": [
+                {
+                    "finding_refs": [
+                        {"review": 1, "finding": 1},
+                        {"review": 2, "finding": 1},
+                    ]
+                },
+                {"finding_refs": [{"review": 1, "finding": 2}]},
+            ]
+        }
+        result = self.helper.distill_reviews(reviews, clusters)
+        self.assertEqual("2/2", result["stable"][0]["agreement"])
+        self.assertEqual("缓存失效", result["contested"][0]["issue"])
+        self.assertEqual(["Runtime integration was not executed."], result["unchecked"])
 
 
 class AdequacyReviewInstalledCopyTests(unittest.TestCase):
@@ -170,6 +229,17 @@ class AdequacyReviewInstalledCopyTests(unittest.TestCase):
             contract_path = plugin / "skills" / "adequacy-review" / "contract-v1.json"
             contract = json.loads(contract_path.read_text(encoding="utf-8"))
             contract["distillation"]["agreement_threshold"] = 3
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            errors = self.validator.validate_package(plugin)
+        self.assertIn("adequacy-review contract self-check failed", errors)
+
+    def test_validator_flags_empty_reviewer_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = Path(tmp) / "p"
+            shutil.copytree(PLUGIN_ROOT, plugin)
+            contract_path = plugin / "skills" / "adequacy-review" / "contract-v1.json"
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            contract["reviewer_schema"] = {}
             contract_path.write_text(json.dumps(contract), encoding="utf-8")
             errors = self.validator.validate_package(plugin)
         self.assertIn("adequacy-review contract self-check failed", errors)
