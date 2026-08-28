@@ -132,9 +132,11 @@ class CodexReducer(unittest.TestCase):
         self.assertEqual("text", row["ending"])
 
     def test_patch_apply_end_is_paired_not_double_counted(self):
-        # An apply_patch custom_tool_call and its patch_apply_end event share
-        # one call_id at the payload top level; the event is a second record
-        # of the same call and must not add to tool_calls.
+        # patch_apply_end is excluded from CODEX_TOOL_EVENTS wholesale, by
+        # event name, based on the measured pairing overlap recorded above
+        # that constant - the reducer never matches call_ids at runtime.
+        # This fixture's shared call_id only documents the record shape that
+        # made that measurement true; it is not what the code checks.
         row = self.measure([
             fx.rollout_meta(T),
             fx.rollout_user("go", T),
@@ -186,6 +188,28 @@ class CodexReducer(unittest.TestCase):
         # banked (50+10) + final (12+3) = 75
         self.assertEqual(75, row["tokens_out"])
         self.assertEqual(50, row["cache_read"])   # banked 40 + final 10
+
+    def test_tokens_with_extra_field_does_not_raise(self):
+        # A token_count info dict has carried a stray extra key ("model")
+        # in the real corpus. Iterating current.items() blindly would bank
+        # it too and int() would raise on the string; CODEX_TOKEN_FIELDS
+        # must keep the reducer to the four known fields regardless.
+        extra = fx.rollout_event("token_count", T, info={"total_token_usage": {
+            "input_tokens": 100, "cached_input_tokens": 40,
+            "output_tokens": 50, "reasoning_output_tokens": 10,
+            "total_tokens": 160, "model": "x"}})
+        reset = fx.rollout_event("token_count", T2, info={"total_token_usage": {
+            "input_tokens": 20, "cached_input_tokens": 5,
+            "output_tokens": 8, "reasoning_output_tokens": 2,
+            "total_tokens": 30, "model": "x"}})   # reset: totals dropped
+        row = self.measure([
+            fx.rollout_meta(T), fx.rollout_user("go", T),
+            extra, reset, fx.rollout_assistant("done", T2),
+        ])
+        # banked (100-40) + final (20-5) = 75
+        self.assertEqual(75, row["tokens_in"])
+        # banked (50+10) + final (8+2) = 70
+        self.assertEqual(70, row["tokens_out"])
 
     def test_skills_from_wrapper_blocks(self):
         row = self.measure([

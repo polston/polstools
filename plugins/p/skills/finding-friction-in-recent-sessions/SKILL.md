@@ -47,10 +47,19 @@ fell 20% in a week when turns also fell 20% is nothing. The pack prints
 per-session rates under the table for this reason.
 
 **4. Rank by consequence, not by count.** The pack orders sessions by a friction
-score that weights the signals meaning a human had to intervene — corrections and
-interrupts heaviest, then permission-mode changes and retries, then errors. Read
-in that order, and within it prefer the friction that cost the most turns over
+score built from operational signals only — permission-mode changes and tool
+errors — while the legacy correction/interrupt rubric gate stays closed;
+corrections and interrupts are not weighted into ranking right now. Read in
+that order, and within it prefer the friction that cost the most turns over
 the one that occurred most often.
+
+Moments quoted under a ranked session carry a `kind` of `interrupt`,
+`correction`, or `approval`. An approval is not friction — it is the
+operator's liked behaviour, captured by example — so treat it as evidence for
+keeping or strengthening a rule already in place, never as grounds to add a
+new one. The "Codex moments" section further down the pack is
+candidate-sampled, not ranked: its ordering says nothing about which moment
+cost the most.
 
 **5. Write at most three proposals.** Each one has four parts:
 

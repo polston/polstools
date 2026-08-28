@@ -164,6 +164,7 @@ class Reporting(unittest.TestCase):
         self.assertIn("harness=all", text)
         self.assertIn("turn-normalised rows omitted for mixed harnesses", text)
         self.assertNotIn("turns per session", text)
+        self.assertNotIn("| tokens_out |", text)
         header = next(line for line in text.splitlines()
                       if line.startswith("| signal |"))
         delim = next(line for line in text.splitlines()

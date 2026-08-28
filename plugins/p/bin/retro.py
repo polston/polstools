@@ -998,6 +998,11 @@ CODEX_CALL_PAIRS = {"function_call": "function_call_output",
 # (1,008 of 1,032, and all 18 of 18, carry a call_id matching no same-file
 # call item) and stay in as the only record of their calls.
 CODEX_TOOL_EVENTS = frozenset(("web_search_end", "image_generation_end"))
+# The only fields the row schema banks. A token_count event's info dict has
+# carried stray extra keys (e.g. "model") in the corpus; iterating current
+# .items() blindly would bank those too and fail the int() conversion.
+CODEX_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens",
+                      "reasoning_output_tokens")
 _SKILL_NAME = re.compile(r"<name>\s*([^<]+?)\s*</name>")
 
 
@@ -1089,10 +1094,18 @@ def measure_codex(path, root):
                 total = (info or {}).get("total_token_usage") \
                     if isinstance(info, dict) else None
                 if isinstance(total, dict):
-                    if current and int(total.get("total_tokens") or 0) < \
-                            int(current.get("total_tokens") or 0):
-                        for key, value in current.items():
-                            bank[key] += int(value or 0)
+                    if current:
+                        try:
+                            reset = int(total.get("total_tokens") or 0) < \
+                                    int(current.get("total_tokens") or 0)
+                        except (TypeError, ValueError):
+                            reset = False
+                        if reset:
+                            for key in CODEX_TOKEN_FIELDS:
+                                try:
+                                    bank[key] += int(current.get(key) or 0)
+                                except (TypeError, ValueError):
+                                    pass
                     current = total
             elif etype == "turn_aborted":
                 m["interrupts"] += 1
@@ -1168,8 +1181,11 @@ def measure_codex(path, root):
         return None
 
     if current:
-        for key, value in current.items():
-            bank[key] += int(value or 0)
+        for key in CODEX_TOKEN_FIELDS:
+            try:
+                bank[key] += int(current.get(key) or 0)
+            except (TypeError, ValueError):
+                pass
     meta = meta or {}
     try:
         rel = path.relative_to(root).as_posix()
@@ -1496,7 +1512,7 @@ def _moments(row):
         if not isinstance(rec, dict):
             continue
         if rec.get("type") == "assistant":
-            prior = text_of(rec.get("message") or {})
+            prior += text_of(rec.get("message") or {})
         elif rec.get("type") == "user" and rec.get("toolUseResult") is None:
             body = text_of(rec.get("message") or {})
             if not is_human_prompt(rec, body):
@@ -1519,6 +1535,9 @@ def _moments_codex(row):
     """The Codex counterpart of _moments: wrapper-tagged and empty user
     messages skipped with the same opener list, prior accumulated from
     assistant messages and reset on each counted user turn."""
+    # Always relative to the Codex root: harness names the transcript
+    # FORMAT, and the shipped roots never nest, so a codex row's
+    # transcript is never rooted anywhere else.
     path = codex_sessions_dir() / row.get("transcript", "")
     if not path.is_file():
         return []
@@ -1611,11 +1630,12 @@ def cmd_pack(args):
         h_sub = [r for r in sub if (r.get("harness") or "claude") == harness]
         h_prior_sub = [r for r in prior_sub
                        if (r.get("harness") or "claude") == harness]
-        h_sub_t, _ = totals(h_sub)
+        h_sub_t, h_sub_eligible = totals(h_sub)
         lines.append(f"Subagent spend — {len(h_sub)} transcripts "
                      f"(prior window: {len(h_prior_sub)}): "
                      + ", ".join(f"{key} {h_sub_t[key]}"
-                                 for key in ["tokens_out"] + COUNTERS))
+                                 for key in ["tokens_out"] + COUNTERS
+                                 if h_sub_eligible[key]))
         for extra_name in ("automation", "unknown"):
             extra = [r for r in split[extra_name]
                      if (r.get("harness") or "claude") == harness]
@@ -1723,8 +1743,11 @@ def cmd_skills(args):
         rows = [r for r in rows if (r.get("date") or "") >= start]
     used = {"claude": Counter(), "codex": Counter()}
     signal_files = Counter()
+    any_codex = False
     for row in rows:
         harness = row.get("harness") or "claude"
+        if harness == "codex":
+            any_codex = True
         if row.get("skills_used"):
             signal_files[harness] += 1
         for name in row.get("skills_used") or []:
@@ -1745,9 +1768,11 @@ def cmd_skills(args):
         note = "" if (in_claude or in_codex) else "built-in command, or renamed"
         print(f"| {name} | {used['claude'][name] or ''} "
               f"| {used['codex'][name] or ''} | {note} |")
-    print(f"\nCodex denominator: {signal_files['codex']} transcripts carried "
-          f"any skill signal — a heuristic count, not authoritative "
-          f"attribution (the source profile declares none exists).")
+    if any_codex:
+        print(f"\nCodex denominator: {signal_files['codex']} transcripts "
+              f"carried any skill signal — a heuristic count, not "
+              f"authoritative attribution (the source profile declares "
+              f"none exists).")
     dormant_total = 0
     for harness in ("claude", "codex"):
         dormant = sorted(installed[harness] - set(used[harness]))
@@ -1965,6 +1990,10 @@ def cmd_subagents(args):
 
     all_endings = Counter(r.get("ending") or "?" for r in rows)
     no_answer = all_endings.get("unanswered", 0) + all_endings.get("silent", 0)
+    print("\nFailed to answer: answering through a structured-result call "
+          "is answering, and an interrupted run is the caller's doing. "
+          "Some of what is left is a transcript that had not finished "
+          "being written when the ledger was built.")
     for harness, h_rows in (("claude", claude_rows), ("codex", codex_rows)):
         if not h_rows:
             continue
@@ -1985,11 +2014,8 @@ def cmd_subagents(args):
                   f"at {threshold} turns or more")
         print("\nA distribution, not a failure count: no turn number in this "
               "corpus marks a boundary between a long job and a runaway one.")
-
-    print(f"\nFailed to answer: {no_answer}. Answering through a "
-          f"structured-result call is answering, and an interrupted run is the "
-          f"caller's doing. Some of what is left is a transcript that had not "
-          f"finished being written when the ledger was built.")
+        h_no_answer = endings.get("unanswered", 0) + endings.get("silent", 0)
+        print(f"\nFailed to answer ({harness}): {h_no_answer}.")
 
     return EXIT_FLAGGED if (flagged or no_answer) else EXIT_CLEAN
 # --- label -----------------------------------------------------------------
@@ -2448,8 +2474,6 @@ def cmd_effect(args):
         rows = [r for r in rows if lo <= r["date"] <= hi]
     if args.harness != "all":
         rows = [r for r in rows if (r.get("harness") or "claude") == args.harness]
-    print(f"population: harness={args.harness}, main sessions only; "
-          f"subagent, automation and unknown rows are spend and excluded")
 
     before_rows = [r for r in rows if r["date"] < cut.isoformat()]
     after_rows = [r for r in rows if r["date"] >= cut.isoformat()]
@@ -2459,6 +2483,8 @@ def cmd_effect(args):
 
     span = f", within {args.days} days either side" if args.days else ""
     print(f"# Effect around {cut}{span}\n")
+    print(f"population: harness={args.harness}, main sessions only; "
+          f"subagent, automation and unknown rows are spend and excluded\n")
     print(f"Before: {len(before)} sessions, {min((r['date'] for r in before), default='-')} "
           f"to {max((r['date'] for r in before), default='-')}")
     print(f"After:  {len(after)} sessions, {min((r['date'] for r in after), default='-')} "
@@ -2497,13 +2523,18 @@ def cmd_effect(args):
               "rubric allows candidate sampling, not decision support.\n")
     if mixed:
         print("turn-normalised rows omitted for mixed harnesses - a Codex "
-              "turn is a structural analogue, not the same unit.\n")
+              "turn is a structural analogue, not the same unit, and "
+              "tokens are omitted too - Codex's tokens_out includes "
+              "reasoning tokens and Claude's does not, and the "
+              "usage-accounting profile forbids cross-source token "
+              "statistics. tool_calls still appears, but it spans "
+              "tool-call mappings that differ per harness.\n")
         print("| signal | /session before | after | change |")
         print("|---|---|---|---|")
     else:
         print("| signal | /session before | after | /100 turns before | after | change |")
         print("|---|---|---|---|---|---|")
-    for key in COUNTERS + ["tokens_out"]:
+    for key in COUNTERS + ([] if mixed else ["tokens_out"]):
         if key == "turns":
             continue
         if key in LEGACY_TURN_COUNTERS \
