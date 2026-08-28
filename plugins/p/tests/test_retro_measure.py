@@ -22,6 +22,9 @@ def load_retro():
     return module
 
 
+RETRO = load_retro()
+
+
 def write_session(root):
     t0 = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
     rows = [
@@ -43,13 +46,13 @@ def write_session(root):
 
 class MeasureCharacterisation(unittest.TestCase):
     def setUp(self):
-        self.retro = load_retro()
+        self.retro = RETRO
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = write_session(Path(self.tmp.name))
 
     def measure_row(self):
-        return self.retro.measure(self.path)
+        return self.retro.measure(self.path, "claude", Path(self.tmp.name))
 
     def test_counters_pin(self):
         row = self.measure_row()
@@ -70,8 +73,10 @@ class MeasureCharacterisation(unittest.TestCase):
         self.assertEqual(30, row["tokens_in"])
         self.assertEqual(60, row["tokens_out"])
         self.assertEqual(15, row["cache_read"])
+        self.assertEqual("main", row["population"])
+        self.assertEqual("projA", row["project_key"])
 
-    def test_subagent_layout_is_recognised(self):
+    def test_subagent_layout_is_not_seen_under_temp_root(self):
         sub_rows = [claude_user("go", datetime(2026, 8, 1, tzinfo=timezone.utc)),
                     claude_assistant("ok", datetime(2026, 8, 1, tzinfo=timezone.utc))]
         build_corpus(Path(self.tmp.name), [{
@@ -79,32 +84,10 @@ class MeasureCharacterisation(unittest.TestCase):
             "subagent": True, "rows": sub_rows}])
         sub_path = (Path(self.tmp.name) / "projA" / "s1" / "subagents"
                     / "agent-0.jsonl")
-        row = self.retro.measure(sub_path)
-        # The temp-root fallback makes `rel` the bare filename, so the
-        # path-prefix rule cannot see `subagents/`. Task 3 replaces this
-        # with a root-relative test through measure(path, harness, root).
-        self.assertFalse(row["is_subagent"])
-
-
-class CurrentShapes(unittest.TestCase):
-    """Pin today's totals/split_population shapes. Task 3 REWRITES these
-    tests against the new contracts; until then they are the regression
-    net the spec's Verification 1 requires."""
-
-    def setUp(self):
-        self.retro = load_retro()
-
-    def test_totals_returns_one_counter_today(self):
-        agg = self.retro.totals([{"turns": 5, "tokens_out": 7},
-                                 {"turns": 2, "tokens_out": 1}])
-        self.assertEqual(7, agg["turns"])
-        self.assertEqual(8, agg["tokens_out"])
-
-    def test_split_population_returns_main_sub_tuple_today(self):
-        main, sub = self.retro.split_population(
-            [{"is_subagent": False}, {"is_subagent": True}])
-        self.assertEqual(1, len(main))
-        self.assertEqual(1, len(sub))
+        row = self.retro.measure(sub_path, "claude", Path(self.tmp.name))
+        self.assertEqual("subagent", row["population"])
+        self.assertEqual("claude", row["harness"])
+        self.assertEqual([], row["ineligible"])
 
 
 if __name__ == "__main__":

@@ -153,7 +153,7 @@ _APPROVAL = re.compile(
 # definitions at once is worse than no ledger: it reports a number belonging to
 # neither, and nothing in the output says so. `extract` rebuilds on a mismatch
 # rather than trusting prose to prevent it.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_candidates", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
@@ -911,7 +911,12 @@ def measure(path, harness="claude", root=None):
 
     row = {
         "transcript": rel,
-        "is_subagent": "subagents/" in rel,
+        "harness": harness,
+        "population": "subagent" if "subagents/" in rel else "main",
+        "parent_session_id": "",
+        "project_key": rel.split("/")[0] if "/" in rel else (rel or "?"),
+        "ineligible": [],
+        "compacted": False,
         "session_id": session_id or path.stem,
         "project": redact(project or ""),
         "git_branch": branch or "",
@@ -1133,27 +1138,33 @@ def load_rows(required=True, check_schema=True):
 
 
 def totals(rows):
-    """Aggregate the rows handed in, and nothing else.
-
-    The caller chooses the population. Deciding it here is what made the
-    printed rates wrong: every counter was summed over all transcripts and then
-    divided by a session count that excluded subagent transcripts.
-    """
+    """Aggregate the rows handed in, and nothing else — plus, per counter,
+    how many of those rows could observe it. The caller chooses the
+    population; a rate divides each counter by its own eligible-row count,
+    never by the row count (spec D4.1)."""
     agg = Counter()
+    eligible_rows = Counter()
     for row in rows:
+        ineligible = set(row.get("ineligible") or ())
         for key in COUNTERS:
             agg[key] += int(row.get(key) or 0)
+            if key not in ineligible:
+                eligible_rows[key] += 1
         agg["tokens_out"] += int(row.get("tokens_out") or 0)
-    return agg
+        # tokens_out is observable on every harness; without this line a
+        # consumer dividing by its eligible count would drop the row.
+        eligible_rows["tokens_out"] += 1
+    return agg, eligible_rows
 
 
 def split_population(rows):
-    """Main-session rows, then subagent rows. One row per transcript either
-    way — subagent transcripts are spend, not sessions, and counting them as
-    sessions deflates every per-session rate."""
-    main = [row for row in rows if not row.get("is_subagent")]
-    sub = [row for row in rows if row.get("is_subagent")]
-    return main, sub
+    """Rows bucketed by population. Only `main` carries per-session rates;
+    the rest are spend. A row with no population field counts as main —
+    unreachable after a schema-7 rebuild, but a reader must not crash."""
+    split = {"main": [], "subagent": [], "automation": [], "unknown": []}
+    for row in rows:
+        split.get(row.get("population") or "main", split["unknown"]).append(row)
+    return split
 
 
 def friction_score(row):
@@ -1231,10 +1242,13 @@ def cmd_pack(args):
     prior = [r for r in rows if r.get("date")
              and prior_start.isoformat() <= r["date"] < start.isoformat()]
 
-    main, sub = split_population(window)
-    prior_main, prior_sub = split_population(prior)
-    now_t, prev_t = totals(main), totals(prior_main)
-    now_s = totals(sub)
+    split = split_population(window)
+    prior_split = split_population(prior)
+    main, sub = split["main"], split["subagent"]
+    prior_main, prior_sub = prior_split["main"], prior_split["subagent"]
+    now_t, now_eligible = totals(main)
+    prev_t, _ = totals(prior_main)
+    now_s, _ = totals(sub)
 
     lines = [f"# Evidence pack — last {args.days} days",
              f"Window: {start} to {now}. Sessions: {len(main)} "
@@ -1257,10 +1271,15 @@ def cmd_pack(args):
     lines.append("")
     if main:
         lines.append("Per session: " + ", ".join(
-            f"{key} {now_t[key] / len(main):.1f}" for key in COUNTERS))
+            f"{key} {now_t[key] / now_eligible[key]:.1f}"
+            for key in COUNTERS if now_eligible[key]))
     lines.append("")
+    other_note = "".join(
+        f", {len(split[pop])} {pop}" for pop in ("automation", "unknown")
+        if split[pop])
     lines.append(f"Subagent spend — {len(sub)} transcripts "
-                 f"(prior window: {len(prior_sub)}), no per-session rate: "
+                 f"(prior window: {len(prior_sub)}){other_note}, "
+                 "no per-session rate: "
                  + ", ".join(f"{key} {now_s[key]}"
                              for key in ["tokens_out"] + COUNTERS))
     lines += ["", "## Candidate moments", ""]
@@ -1408,12 +1427,12 @@ def quantile(sorted_values, fraction):
 
 
 def project_key(row):
-    """Which project a row belongs to, as an opaque key.
-
-    The first path component of the transcript's location is the harness's own
-    grouping of sessions by project. It is used to divide, never printed: the
-    report says how concentrated a signal is and never where it came from.
-    """
+    """Which project a row belongs to, as an opaque key. Stored on the row
+    since schema 7 (Codex rows hash their redacted cwd — spec D2.4); the
+    first path component stays as the fallback for the Claude layout."""
+    stored = row.get("project_key")
+    if stored:
+        return str(stored)
     return str(row.get("transcript") or "?").split("/")[0]
 
 
@@ -1450,6 +1469,12 @@ def reporting_session_ids(extra):
     current = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
     if current:
         ids.add(current)
+    # The same tuple format-ctl reads (plugins/p/bin/format-ctl); adding a
+    # harness means editing both.
+    for name in ("CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+        value = os.environ.get(name) or ""
+        if value:
+            ids.add(value)
     return ids
 
 
@@ -1463,14 +1488,19 @@ def cmd_subagents(args):
     are on the row's `date`, which comes from the first timestamp inside the
     transcript.
     """
-    rows = [r for r in load_rows() if r.get("is_subagent")]
+    rows = [r for r in load_rows()
+            if (r.get("population") or "") == "subagent"]
     if args.days:
         start = (datetime.now(timezone.utc).date()
                  - timedelta(days=args.days)).isoformat()
         rows = [r for r in rows if (r.get("date") or "") >= start]
     skip = reporting_session_ids(args.exclude_session)
-    dropped = sum(1 for r in rows if r.get("session_id") in skip)
-    rows = [r for r in rows if r.get("session_id") not in skip]
+    dropped = sum(1 for r in rows
+                  if r.get("session_id") in skip
+                  or (r.get("parent_session_id") or "") in skip)
+    rows = [r for r in rows
+            if r.get("session_id") not in skip
+            and (r.get("parent_session_id") or "") not in skip]
     window = f"last {args.days} days" if args.days else "all history"
     if not rows:
         print(f"# Subagent lens - {window}\n\nNo subagent transcripts in window.")
@@ -2001,8 +2031,9 @@ def cmd_effect(args):
 
     before_rows = [r for r in rows if r["date"] < cut.isoformat()]
     after_rows = [r for r in rows if r["date"] >= cut.isoformat()]
-    before, _ = split_population(before_rows)
-    after, _ = split_population(after_rows)
+    before_split = split_population(before_rows)
+    after_split = split_population(after_rows)
+    before, after = before_split["main"], after_split["main"]
 
     span = f", within {args.days} days either side" if args.days else ""
     print(f"# Effect around {cut}{span}\n")
@@ -2010,6 +2041,12 @@ def cmd_effect(args):
           f"to {max((r['date'] for r in before), default='-')}")
     print(f"After:  {len(after)} sessions, {min((r['date'] for r in after), default='-')} "
           f"to {max((r['date'] for r in after), default='-')}\n")
+    before_spend = (len(before_split["subagent"]) + len(before_split["automation"])
+                    + len(before_split["unknown"]))
+    after_spend = (len(after_split["subagent"]) + len(after_split["automation"])
+                   + len(after_split["unknown"]))
+    print(f"Spend (subagent + automation + unknown): before {before_spend}, "
+          f"after {after_spend}\n")
 
     if not before or not after:
         print("Nothing to compare on one side of that date.", file=sys.stderr)
@@ -2021,7 +2058,7 @@ def cmd_effect(args):
               "side. The numbers are printed because hiding them would be worse, "
               "but a handful of sessions swings any per-session rate by half.\n")
 
-    b, a = totals(before), totals(after)
+    (b, _), (a, _) = totals(before), totals(after)
     # Two normalisations, because per session lies on its own. It moves whenever
     # sessions get longer or shorter: on the first real run of this command every
     # signal fell by half or more, INCLUDING turns and tokens, which is a change
