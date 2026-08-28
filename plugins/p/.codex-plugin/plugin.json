@@ -1,6 +1,6 @@
 {
   "name": "p",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "Personal tooling for home/work skill activation, privacy audits, cross-harness diagnostics and goal design, workflow analysis and evaluation, change-explicit response formatting, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
   "author": {
     "name": "polston"

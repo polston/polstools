@@ -78,20 +78,28 @@ All three propose. None of them edit configuration.
 
 ## Metrics row
 
-One JSON object per transcript:
+One JSON object per transcript (schema 7):
 
 ```
-transcript, is_subagent, session_id, project, git_branch, cc_version, date,
+transcript, harness, population, parent_session_id, project_key, ineligible,
+compacted, session_id, project, git_branch, cc_version, date,
 duration_s, tokens_in, tokens_out, cache_read, skills_used[],
 turns, user_prompts, tool_calls, tool_errors, repeat_calls, correction_candidates,
 interrupts, permission_mode_changes, queued_prompts, skill_runs
 ```
 
-Rows are keyed by transcript path, not session id. Subagent transcripts live
-under `<session>/subagents/` and carry the **parent** session's id — keying by
-session id let them overwrite the parent's row and collapsed 1,715 transcripts
-into 352. They are tagged `is_subagent` and excluded from session counts, so
-per-session rates are not deflated by fan-out.
+`harness`, `population`, and `ineligible` semantics — including how a rollout
+is classified `main` / `subagent` / `automation` / `unknown`, and which
+counters a harness cannot observe — are defined in
+`docs/plans/2026-08-27-codex-measurement-ingestion-spec.md`; this document
+does not restate them.
+
+Rows are keyed by `(harness, transcript)`, not session id. Subagent
+transcripts live under `<session>/subagents/` (Claude) or carry a
+`parent_session_id` (Codex) — keying by session id let them overwrite the
+parent's row and collapsed 1,715 transcripts into 352. They are tagged
+`population: subagent` and excluded from session counts, so per-session rates
+are not deflated by fan-out.
 
 ## Friction signals
 

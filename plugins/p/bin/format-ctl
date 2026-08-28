@@ -31,6 +31,8 @@ FLAG_DIR = os.environ.get("P_FORMAT_STATE_DIR") or os.path.join(
     tempfile.gettempdir(), "p-format-toggle"
 )
 STALE_SECONDS = 14 * 24 * 3600
+# retro.py's reporting_session_ids() reads this same tuple of session-id env
+# vars to exclude the reporting session from a report; keep both in sync.
 SESSION_ENV_VARS = (
     "CLAUDE_CODE_SESSION_ID",
     "CODEX_SESSION_ID",

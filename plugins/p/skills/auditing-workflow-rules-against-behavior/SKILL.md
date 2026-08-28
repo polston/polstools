@@ -38,7 +38,10 @@ and retries that file on the next run.
 
 `skills` splits installed skills into fired and never-fired. Names that fired but
 have no SKILL.md on disk are harness built-in commands or a skill since renamed —
-check before treating one as missing.
+check before treating one as missing. On a mixed corpus its output carries
+per-harness fired columns and per-harness never-fired lists; a skill that only
+Codex can trigger is named with its harness rather than folded into the shared
+count.
 
 **2. Triage the never-fired list.** For each, exactly one verdict:
 

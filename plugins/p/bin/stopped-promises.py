@@ -16,6 +16,9 @@ Exit codes match the sibling scripts in plugins/p/bin:
     0  ran clean, nothing flagged
     1  ran clean, something was flagged (candidates awaiting a verdict)
     2  could not run
+
+Reads Claude transcript format only; Codex rollouts are a different format
+this reader does not parse.
 """
 EXIT_CLEAN, EXIT_FLAGGED, EXIT_CANNOT_RUN = 0, 1, 2
 

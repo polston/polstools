@@ -3,7 +3,12 @@
 Use this layer when a seven-day Retro pack is too narrow: cross-harness
 comparison, scorer calibration, held-out labels, cost analysis, capability
 gaps, or reversible improvement proposals. The original `retro.py` commands
-remain the dependency-free Claude-oriented workflow.
+remain the dependency-free Claude-oriented workflow. The measurement pipeline
+reads both harnesses' transcripts; the evaluation adapters exclude non-user
+Codex threads, so an evaluation report and a pack may legitimately disagree
+about corpus size. They may also disagree on token totals for the handful of
+rollouts whose cumulative token counter resets mid-file: the ledger banks
+across resets, the adapter takes the last count.
 
 ## Architecture
 

@@ -37,8 +37,9 @@ and retries that file on the next run.
 previous window, then the highest-friction sessions with the actual moments
 quoted.
 
-**2. Read the pack. Only the pack.** Do not open transcripts. The corpus is most
-of a gigabyte, and the pack is already redacted — transcripts are not.
+**2. Read the pack. Only the pack.** Do not open transcripts. The corpus is
+several gigabytes across both harnesses' transcripts, and the pack is already
+redacted — transcripts are not.
 
 **3. Read trends as rates, not totals.** Every raw total tracks how much work
 happened. A signal that rose while sessions stayed flat is real; a signal that
@@ -46,10 +47,19 @@ fell 20% in a week when turns also fell 20% is nothing. The pack prints
 per-session rates under the table for this reason.
 
 **4. Rank by consequence, not by count.** The pack orders sessions by a friction
-score that weights the signals meaning a human had to intervene — corrections and
-interrupts heaviest, then permission-mode changes and retries, then errors. Read
-in that order, and within it prefer the friction that cost the most turns over
+score built from operational signals only — permission-mode changes and tool
+errors — while the legacy correction/interrupt rubric gate stays closed;
+corrections and interrupts are not weighted into ranking right now. Read in
+that order, and within it prefer the friction that cost the most turns over
 the one that occurred most often.
+
+Moments quoted under a ranked session carry a `kind` of `interrupt`,
+`correction`, or `approval`. An approval is not friction — it is the
+operator's liked behaviour, captured by example — so treat it as evidence for
+keeping or strengthening a rule already in place, never as grounds to add a
+new one. The "Codex moments" section further down the pack is
+candidate-sampled, not ranked: its ordering says nothing about which moment
+cost the most.
 
 **5. Write at most three proposals.** Each one has four parts:
 
@@ -95,7 +105,10 @@ Two of these carry a known measurement caveat. `skill_runs` counts contiguous
 stretches of the same skill being active, which is not the same as the number of
 times it was deliberately invoked, and the field it derives from is absent from
 transcripts written by older CLI versions. `tool_errors` counts records carrying
-a failure marker, which includes failures that were expected and handled.
+a failure marker, which includes failures that were expected and handled. On a
+mixed corpus, `tool_errors`, `queued_prompts`, and `permission_mode_changes` are
+not observable for Codex rows; the pack marks those lines with the observable
+share, and per-session rates divide by it.
 
 Every metric's precise definition, and the measurement that settled it, lives in
 `docs/plans/2026-08-12-retro-design.md`. Read it before arguing with a number.
