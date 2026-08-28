@@ -19,6 +19,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import NamedTuple
 
 
@@ -272,6 +273,7 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run):
         )]
 
     checks = []
+    scratch = tempfile.mkdtemp(prefix="p-doctor-format-")
     for event in HOOK_EVENTS:
         key = "%s.hook.%s" % (harness, _event_key(event))
         try:
@@ -288,10 +290,19 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run):
             continue
 
         env = dict(os.environ)
-        env.pop("RETRO_HOME", None)
+        for name in ("RETRO_HOME", "P_FORMAT_HARNESS", "P_FORMAT_DEFAULT",
+                     "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID",
+                     "CODEX_THREAD_ID"):
+            env.pop(name, None)
         env["CLAUDE_CODE_SESSION_ID" if harness == "claude" else "CODEX_SESSION_ID"] = (
             "p-doctor-check"
         )
+        # The probe verifies wiring, not the operator's preference: force
+        # the default on and isolate session flags so an off default or a
+        # stale fmt-off toggle cannot make a healthy gate look broken.
+        env["P_FORMAT_DEFAULT"] = "on"
+        env["P_FORMAT_STATE_DIR"] = scratch
+        env["P_FORMAT_CONFIG_FILE"] = os.path.join(scratch, "format.json")
         try:
             completed = runner(
                 argv,
@@ -335,6 +346,7 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run):
                 key, "PASS", "%s %s hook exits 0 with byte-exact output"
                 % (harness.capitalize(), event),
             ))
+    shutil.rmtree(scratch, ignore_errors=True)
     return checks
 
 

@@ -34,7 +34,7 @@ class UniversalMetadataTests(unittest.TestCase):
     def test_codex_manifest_uses_the_accepted_skill_only_surface(self):
         manifest = load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json")
         self.assertEqual("p", manifest["name"])
-        self.assertEqual("1.9.0", manifest["version"])
+        self.assertEqual("1.10.0", manifest["version"])
         self.assertEqual("./skills/", manifest["skills"])
         self.assertEqual("polston", manifest["author"]["name"])
         self.assertNotIn("hooks", manifest)
@@ -76,7 +76,7 @@ class UniversalMetadataTests(unittest.TestCase):
             item for item in claude_marketplace["plugins"] if item["name"] == "p"
         )
         self.assertEqual(
-            {"1.9.0"},
+            {"1.10.0"},
             {
                 claude_manifest["version"],
                 codex_manifest["version"],

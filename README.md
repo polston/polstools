@@ -88,7 +88,7 @@ Start a new session, then run the doctor against `<repo-root>`.
 | Repository safety | `auditing-a-repo-for-private-data`, `checking-branch-base-before-a-pr`, `finding-what-a-change-made-false` | Catch private data, branch-base mistakes, and documentation drift |
 | Workflow evidence | `auditing-workflow-rules-against-behavior`, `counting-stopped-promises`, `deciding-the-prompt-cache-ttl`, `finding-friction-in-recent-sessions`, `scouting-tools-for-open-frictions` | Measure recurring friction before changing rules or tools |
 | Goals and decisions | `writing-goals`, `robust-over-simple` | Bound autonomous work and preserve expandable design seams |
-| Response format | `fmt-off`, `fmt-on`, `maintaining-the-format-plugin` | Toggle, test, and audit the structured response format |
+| Response format | `fmt-off`, `fmt-on`, `maintaining-the-format-plugin` | Toggle sessions, set global or per-harness defaults (off by default), and audit the structured response format |
 | Interface fixes | `aligning-statuslines`, `shift-enter-in-windows-terminal` | Align harness status information and repair multiline input |
 | Evaluation | `reviewing-evaluation-taxonomies` | Resume controlled local taxonomy review |
 | Review command | `adequacy-review` | Run portable blinded ensemble review from one versioned contract |

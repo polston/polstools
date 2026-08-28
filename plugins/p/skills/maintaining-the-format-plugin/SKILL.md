@@ -17,9 +17,11 @@ If it exits 1 or 2, stop and report its output.
 2. The e2e cannot see live state. Check separately: is p enabled in
    the harness (it loads from the installed marketplace path, not from a repo
    worktree — a healthy repo copy proves nothing about live sessions)? Did
-   this session actually receive the spec at start? Is there a stale off-flag
-   for the current session (`format-ctl status`)? A missing injection with a
-   passing e2e is almost always one of these three.
+   this session actually receive the spec at start? Does the session resolve
+   off (`format-ctl status` names the state and its source — the format ships
+   off by default, so no session toggle and no configured default means no
+   injection)? A missing injection with a passing e2e is almost always one of
+   these three.
 
 ## Behavioral health check
 
@@ -70,6 +72,7 @@ says otherwise.
 | Hooks invoke `format-ctl` through `sh bin/python-launcher` | Git Bash on Windows may have no `python3` on PATH; the launcher resolves installed Python locations before falling back to `uv` |
 | `gate` exits 1 on a bad payload while the toggles exit 2 | Exit 2 from a UserPromptSubmit hook blocks processing and erases the user's prompt |
 | Flag dir sits under the OS temp directory | Both harness sandboxes permit temp writes; config paths may be blocked or may themselves be repositories |
+| A fresh session gets no injection | The format ships off by default; enable it per session with `/p:fmt-on`, or durably with `format-ctl default on`, optionally `--harness claude` or `--harness codex` |
 | stdin/stdout reconfigured to UTF-8 at the top of `format-ctl` | Piped stdout on Windows defaults to the ANSI code page and mangles non-ASCII payload bytes |
 | Spec text duplicated in miniature in `turn-reminder.md` | Per-turn reinjection is the measured drift antidote; the repetition is the feature |
 | Interim tool progress has no triage headers | The full contract is reserved for turn-ending replies; the final reply repeats every actionable item |
@@ -82,7 +85,9 @@ says otherwise.
    this maintenance skill from p. Do not uninstall the whole plugin unless
    all of its other tools should disappear too.
 2. Delete the `p-format-toggle` directory under the OS temp directory —
-   orphaned flags can outlive the plugin until normal temp cleanup removes them.
+   orphaned flags can outlive the plugin until normal temp cleanup removes
+   them — and the durable defaults file `polstools/format.json` under the
+   user configuration directory.
 3. Remove any instruction-file carve-out that defers other formatting rules
    to this feature (grep the user/global instructions for `format`).
 4. Verify: a fresh session shows no FINDINGS/PROBLEMS/ASKS injection and no

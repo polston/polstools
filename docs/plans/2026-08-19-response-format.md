@@ -1,6 +1,6 @@
 # Response-format feature — design record
 
-2026-08-19, updated 2026-08-24. The `p` plugin makes every turn-ending reply
+2026-08-19, updated 2026-08-28. The `p` plugin makes every turn-ending reply
 open with a fixed triage block — FINDINGS, PROBLEMS, ASKS. Interim tool progress
 is one concise sentence instead. A horizontal rule separates optional detail
 only when such detail follows. An unimplemented material proposal expands its
@@ -27,13 +27,22 @@ Both hooks emit plain stdout (appended to context for SessionStart and
 UserPromptSubmit); no JSON envelope is needed, so the payloads stay as
 readable markdown files under `style/`.
 
-The injection is toggleable per session: both hooks route through
-`bin/format-ctl gate`, which prints the payload unless a per-session flag
-file exists under the operating-system temp directory. `/p:fmt-off` and
-`/p:fmt-on` are native skills that flip the flag — the hook side reads the
-session id from hook input JSON, while the skill side accepts the native Claude
-Code or Codex session environment. Unreadable hook input fails open to ON;
-flags older than 14 days are pruned on every toggle. A bad payload makes `gate`
+The injection is off by default and resolves through explicit scopes: both
+hooks route through `bin/format-ctl gate`, which prints the payload only when
+the session resolves on. Resolution order: a per-session flag file under the
+operating-system temp directory, then the `P_FORMAT_DEFAULT` environment
+variable, then a per-harness key, then a global key in the durable defaults
+file `polstools/format.json` under the user configuration directory
+(`P_FORMAT_CONFIG_FILE` overrides the path), then off. `/p:fmt-off` and
+`/p:fmt-on` are native skills that flip the session flag, or write the
+defaults file when asked for a default scope (`format-ctl default on|off`,
+optionally `--harness claude` or `--harness codex`). The hook side reads the
+session id from hook input JSON, while the skill side accepts the native
+Claude Code or Codex session environment. Harness identity for the
+per-harness key comes from `P_FORMAT_HARNESS`, then the Claude or Codex
+session variables; a hook process exposing neither follows the global key.
+Unreadable hook input follows the configured default; flags older than 14
+days are pruned on every toggle. A bad payload makes `gate`
 exit 1, not 2 — exit 2 from a UserPromptSubmit hook blocks processing and
 erases the user's prompt. Hook commands route the controller through
 `bin/python-launcher`, which resolves Python 3 without assuming the harness's
@@ -103,17 +112,18 @@ relied on above.
 - `plugins/p/bin/python-launcher` — resolves a usable Python 3 interpreter
   across POSIX and Windows harness environments without requiring `python3`
   on PATH.
-- `plugins/p/bin/format-ctl` — the gate plus the `off`/`on`/`status`
-  toggle (stdlib Python 3). Reconfigures stdio to UTF-8 first: piped stdout
+- `plugins/p/bin/format-ctl` — the gate, the `off`/`on`/`status` session
+  toggle, and the `default` scope editor (stdlib Python 3). Reconfigures stdio to UTF-8 first: piped stdout
   on Windows defaults to the ANSI code page and mangles non-ASCII payload
   bytes (caught by running the gate, invisible in file reads).
-- `plugins/p/bin/format-e2e` — 36-check end-to-end verifier: portable wiring,
-  activation coverage, gates byte-exact, UTF-8 validity, toggle lifecycles,
-  exit-code contracts, and catalog sync.
+- `plugins/p/bin/format-e2e` — 54-check end-to-end verifier: portable wiring,
+  activation coverage, gates byte-exact, UTF-8 validity, default-scope
+  precedence, toggle lifecycles, exit-code contracts, and catalog sync.
 - `plugins/p/skills/maintaining-the-format-plugin/` — mechanical and
   behavioral health checks, repair direction, deliberate-choices table, and
   full-removal checklist.
 - `plugins/p/skills/fmt-off/` and `plugins/p/skills/fmt-on/` — native
-  `/p:fmt-off` and `/p:fmt-on` toggles for Claude Code and Codex sessions.
+  `/p:fmt-off` and `/p:fmt-on` toggles for Claude Code and Codex sessions,
+  with a `default` argument for the durable global or per-harness default.
 - `plugins/p/style/` — the full and per-turn payloads; semantic contract tests
   keep their duplicated rules aligned.

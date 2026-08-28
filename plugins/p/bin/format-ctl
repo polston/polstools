@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
-"""Per-session gate and toggle for the format plugin's context injection.
+"""Per-session gate, session toggles, and durable defaults for the format
+plugin's context injection.
 
-gate <payload>  hook entry: print <payload> unless this session is toggled
-                off (session id read from the hook JSON on stdin; unreadable
-                input fails open to ON)
+gate <payload>  hook entry: print <payload> when the resolved state is on
+                (session id read from the hook JSON on stdin)
 off | on        toggle the current session (id from the active harness)
-status          print the current session's state
+status          print the current session's resolved state and its source
+default         show the configured defaults
+default on|off [--harness claude|codex]
+                set the durable default globally or for one harness
+default clear [--harness claude|codex]
+                remove the global or one harness's configured default
 
-Exit: 0 ran clean; toggle subcommands exit 2 when they cannot run. gate exits
-1 on a bad payload instead — exit 2 from a UserPromptSubmit hook blocks
-processing and erases the user's prompt, which a broken payload must never do.
+Resolution order: session toggle, P_FORMAT_DEFAULT, the harness key, then
+the global key in the defaults file, then off. The defaults file is
+polstools/format.json under the user configuration directory
+(P_FORMAT_CONFIG_FILE overrides the path). Harness identity comes from
+P_FORMAT_HARNESS, then the Claude or Codex session variables.
+
+Exit: 0 ran clean; toggle and default subcommands exit 2 when they cannot
+run. gate exits 1 on a bad payload instead — exit 2 from a UserPromptSubmit
+hook blocks processing and erases the user's prompt, which a broken payload
+must never do.
 """
 import hashlib
 import json
@@ -31,22 +43,25 @@ FLAG_DIR = os.environ.get("P_FORMAT_STATE_DIR") or os.path.join(
     tempfile.gettempdir(), "p-format-toggle"
 )
 STALE_SECONDS = 14 * 24 * 3600
+HARNESSES = ("claude", "codex")
 SESSION_ENV_VARS = (
     "CLAUDE_CODE_SESSION_ID",
     "CODEX_SESSION_ID",
     "CODEX_THREAD_ID",
 )
+STATES = ("on", "off")
 
 
-def flag_path(session_id):
-    return os.path.join(FLAG_DIR, session_id + ".off")
+def flag_path(session_id, state):
+    return os.path.join(FLAG_DIR, session_id + "." + state)
 
 
 def prune():
     try:
         cutoff = time.time() - STALE_SECONDS
         for entry in os.scandir(FLAG_DIR):
-            if entry.name.endswith(".off") and entry.stat().st_mtime < cutoff:
+            if (entry.name.endswith(".off") or entry.name.endswith(".on")) \
+                    and entry.stat().st_mtime < cutoff:
                 os.unlink(entry.path)
     except OSError:
         pass
@@ -59,6 +74,81 @@ def session_from_env():
             return sid
     print("no supported harness session id is set", file=sys.stderr)
     sys.exit(2)
+
+
+def config_path():
+    override = os.environ.get("P_FORMAT_CONFIG_FILE")
+    if override:
+        return override
+    if os.environ.get("LOCALAPPDATA"):
+        base = os.environ["LOCALAPPDATA"]
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config")
+    return os.path.join(base, "polstools", "format.json")
+
+
+def read_config():
+    try:
+        with open(config_path(), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: value for key, value in data.items()
+            if key in ("default",) + HARNESSES and value in STATES}
+
+
+def write_config(config):
+    path = config_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError as error:
+        print("format-ctl: cannot write defaults: %s" % error, file=sys.stderr)
+        sys.exit(2)
+
+
+def harness_name():
+    override = os.environ.get("P_FORMAT_HARNESS")
+    if override in HARNESSES:
+        return override
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return "claude"
+    if os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_THREAD_ID"):
+        return "codex"
+    return ""
+
+
+def default_state():
+    env_default = os.environ.get("P_FORMAT_DEFAULT")
+    if env_default in STATES:
+        return env_default, "P_FORMAT_DEFAULT"
+    config = read_config()
+    harness = harness_name()
+    if harness and config.get(harness):
+        return config[harness], harness + " default"
+    if config.get("default"):
+        return config["default"], "global default"
+    return "off", "built-in default"
+
+
+def session_override(session_id):
+    if session_id and os.path.exists(flag_path(session_id, "off")):
+        return "off"
+    if session_id and os.path.exists(flag_path(session_id, "on")):
+        return "on"
+    return ""
+
+
+def resolve(session_id):
+    override = session_override(session_id)
+    if override:
+        return override, "session toggle"
+    return default_state()
 
 
 def _telemetry_path():
@@ -112,7 +202,8 @@ def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
         sid = json.load(sys.stdin).get("session_id")
     except (json.JSONDecodeError, OSError, ValueError):
         pass
-    if sid and os.path.exists(flag_path(sid)):
+    state, _ = resolve(sid)
+    if state == "off":
         _emit_hook_event(
             base, "end", status="disabled", latency_ms=max(
                 0, (time.perf_counter_ns() - started) // 1_000_000),
@@ -138,6 +229,55 @@ def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
     return 0
 
 
+def set_session(state):
+    os.makedirs(FLAG_DIR, exist_ok=True)
+    prune()
+    sid = session_from_env()
+    with open(flag_path(sid, state), "w", encoding="utf-8"):
+        pass
+    other = "on" if state == "off" else "off"
+    try:
+        os.unlink(flag_path(sid, other))
+    except OSError:
+        pass
+    print("response format %s for this session" % state.upper())
+
+
+def show_status():
+    state, source = resolve(session_from_env())
+    print("response format %s for this session (%s)" % (state.upper(), source))
+
+
+def default_command(args):
+    if not args or args == ["show"]:
+        config = read_config()
+        for key, label in [("default", "global")] + [(h, h) for h in HARNESSES]:
+            print("%s default: %s" % (label, config.get(key, "(unset)")))
+        state, source = default_state()
+        print("effective default here: %s (%s)" % (state.upper(), source))
+        return
+    action, rest = args[0], args[1:]
+    harness = ""
+    if rest[:1] == ["--harness"] and len(rest) == 2 and rest[1] in HARNESSES:
+        harness = rest[1]
+    elif rest:
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+    config = read_config()
+    scope = ("for " + harness) if harness else "globally"
+    if action in STATES:
+        config[harness or "default"] = action
+        write_config(config)
+        print("response format default %s %s" % (action.upper(), scope))
+    elif action == "clear":
+        config.pop(harness or "default", None)
+        write_config(config)
+        print("response format default cleared %s" % scope)
+    else:
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+
+
 def main():
     args = sys.argv[1:]
     if args and args[0] == "gate":
@@ -152,23 +292,16 @@ def main():
             args[1], hook_id=options.get("--hook-id", ""),
             hook_version=options.get("--hook-version", ""),
             trigger_kind=options.get("--trigger-kind", "")))
+    if args and args[0] == "default":
+        default_command(args[1:])
+        return
     if len(args) != 1 or args[0] not in ("off", "on", "status"):
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    os.makedirs(FLAG_DIR, exist_ok=True)
-    prune()
-    path = flag_path(session_from_env())
-    if args[0] == "off":
-        with open(path, "w", encoding="utf-8"):
-            pass
-        print("response format OFF for this session")
-    elif args[0] == "on":
-        if os.path.exists(path):
-            os.unlink(path)
-        print("response format ON for this session")
+    if args[0] == "status":
+        show_status()
     else:
-        state = "OFF" if os.path.exists(path) else "ON"
-        print("response format %s for this session" % state)
+        set_session(args[0])
 
 
 main()
