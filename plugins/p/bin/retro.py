@@ -1472,17 +1472,19 @@ MOMENTS_PER_SESSION = 3
 
 
 def moments(row):
-    """Redacted evidence for one session, or nothing at all if its transcript
-    will not read. A pack covers hundreds of sessions and must not die because
-    one file went unreadable."""
+    """Redacted evidence for one session, or nothing at all if its
+    transcript will not read or its harness has no reader."""
     try:
+        if (row.get("harness") or "claude") == "codex":
+            return _moments_codex(row)
         return _moments(row)
     except TranscriptUnreadable:
         return []
 
 
 def _moments(row):
-    """Pull the user turns that scored this session as frictional, with the
+    """Pull the user turns that scored this session as frictional, plus the
+    approvals — the operator's liked behavior, by example — with the
     assistant text immediately before each. Redacted."""
     path = claude_projects_dir() / row.get("transcript", "")
     if not path.is_file():
@@ -1499,7 +1501,44 @@ def _moments(row):
             if not is_human_prompt(rec, body):
                 continue
             kind = classify_user_turn(body, len(prior))
-            if kind in ("interrupt", "correction"):
+            if kind in ("interrupt", "correction", "approval"):
+                out.append({
+                    "at": rec.get("timestamp") or "",
+                    "kind": kind,
+                    "said": redact(body.strip())[:400],
+                    "after": redact(prior.strip()[-300:]),
+                })
+            prior = ""
+        if len(out) >= MOMENTS_PER_SESSION:
+            break
+    return out
+
+
+def _moments_codex(row):
+    """The Codex counterpart of _moments: wrapper-tagged and empty user
+    messages skipped with the same opener list, prior accumulated from
+    assistant messages and reset on each counted user turn."""
+    path = codex_sessions_dir() / row.get("transcript", "")
+    if not path.is_file():
+        return []
+    out = []
+    prior = ""
+    for rec in read_records(path):
+        if not isinstance(rec, dict) or rec.get("type") != "response_item":
+            continue
+        payload = rec.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "message":
+            continue
+        role = payload.get("role")
+        body = _codex_text(payload)
+        if role == "assistant":
+            prior += body
+        elif role == "user":
+            if body.lstrip().startswith(MACHINE_PROMPT_OPENERS) \
+                    or not body.strip():
+                continue
+            kind = classify_user_turn(body, len(prior))
+            if kind in ("interrupt", "correction", "approval"):
                 out.append({
                     "at": rec.get("timestamp") or "",
                     "kind": kind,
@@ -1595,6 +1634,8 @@ def cmd_pack(args):
         score = friction_score(row)
         if score == 0:
             continue
+        if not (claude_projects_dir() / row.get("transcript", "")).is_file():
+            continue   # moved or unreadable: no headed block with nothing under it
         lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
                      f"branch `{row.get('git_branch') or '-'}` · score {score}")
         lines.append(f"correction candidates {row.get('correction_candidates')}, "
@@ -1604,6 +1645,34 @@ def cmd_pack(args):
                      f"tool errors {row.get('tool_errors')}, "
                      f"queued prompts {row.get('queued_prompts')}")
         for moment in moments(row):
+            lines.append("")
+            lines.append(f"- **{moment['kind']}** at {moment['at']}")
+            lines.append(f"  - assistant, just before: _{moment['after']}_")
+            lines.append(f"  - user said: **{moment['said']}**")
+        lines.append("")
+
+    sampled = sorted(
+        (r for r in main if r.get("harness") == "codex"
+         and (int(r.get("correction_candidates") or 0)
+              + int(r.get("interrupts") or 0)
+              + int(r.get("approval_turns") or 0))),
+        key=lambda r: (int(r.get("correction_candidates") or 0)
+                       + int(r.get("interrupts") or 0)
+                       + int(r.get("approval_turns") or 0)),
+        reverse=True)[:args.sessions]
+    if sampled:
+        lines += ["## Codex moments — candidate-sampled, not ranked", "",
+                  "Selected by candidate signals (a use the legacy rubric "
+                  "allows); nothing here is a friction ranking.", ""]
+    for row in sampled:
+        evidence = moments(row)
+        if not evidence:
+            # A moved or unreadable rollout must not print a headed block
+            # with nothing under it (spec D4.3).
+            continue
+        lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
+                     f"branch `{row.get('git_branch') or '-'}`")
+        for moment in evidence:
             lines.append("")
             lines.append(f"- **{moment['kind']}** at {moment['at']}")
             lines.append(f"  - assistant, just before: _{moment['after']}_")

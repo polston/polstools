@@ -123,5 +123,33 @@ class Reporting(unittest.TestCase):
         # The codex row must not enter the after-side population.
         self.assertNotIn("cx-1", text)
 
+    def test_pack_quotes_approvals_and_codex_moments(self):
+        codex_home = Path(self.tmp.name) / "cx"
+        import fixtures as fx
+        from test_retro_codex import write, T
+        rel = "2026/08/01/rollout-a.jsonl"
+        write(codex_home / "sessions", [
+            fx.rollout_meta(T), fx.rollout_user("do the thing", T),
+            fx.rollout_assistant("x" * 400, T),
+            fx.rollout_user("no, wrong file", T),
+            fx.rollout_assistant("y" * 400, T),
+            fx.rollout_user("perfect", T),
+            fx.rollout_assistant("done", T),
+        ], rel=rel)
+        retro = self.load_with_ledger([
+            base_row(transcript=rel, harness="codex", project_key="cx-1",
+                     date="2026-08-01", correction_candidates=1,
+                     approval_turns=1, user_prompts=3,
+                     ineligible=["tool_errors", "queued_prompts",
+                                 "permission_mode_changes"]),
+        ])
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+            self.run_cmd(retro, retro.cmd_pack, days=3650, sessions=8)
+        pack = max(self.work.glob("pack-*.md")).read_text(encoding="utf-8")
+        self.assertIn("candidate-sampled", pack)
+        self.assertIn("**approval**", pack)
+        self.assertIn("**correction**", pack)
+
+
 if __name__ == "__main__":
     unittest.main()
