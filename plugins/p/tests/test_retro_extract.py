@@ -32,8 +32,9 @@ def minimal_rollout_lines():
 def write_rollout(root, rel, lines=None):
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
+    recs = minimal_rollout_lines() if lines is None else lines
     with open(path, "w", encoding="utf-8") as fh:
-        for rec in (lines or minimal_rollout_lines()):
+        for rec in recs:
             fh.write(json.dumps(rec) + "\n")
     return path
 

@@ -54,6 +54,9 @@ from pathlib import Path
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
 
+# The two harnesses this tool ingests, Claude first (spec D1.3 dedup order).
+HARNESSES = ("claude", "codex")
+
 
 def claude_projects_dir():
     """The Claude transcript root, resolved at call time so tests can
@@ -775,9 +778,6 @@ MEASURED, NOT_TRANSCRIPT, UNREADABLE = "measured", "not-transcript", "unreadable
 ROLLOUT_TYPES = frozenset((
     "session_meta", "response_item", "event_msg", "turn_context",
     "world_state", "compacted", "inter_agent_communication_metadata"))
-
-# The two harnesses this tool ingests, Claude first (spec D1.3 dedup order).
-HARNESSES = ("claude", "codex")
 
 
 def is_rollout(path):
