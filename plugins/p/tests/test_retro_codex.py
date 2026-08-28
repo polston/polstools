@@ -190,10 +190,14 @@ class CodexReducer(unittest.TestCase):
         self.assertEqual(50, row["cache_read"])   # banked 40 + final 10
 
     def test_tokens_with_extra_field_does_not_raise(self):
-        # A token_count info dict has carried a stray extra key ("model")
-        # in the real corpus. Iterating current.items() blindly would bank
-        # it too and int() would raise on the string; CODEX_TOKEN_FIELDS
-        # must keep the reducer to the four known fields regardless.
+        # No stray key has ever been observed in total_token_usage (probed
+        # across the full corpus: 65,845 events, six key names, all
+        # numeric). This is a defensive test for a version that has not
+        # shipped: iterating current.items() blindly would bank a future
+        # non-numeric sibling too and int() would raise inside
+        # measure_outcome, which promises never to raise, losing the whole
+        # extract pass with no ledger written. CODEX_TOKEN_FIELDS pins the
+        # reducer to the four known-numeric fields so that can't happen.
         extra = fx.rollout_event("token_count", T, info={"total_token_usage": {
             "input_tokens": 100, "cached_input_tokens": 40,
             "output_tokens": 50, "reasoning_output_tokens": 10,

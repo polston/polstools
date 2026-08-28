@@ -998,9 +998,15 @@ CODEX_CALL_PAIRS = {"function_call": "function_call_output",
 # (1,008 of 1,032, and all 18 of 18, carry a call_id matching no same-file
 # call item) and stay in as the only record of their calls.
 CODEX_TOOL_EVENTS = frozenset(("web_search_end", "image_generation_end"))
-# The only fields the row schema banks. A token_count event's info dict has
-# carried stray extra keys (e.g. "model") in the corpus; iterating current
-# .items() blindly would bank those too and fail the int() conversion.
+# The only fields the row schema banks. Probed across the full corpus (317
+# rollouts, 65,845 token_count events): total_token_usage carries exactly six
+# key names, all numeric, no stray key ever observed. The fifth,
+# cache_write_input_tokens, is real and unbanked - no column reads it. The
+# list is pinned to these four anyway: the row schema banks only these four,
+# and if a future CLI version adds a non-numeric sibling, iterating
+# current.items() blindly would raise inside measure_outcome - which
+# promises never to raise - and lose the whole extract pass with no ledger
+# written.
 CODEX_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens",
                       "reasoning_output_tokens")
 _SKILL_NAME = re.compile(r"<name>\s*([^<]+?)\s*</name>")
@@ -1630,12 +1636,13 @@ def cmd_pack(args):
         h_sub = [r for r in sub if (r.get("harness") or "claude") == harness]
         h_prior_sub = [r for r in prior_sub
                        if (r.get("harness") or "claude") == harness]
-        h_sub_t, h_sub_eligible = totals(h_sub)
-        lines.append(f"Subagent spend — {len(h_sub)} transcripts "
-                     f"(prior window: {len(h_prior_sub)}): "
-                     + ", ".join(f"{key} {h_sub_t[key]}"
-                                 for key in ["tokens_out"] + COUNTERS
-                                 if h_sub_eligible[key]))
+        if h_sub or h_prior_sub:
+            h_sub_t, h_sub_eligible = totals(h_sub)
+            lines.append(f"Subagent spend — {len(h_sub)} transcripts "
+                         f"(prior window: {len(h_prior_sub)}): "
+                         + ", ".join(f"{key} {h_sub_t[key]}"
+                                     for key in ["tokens_out"] + COUNTERS
+                                     if h_sub_eligible[key]))
         for extra_name in ("automation", "unknown"):
             extra = [r for r in split[extra_name]
                      if (r.get("harness") or "claude") == harness]
@@ -1990,10 +1997,10 @@ def cmd_subagents(args):
 
     all_endings = Counter(r.get("ending") or "?" for r in rows)
     no_answer = all_endings.get("unanswered", 0) + all_endings.get("silent", 0)
-    print("\nFailed to answer: answering through a structured-result call "
-          "is answering, and an interrupted run is the caller's doing. "
-          "Some of what is left is a transcript that had not finished "
-          "being written when the ledger was built.")
+    print("\nOn the counts below: answering through a structured-result "
+          "call is answering, and an interrupted run is the caller's "
+          "doing. Some of what is left is a transcript that had not "
+          "finished being written when the ledger was built.")
     for harness, h_rows in (("claude", claude_rows), ("codex", codex_rows)):
         if not h_rows:
             continue
