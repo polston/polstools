@@ -123,9 +123,6 @@ class ExtractWalk(unittest.TestCase):
                                        self.work)
         self.assertEqual(retro.EXIT_CANNOT_RUN, code)
 
-    # Passes once measure_codex lands (Task 4 removes this decorator);
-    # until then the stub measures no rollout and the ledger stays empty.
-    @unittest.expectedFailure
     def test_single_root_is_enough(self):
         write_rollout(self.codex_home / "sessions", "2026/08/01/r.jsonl")
         retro, code = self.run_extract(self.claude_home, self.codex_home,

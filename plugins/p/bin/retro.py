@@ -652,10 +652,21 @@ HUMAN_PROMPT_SOURCES = frozenset(("typed", "queued", "suggestion_accepted"))
 # that OPENS with one of these is a harness wrapper, not a person. Anchored at
 # the start deliberately -- a person quoting one of these phrases mid-message is
 # still a person.
+#
+# One list for both harnesses (spec D3). Codex wrapper tags whose every
+# occurrence carries attributes enter as bracket-less prefixes; bare tags
+# keep the closed form so a person merely quoting a tag name mid-sentence
+# still counts. Anchored at the start deliberately. Measured over the
+# rollout corpus: codex_internal_context, in-app-browser-context and image
+# only ever appear as <tag attr...>.
 MACHINE_PROMPT_OPENERS = (
     "<task-notification>", "<system-reminder>", "<command-name>",
     "<local-command-stdout>", "Base directory for this skill:",
     "This session is being continued", "Caveat: The messages below were generated",
+    # Codex-only wrapper tags (spec Grounding 5).
+    "<environment_context>", "<recommended_plugins>", "<skill>",
+    "<turn_aborted>", "<codex_delegation>",
+    "<codex_internal_context", "<in-app-browser-context", "<image",
 )
 
 
@@ -957,10 +968,263 @@ def measure(path, harness="claude", root=None):
     return row
 
 
+# Codex counter mapping (spec D3). Three counters have no rollout signal:
+# no queue or permission-mode record exists, and a nonzero exec exit is
+# information, not a harness refusal — matching the Claude rule.
+CODEX_INELIGIBLE = ("tool_errors", "queued_prompts", "permission_mode_changes")
+# Polls repeat identical arguments as their normal operation; counting them
+# as repeats is the defect signature()'s docstring records for Claude,
+# re-measured for rollouts: the naive rule flags 14.5% of calls, these
+# exclusions bring it to 9.9%, and the residual is real repetition. The
+# spec names exactly these two polls — the ones present in the corpus.
+CODEX_POLL_TOOLS = frozenset(("wait", "wait_agent"))
+# A call item is answered only by its own pair's output type (spec D3);
+# note tool_search's output name drops "_call".
+CODEX_CALL_PAIRS = {"function_call": "function_call_output",
+                    "custom_tool_call": "custom_tool_call_output",
+                    "tool_search_call": "tool_search_output"}
+# web_search_end (1,032) and image_generation_end (18) are measured as
+# unpaired: no same-file call item shares an id or turn key with either
+# family, so counting the event is the only record of the call. Probed the
+# same way: patch_apply_end (4,118 occurrences, 62 files) and
+# mcp_tool_call_end (1,043 occurrences, 22 files) are unpaired too — 0 of
+# 62 and 0 of 22 files show call-item/event count parity, and a shared
+# call/turn/item id between the event and any same-file custom_tool_call
+# or function_call (including "exec", present in every one of the 62
+# patch_apply_end files) never appears. A distinctly-named "apply_patch"
+# call item exists in only 6 of the 62 patch_apply_end files and even
+# there carries no matching id, so it is not this event's pair either.
+# All four families are therefore counted.
+CODEX_TOOL_EVENTS = frozenset(("web_search_end", "image_generation_end",
+                               "patch_apply_end", "mcp_tool_call_end"))
+_SKILL_NAME = re.compile(r"<name>\s*([^<]+?)\s*</name>")
+
+
+def _codex_text(payload):
+    """Visible text of a rollout message payload."""
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(str(block.get("text") or "") for block in content
+                     if isinstance(block, dict)
+                     and block.get("type") in ("input_text", "output_text",
+                                               "text"))
+
+
+def _codex_population(meta):
+    """(population, how it was decided). Absent thread_source maps to
+    subagent when a parent id proves it, else to unknown — never to main:
+    an unclassified file must not enter the population every per-session
+    rate divides by. (All 50 absent-thread_source corpus files come from a
+    single alpha CLI build on one day, none with a parent id.)"""
+    source = meta.get("thread_source")
+    if source == "user":
+        return "main", "thread_source"
+    if source in ("subagent", "automation"):
+        return source, "thread_source"
+    if source is None:
+        if meta.get("parent_thread_id"):
+            return "subagent", "fallback"
+        return "unknown", "fallback"
+    return "unknown", "thread_source"
+
+
 def measure_codex(path, root):
-    """Implemented in the Codex-reducer task; a rollout is measured there.
-    Until then it is not a transcript this pipeline can reduce."""
-    return None
+    """Reduce one Codex rollout to a metrics row.
+
+    Same row schema as measure(); the judgment helpers are shared, the
+    record walk is not — the two formats disagree on which signals exist,
+    so the schema, not the record stream, is the contract (spec D3).
+    """
+    m = Counter()
+    meta = None
+    meta_disagrees = False
+    first_ts = last_ts = None
+    seen_sigs = set()
+    skills = set()
+    prior_assistant_chars = 0
+    saw_message = False
+    # Probed over the real corpus (spec D2.6): of 77 rollouts with a
+    # top-level `compacted` record, the response_item count before it never
+    # drops below 26 (median 259) and 47 of 77 files keep appending at least
+    # as many records after it as came before — append-preserving, not a
+    # rewrite. Compaction changes what the model is shown, not what the
+    # rollout file holds, so this flag is just a marker.
+    compacted = False
+    aborted = False
+    open_calls = set()   # (expected_output_type, call_id) pairs
+    last_assistant_text = ""
+    # Cumulative token totals reset mid-file in 5 of 317 corpus rollouts;
+    # bank the running total at each reset and add the final run.
+    bank = Counter()
+    current = {}
+
+    for rec in read_records(path):
+        if not isinstance(rec, dict):
+            continue
+        ts = parse_ts(rec.get("timestamp"))
+        if ts:
+            first_ts = first_ts or ts
+            last_ts = ts
+        rtype = rec.get("type")
+        payload = rec.get("payload")
+        if rtype == "compacted":
+            compacted = True
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if rtype == "session_meta":
+            if meta is None:
+                meta = payload   # first meta wins (spec D2.2)
+            elif payload.get("thread_source") != meta.get("thread_source"):
+                meta_disagrees = True
+            continue
+        if rtype == "event_msg":
+            etype = payload.get("type")
+            if etype == "token_count":
+                info = payload.get("info")
+                total = (info or {}).get("total_token_usage") \
+                    if isinstance(info, dict) else None
+                if isinstance(total, dict):
+                    if current and int(total.get("total_tokens") or 0) < \
+                            int(current.get("total_tokens") or 0):
+                        for key, value in current.items():
+                            bank[key] += int(value or 0)
+                    current = total
+            elif etype == "turn_aborted":
+                m["interrupts"] += 1
+                aborted = True
+            elif etype in CODEX_TOOL_EVENTS:
+                m["tool_calls"] += 1
+            continue
+        if rtype != "response_item":
+            continue
+        itype = payload.get("type")
+        if itype == "message":
+            role = payload.get("role")
+            body = _codex_text(payload)
+            if role == "assistant":
+                m["turns"] += 1
+                saw_message = True
+                last_assistant_text = body
+                prior_assistant_chars += len(body)
+            elif role == "user":
+                saw_message = True
+                opener = body.lstrip().startswith(MACHINE_PROMPT_OPENERS)
+                if opener:
+                    stripped = body.lstrip()
+                    if stripped.startswith("<skill"):
+                        match = _SKILL_NAME.search(body)
+                        if match:
+                            skills.add(match.group(1).split(":")[-1])
+                            m["skill_runs"] += 1
+                elif body.strip():
+                    kind = classify_user_turn(body, prior_assistant_chars)
+                    if kind == "interrupt":
+                        # Matches the Claude reducer: an interrupt is not a
+                        # prompt. The marker is Claude-shaped and expected
+                        # to be absent from rollouts.
+                        m["interrupts"] += 1
+                    else:
+                        m["user_prompts"] += 1
+                        if kind == "correction":
+                            m["correction_candidates"] += 1
+                        elif kind == "approval":
+                            m["approval_turns"] += 1
+                    prior_assistant_chars = 0
+            # developer-role messages never count (spec D3)
+        elif itype in CODEX_CALL_PAIRS:
+            m["turns"] += 1
+            m["tool_calls"] += 1
+            name = str(payload.get("name") or payload.get("tool_name") or "")
+            call_id = str(payload.get("call_id") or payload.get("id") or "")
+            if call_id:
+                open_calls.add((CODEX_CALL_PAIRS[itype], call_id))
+            raw = payload.get("arguments")
+            if raw is None:
+                raw = payload.get("input")
+            parsed = None
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                except ValueError:
+                    parsed = raw
+            elif raw:
+                parsed = raw
+            if parsed and name not in CODEX_POLL_TOOLS:
+                sig = signature(parsed)
+                key = (name, sig)
+                if key in seen_sigs:
+                    m["repeat_calls"] += 1
+                seen_sigs.add(key)
+        elif itype in CODEX_CALL_PAIRS.values():
+            open_calls.discard(
+                (itype, str(payload.get("call_id") or payload.get("id") or "")))
+
+    if not saw_message:
+        return None
+
+    if current:
+        for key, value in current.items():
+            bank[key] += int(value or 0)
+    meta = meta or {}
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = path.name
+    project = redact(str(meta.get("cwd") or ""))
+    tokens_in = max(0, bank["input_tokens"] - bank["cached_input_tokens"])
+
+    if last_assistant_text.strip():
+        ending = "text"
+    elif aborted:
+        ending = "interrupted"
+    elif open_calls:
+        ending = "unanswered"
+    else:
+        ending = "silent"
+
+    population, population_source = _codex_population(meta)
+    row = {
+        "transcript": rel,
+        # harness names the transcript FORMAT; the walk's root decides
+        # ownership and dedup only (spec D1.3).
+        "harness": "codex",
+        "population": population,
+        "population_source": population_source,
+        "parent_session_id": str(meta.get("parent_thread_id") or ""),
+        "project_key": "cx-" + hashlib.sha1(
+            project.encode("utf-8")).hexdigest()[:8],
+        "ineligible": list(CODEX_INELIGIBLE),
+        "compacted": compacted,
+        "session_id": str(meta.get("session_id") or meta.get("id") or "")
+                      or path.stem,
+        "project": project,
+        "git_branch": str(((meta.get("git") or {}).get("branch")) or "")
+                      if isinstance(meta.get("git"), dict) else "",
+        "cc_version": str(meta.get("cli_version") or ""),
+        "date": first_ts.date().isoformat() if first_ts else "",
+        "duration_s": int((last_ts - first_ts).total_seconds())
+                      if first_ts and last_ts else 0,
+        "tokens_in": tokens_in,
+        # Visible and reasoning output are both spend (spec D3).
+        "tokens_out": bank["output_tokens"] + bank["reasoning_output_tokens"],
+        "cache_read": bank["cached_input_tokens"],
+        "skills_used": sorted(skills),
+        "schema": SCHEMA_VERSION,
+        "ending": ending,
+        # The seven mechanical-failure signals are Claude harness-refusal
+        # markers a rollout never emits.
+        "eligible": [],
+        "meta_disagrees": meta_disagrees,
+    }
+    for key in COUNTERS:
+        row[key] = m[key]
+    for key in SUBAGENT_COUNTERS:
+        row[key] = 0
+    return row
 
 
 def measure_outcome(path, harness, root):
@@ -1022,7 +1286,8 @@ def cmd_extract(args):
                   f"({len(stale)} of {len(existing)} rows) - rebuilding all of it")
             rebuild = True
         else:
-            rows = {r["transcript"]: r for r in existing if "transcript" in r}
+            rows = {(r.get("harness") or "claude", r["transcript"]): r
+                    for r in existing if "transcript" in r}
     state = {} if rebuild else load_state()
 
     candidates = {}
@@ -1073,7 +1338,7 @@ def cmd_extract(args):
                 unreadable += 1
                 continue
             if outcome == MEASURED:
-                rows[row["transcript"]] = row
+                rows[(row.get("harness") or "claude", row["transcript"])] = row
                 measured += 1
                 measured_by_harness[row.get("harness") or harness] += 1
             else:
@@ -1096,6 +1361,21 @@ def cmd_extract(args):
                         if (r.get("harness") or "claude") == harness)
         print(f"  {harness}: {measured_by_harness[harness]} measured, "
               f"{in_ledger} in ledger")
+    codex_rows = [r for r in rows.values() if r.get("harness") == "codex"]
+    if codex_rows:
+        populations = Counter(r.get("population") for r in codex_rows)
+        print("  codex populations: " + ", ".join(
+            f"{name} {populations[name]}" for name in
+            ("main", "subagent", "automation", "unknown") if populations[name]))
+        fallbacks = sum(1 for r in codex_rows
+                        if r.get("population_source") == "fallback")
+        if fallbacks:
+            print(f"  codex rows classified by fallback "
+                  f"(no thread_source): {fallbacks}")
+        disagreements = sum(1 for r in codex_rows if r.get("meta_disagrees"))
+        if disagreements:
+            print(f"  codex files whose metas disagree on thread_source: "
+                  f"{disagreements}")
     if duplicates:
         print(f"  duplicate paths skipped: {duplicates}")
     print(f"sessions in ledger: {len(rows)}")
