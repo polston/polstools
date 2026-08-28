@@ -974,29 +974,28 @@ def measure(path, harness="claude", root=None):
 CODEX_INELIGIBLE = ("tool_errors", "queued_prompts", "permission_mode_changes")
 # Polls repeat identical arguments as their normal operation; counting them
 # as repeats is the defect signature()'s docstring records for Claude,
-# re-measured for rollouts: the naive rule flags 14.5% of calls, these
-# exclusions bring it to 9.9%, and the residual is real repetition. The
-# spec names exactly these two polls — the ones present in the corpus.
+# re-measured for rollouts: the naive rule flags 14.3% of calls (7,295 /
+# 51,099 checked), this exclusion brings it to 10.0% (4,637 / 46,301), and
+# the residual is real repetition. The spec names exactly these two polls —
+# the ones present in the corpus.
 CODEX_POLL_TOOLS = frozenset(("wait", "wait_agent"))
 # A call item is answered only by its own pair's output type (spec D3);
 # note tool_search's output name drops "_call".
 CODEX_CALL_PAIRS = {"function_call": "function_call_output",
                     "custom_tool_call": "custom_tool_call_output",
                     "tool_search_call": "tool_search_output"}
-# web_search_end (1,032) and image_generation_end (18) are measured as
-# unpaired: no same-file call item shares an id or turn key with either
-# family, so counting the event is the only record of the call. Probed the
-# same way: patch_apply_end (4,118 occurrences, 62 files) and
-# mcp_tool_call_end (1,043 occurrences, 22 files) are unpaired too — 0 of
-# 62 and 0 of 22 files show call-item/event count parity, and a shared
-# call/turn/item id between the event and any same-file custom_tool_call
-# or function_call (including "exec", present in every one of the 62
-# patch_apply_end files) never appears. A distinctly-named "apply_patch"
-# call item exists in only 6 of the 62 patch_apply_end files and even
-# there carries no matching id, so it is not this event's pair either.
-# All four families are therefore counted.
-CODEX_TOOL_EVENTS = frozenset(("web_search_end", "image_generation_end",
-                               "patch_apply_end", "mcp_tool_call_end"))
+# Measured event-by-event (each event's own payload["call_id"], which sits
+# at the payload TOP LEVEL, checked against that file's custom_tool_call/
+# function_call call_ids — the first pass here mistakenly compared file-
+# level id sets, which understated pairing): patch_apply_end (4,118
+# occurrences, 62 files) and mcp_tool_call_end (1,043 occurrences, 22
+# files) are PAIRED — 1,170 of the patch events and 138 of the mcp events
+# carry a call_id that exactly matches a same-file call item, so the event
+# is a second record of a call already counted there. Both are excluded.
+# web_search_end and image_generation_end show essentially no such overlap
+# (1,008 of 1,032, and all 18 of 18, carry a call_id matching no same-file
+# call item) and stay in as the only record of their calls.
+CODEX_TOOL_EVENTS = frozenset(("web_search_end", "image_generation_end"))
 _SKILL_NAME = re.compile(r"<name>\s*([^<]+?)\s*</name>")
 
 

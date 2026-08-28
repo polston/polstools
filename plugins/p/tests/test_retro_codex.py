@@ -131,6 +131,21 @@ class CodexReducer(unittest.TestCase):
         self.assertEqual(2, row["tool_calls"])
         self.assertEqual("text", row["ending"])
 
+    def test_patch_apply_end_is_paired_not_double_counted(self):
+        # An apply_patch custom_tool_call and its patch_apply_end event share
+        # one call_id at the payload top level; the event is a second record
+        # of the same call and must not add to tool_calls.
+        row = self.measure([
+            fx.rollout_meta(T),
+            fx.rollout_user("go", T),
+            fx.rollout_call("apply_patch", '{"patch": "..."}', T,
+                            call_id="c1"),
+            fx.rollout_output(T, call_id="c1"),
+            {"type": "event_msg", "timestamp": T,
+             "payload": {"type": "patch_apply_end", "call_id": "c1"}},
+        ])
+        self.assertEqual(1, row["tool_calls"])
+
     def test_repeat_calls_parse_args_and_skip_polls(self):
         row = self.measure([
             fx.rollout_meta(T), fx.rollout_user("go", T),
