@@ -2499,7 +2499,7 @@ def cmd_effect(args):
         print("turn-normalised rows omitted for mixed harnesses - a Codex "
               "turn is a structural analogue, not the same unit.\n")
         print("| signal | /session before | after | change |")
-        print("|---|---|---|")
+        print("|---|---|---|---|")
     else:
         print("| signal | /session before | after | /100 turns before | after | change |")
         print("|---|---|---|---|---|---|")
@@ -2528,9 +2528,15 @@ def cmd_effect(args):
         print(f"| **turns per session** | {sb:.1f} | {sa:.1f} | - | - | "
               f"{(sa - sb) / sb * 100:+.0f}% |")
 
-    print("\nThe change column compares the per-hundred-turn figures. Read the "
-          "turns-per-session row first: if it moved a lot, every per-session "
-          "column moved with it and means little on its own.")
+    if mixed:
+        print("\nThe change column compares the per-session figures. With no "
+              "common turn unit across harnesses there is no turn-normalised "
+              "column to check them against, so a change here may be nothing "
+              "more than sessions changing shape.")
+    else:
+        print("\nThe change column compares the per-hundred-turn figures. Read "
+              "the turns-per-session row first: if it moved a lot, every "
+              "per-session column moved with it and means little on its own.")
     print("\nA change here is not proof the edit caused it. Sessions either side "
           "of a date differ in what they were about, and everything moves at "
           "once. Read it as: did the thing you targeted move at all, and did "

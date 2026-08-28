@@ -148,6 +148,28 @@ class Reporting(unittest.TestCase):
         # qualifies, so the After side must show exactly 1 session, not 2.
         self.assertIn("After:  1 sessions", text)
 
+    def test_effect_harness_all_omits_turn_normalised_rows(self):
+        retro = self.load_with_ledger([
+            base_row(date="2026-01-05", tool_errors=1, turns=10),
+            base_row(transcript="p/s2.jsonl", session_id="s2",
+                     date="2026-03-05", tool_errors=3, turns=10),
+            base_row(transcript="2026/08/x.jsonl", harness="codex",
+                     session_id="cx", project_key="cx-1",
+                     date="2026-03-05", tool_errors=2, turns=5,
+                     ineligible=["queued_prompts",
+                                 "permission_mode_changes"]),
+        ])
+        text = self.run_cmd(retro, retro.cmd_effect, since="2026-02-01",
+                            days=0, harness="all")
+        self.assertIn("harness=all", text)
+        self.assertIn("turn-normalised rows omitted for mixed harnesses", text)
+        self.assertNotIn("turns per session", text)
+        header = next(line for line in text.splitlines()
+                      if line.startswith("| signal |"))
+        delim = next(line for line in text.splitlines()
+                     if line.startswith("|---"))
+        self.assertEqual(header.count("|"), delim.count("|"))
+
     def test_pack_quotes_approvals_and_codex_moments(self):
         codex_home = Path(self.tmp.name) / "cx"
         import fixtures as fx
