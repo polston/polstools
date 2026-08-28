@@ -63,15 +63,24 @@ def claude_projects_dir():
     return (Path(config) if config else HOME / ".claude") / "projects"
 
 
-def codex_sessions_dir():
+def codex_home_dir():
+    """The Codex home directory, resolved at call time so tests can inject
+    it and so CODEX_HOME is honoured."""
     home = os.environ.get("CODEX_HOME")
-    return (Path(home) if home else HOME / ".codex") / "sessions"
+    return Path(home) if home else HOME / ".codex"
+
+
+def codex_sessions_dir():
+    return codex_home_dir() / "sessions"
+
+
+_TRANSCRIPT_ROOT_DIRS = {"claude": claude_projects_dir, "codex": codex_sessions_dir}
 
 
 def transcript_roots():
     """(harness, root) pairs, Claude first: a file reachable from two
     roots is owned by the first (spec D1.3)."""
-    return (("claude", claude_projects_dir()), ("codex", codex_sessions_dir()))
+    return tuple((h, _TRANSCRIPT_ROOT_DIRS[h]()) for h in HARNESSES)
 
 
 WORK_DIR = Path(os.environ.get("RETRO_HOME", HOME / ".retro"))
@@ -159,6 +168,12 @@ SCHEMA_VERSION = 7
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_candidates", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
+
+
+def row_harness(row):
+    """A row with no harness field predates schema 7 and defaults to claude."""
+    return row.get("harness") or "claude"
+
 
 # How a run answered, in precedence order. One value per row, in the `ending`
 # column. The first two are a result delivered; only the last two are the agent
@@ -286,27 +301,42 @@ def redact(text):
 
 # --- Transcript parsing ----------------------------------------------------
 
+def _content_text(content, block_types, bare_strings=False):
+    """The text-bearing pieces of a `content` field, as an unjoined list of
+    strings -- callers decide how to filter and join, since the two shapes
+    that flatten through here disagree about both.
+
+    A bare string in a content list passes through only when `bare_strings`
+    is set (Claude content mixes plain strings and typed blocks; Codex
+    content never does). A `tool_result` block, when its type is in
+    `block_types`, contributes its own string `content` field instead of a
+    `text` key -- the one shape neither format's other block types use.
+    """
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    parts = []
+    for block in content:
+        if bare_strings and isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") in block_types:
+            if block.get("type") == "tool_result":
+                inner = block.get("content")
+                if isinstance(inner, str):
+                    parts.append(inner)
+            else:
+                parts.append(block.get("text") or "")
+    return parts
+
+
 def text_of(message):
     """Flatten a message's content to plain text. Content is a string on some
     records and a list of typed blocks on others."""
     if not isinstance(message, dict):
         return ""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts = []
-    for block in content:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict):
-            if block.get("type") == "text":
-                parts.append(block.get("text") or "")
-            elif block.get("type") == "tool_result":
-                inner = block.get("content")
-                if isinstance(inner, str):
-                    parts.append(inner)
+    parts = _content_text(message.get("content"), ("text", "tool_result"),
+                          bare_strings=True)
     return "\n".join(p for p in parts if p)
 
 
@@ -746,6 +776,9 @@ ROLLOUT_TYPES = frozenset((
     "session_meta", "response_item", "event_msg", "turn_context",
     "world_state", "compacted", "inter_agent_communication_metadata"))
 
+# The two harnesses this tool ingests, Claude first (spec D1.3 dedup order).
+HARNESSES = ("claude", "codex")
+
 
 def is_rollout(path):
     for count, rec in enumerate(read_records(path)):
@@ -1014,15 +1047,9 @@ _SKILL_NAME = re.compile(r"<name>\s*([^<]+?)\s*</name>")
 
 def _codex_text(payload):
     """Visible text of a rollout message payload."""
-    content = payload.get("content")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "\n".join(str(block.get("text") or "") for block in content
-                     if isinstance(block, dict)
-                     and block.get("type") in ("input_text", "output_text",
-                                               "text"))
+    parts = _content_text(payload.get("content"),
+                          ("input_text", "output_text", "text"))
+    return "\n".join(str(p) for p in parts)
 
 
 def _codex_population(meta):
@@ -1309,7 +1336,7 @@ def cmd_extract(args):
                   f"({len(stale)} of {len(existing)} rows) - rebuilding all of it")
             rebuild = True
         else:
-            rows = {(r.get("harness") or "claude", r["transcript"]): r
+            rows = {(row_harness(r), r["transcript"]): r
                     for r in existing if "transcript" in r}
     state = {} if rebuild else load_state()
 
@@ -1361,7 +1388,7 @@ def cmd_extract(args):
                 unreadable += 1
                 continue
             if outcome == MEASURED:
-                rows[(row.get("harness") or "claude", row["transcript"])] = row
+                rows[(row_harness(row), row["transcript"])] = row
                 measured += 1
                 measured_by_harness[row.get("harness") or harness] += 1
             else:
@@ -1376,12 +1403,12 @@ def cmd_extract(args):
     print(f"transcripts: {len(transcripts)}  measured: {measured}  "
           f"unchanged: {unchanged}  not-transcripts: {not_transcripts}  "
           f"unreadable: {unreadable}")
-    for harness in ("claude", "codex"):
+    for harness in HARNESSES:
         if harness in absent:
             print(f"  {harness}: root absent")
             continue
         in_ledger = sum(1 for r in rows.values()
-                        if (r.get("harness") or "claude") == harness)
+                        if row_harness(r) == harness)
         print(f"  {harness}: {measured_by_harness[harness]} measured, "
               f"{in_ledger} in ledger")
     codex_rows = [r for r in rows.values() if r.get("harness") == "codex"]
@@ -1498,11 +1525,26 @@ def moments(row):
     """Redacted evidence for one session, or nothing at all if its
     transcript will not read or its harness has no reader."""
     try:
-        if (row.get("harness") or "claude") == "codex":
+        if row_harness(row) == "codex":
             return _moments_codex(row)
         return _moments(row)
     except TranscriptUnreadable:
         return []
+
+
+def _moment_of(rec, body, prior):
+    """The redacted moment dict for this user turn, or None if the turn is
+    not one of the kinds a pack quotes. Shared by _moments and
+    _moments_codex, whose classify-and-render step was byte-identical."""
+    kind = classify_user_turn(body, len(prior))
+    if kind not in ("interrupt", "correction", "approval"):
+        return None
+    return {
+        "at": rec.get("timestamp") or "",
+        "kind": kind,
+        "said": redact(body.strip())[:400],
+        "after": redact(prior.strip()[-300:]),
+    }
 
 
 def _moments(row):
@@ -1523,14 +1565,9 @@ def _moments(row):
             body = text_of(rec.get("message") or {})
             if not is_human_prompt(rec, body):
                 continue
-            kind = classify_user_turn(body, len(prior))
-            if kind in ("interrupt", "correction", "approval"):
-                out.append({
-                    "at": rec.get("timestamp") or "",
-                    "kind": kind,
-                    "said": redact(body.strip())[:400],
-                    "after": redact(prior.strip()[-300:]),
-                })
+            moment = _moment_of(rec, body, prior)
+            if moment:
+                out.append(moment)
             prior = ""
         if len(out) >= MOMENTS_PER_SESSION:
             break
@@ -1563,18 +1600,32 @@ def _moments_codex(row):
             if body.lstrip().startswith(MACHINE_PROMPT_OPENERS) \
                     or not body.strip():
                 continue
-            kind = classify_user_turn(body, len(prior))
-            if kind in ("interrupt", "correction", "approval"):
-                out.append({
-                    "at": rec.get("timestamp") or "",
-                    "kind": kind,
-                    "said": redact(body.strip())[:400],
-                    "after": redact(prior.strip()[-300:]),
-                })
+            moment = _moment_of(rec, body, prior)
+            if moment:
+                out.append(moment)
             prior = ""
         if len(out) >= MOMENTS_PER_SESSION:
             break
     return out
+
+
+def _candidate_signal(row):
+    """The candidate-sampler's ranking signal for a row with no friction
+    score: correction candidates, interrupts and approval turns, summed."""
+    return (int(row.get("correction_candidates") or 0)
+            + int(row.get("interrupts") or 0)
+            + int(row.get("approval_turns") or 0))
+
+
+def _append_moment_lines(lines, evidence):
+    """Render each moment in `evidence` and append its block lines to
+    `lines`, in place. Shared by cmd_pack's ranked and candidate-sampled
+    sections, which rendered the identical block twice."""
+    for moment in evidence:
+        lines.append("")
+        lines.append(f"- **{moment['kind']}** at {moment['at']}")
+        lines.append(f"  - assistant, just before: _{moment['after']}_")
+        lines.append(f"  - user said: **{moment['said']}**")
 
 
 def cmd_pack(args):
@@ -1607,10 +1658,10 @@ def cmd_pack(args):
         "Legacy correction and interrupt labels are candidate-sampler "
         "output only. They do not affect ranking and cannot justify a "
         "prompt, skill, rule, hook, agent, or process change.", ""]
-    for harness in ("claude", "codex"):
-        h_main = [r for r in main if (r.get("harness") or "claude") == harness]
+    for harness in HARNESSES:
+        h_main = [r for r in main if row_harness(r) == harness]
         h_prior = [r for r in prior_main
-                   if (r.get("harness") or "claude") == harness]
+                   if row_harness(r) == harness]
         if not h_main and not h_prior:
             continue
         h_now, h_eligible = totals(h_main)
@@ -1633,9 +1684,9 @@ def cmd_pack(args):
                 f"{key} {h_now[key] / h_eligible[key]:.1f}"
                 for key in COUNTERS if h_eligible[key]))
             lines.append("")
-        h_sub = [r for r in sub if (r.get("harness") or "claude") == harness]
+        h_sub = [r for r in sub if row_harness(r) == harness]
         h_prior_sub = [r for r in prior_sub
-                       if (r.get("harness") or "claude") == harness]
+                       if row_harness(r) == harness]
         if h_sub or h_prior_sub:
             h_sub_t, h_sub_eligible = totals(h_sub)
             lines.append(f"Subagent spend — {len(h_sub)} transcripts "
@@ -1645,13 +1696,13 @@ def cmd_pack(args):
                                      if h_sub_eligible[key]))
         for extra_name in ("automation", "unknown"):
             extra = [r for r in split[extra_name]
-                     if (r.get("harness") or "claude") == harness]
+                     if row_harness(r) == harness]
             if extra:
                 lines.append(f"{extra_name.capitalize()} spend — "
                              f"{len(extra)} transcripts.")
         lines.append("")
 
-    rankable = [r for r in main if (r.get("harness") or "claude") == "claude"]
+    rankable = [r for r in main if row_harness(r) == "claude"]
     lines += ["## Candidate moments", ""]
     if len(main) > len(rankable):
         lines.append(f"_{len(main) - len(rankable)} main sessions are not "
@@ -1675,22 +1726,12 @@ def cmd_pack(args):
                      f"repeat calls {row.get('repeat_calls')}, "
                      f"tool errors {row.get('tool_errors')}, "
                      f"queued prompts {row.get('queued_prompts')}")
-        for moment in moments(row):
-            lines.append("")
-            lines.append(f"- **{moment['kind']}** at {moment['at']}")
-            lines.append(f"  - assistant, just before: _{moment['after']}_")
-            lines.append(f"  - user said: **{moment['said']}**")
+        _append_moment_lines(lines, moments(row))
         lines.append("")
 
-    sampled = sorted(
-        (r for r in main if r.get("harness") == "codex"
-         and (int(r.get("correction_candidates") or 0)
-              + int(r.get("interrupts") or 0)
-              + int(r.get("approval_turns") or 0))),
-        key=lambda r: (int(r.get("correction_candidates") or 0)
-                       + int(r.get("interrupts") or 0)
-                       + int(r.get("approval_turns") or 0)),
-        reverse=True)[:args.sessions]
+    codex_main = [r for r in main if r.get("harness") == "codex"]
+    sampled = sorted((r for r in codex_main if _candidate_signal(r)),
+                     key=_candidate_signal, reverse=True)[:args.sessions]
     if sampled:
         lines += ["## Codex moments — candidate-sampled, not ranked", "",
                   "Selected by candidate signals (a use the legacy rubric "
@@ -1703,11 +1744,7 @@ def cmd_pack(args):
             continue
         lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
                      f"branch `{row.get('git_branch') or '-'}`")
-        for moment in evidence:
-            lines.append("")
-            lines.append(f"- **{moment['kind']}** at {moment['at']}")
-            lines.append(f"  - assistant, just before: _{moment['after']}_")
-            lines.append(f"  - user said: **{moment['said']}**")
+        _append_moment_lines(lines, evidence)
         lines.append("")
 
     out_path = WORK_DIR / f"pack-{now.isoformat()}-{args.days}d.md"
@@ -1728,7 +1765,7 @@ def installed_skills():
     directory yields nothing, so no existence guards. The Claude half keeps
     CLAUDE_DIR deliberately — the spec sanctions adding Codex roots, not
     moving the Claude one."""
-    codex_home = Path(os.environ.get("CODEX_HOME") or (HOME / ".codex"))
+    codex_home = codex_home_dir()
     claude = ({p.parent.name for p in (CLAUDE_DIR / "skills").glob("*/SKILL.md")}
               | {p.parent.name for p in
                  (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")})
@@ -1752,7 +1789,7 @@ def cmd_skills(args):
     signal_files = Counter()
     any_codex = False
     for row in rows:
-        harness = row.get("harness") or "claude"
+        harness = row_harness(row)
         if harness == "codex":
             any_codex = True
         if row.get("skills_used"):
@@ -1781,7 +1818,7 @@ def cmd_skills(args):
               f"authoritative attribution (the source profile declares "
               f"none exists).")
     dormant_total = 0
-    for harness in ("claude", "codex"):
+    for harness in HARNESSES:
         dormant = sorted(installed[harness] - set(used[harness]))
         dormant_total += len(dormant)
         print(f"\n## Never fired — {harness} "
@@ -1952,7 +1989,7 @@ def cmd_subagents(args):
         print(f"\n{dropped} rows written by the session running this report "
               f"were left out - transcripts still being written.")
 
-    claude_rows = [r for r in rows if (r.get("harness") or "claude") == "claude"]
+    claude_rows = [r for r in rows if row_harness(r) == "claude"]
     codex_rows = [r for r in rows if r.get("harness") == "codex"]
 
     print("\n## Mechanical failures\n")
@@ -2480,7 +2517,7 @@ def cmd_effect(args):
         hi = (cut + timedelta(days=args.days)).isoformat()
         rows = [r for r in rows if lo <= r["date"] <= hi]
     if args.harness != "all":
-        rows = [r for r in rows if (r.get("harness") or "claude") == args.harness]
+        rows = [r for r in rows if row_harness(r) == args.harness]
 
     before_rows = [r for r in rows if r["date"] < cut.isoformat()]
     after_rows = [r for r in rows if r["date"] >= cut.isoformat()]
@@ -2627,7 +2664,7 @@ def main():
                                "dates the machine's own rule files changed")
     p_effect.add_argument("--days", type=int, default=0,
                           help="limit to this many days either side; 0 means all")
-    p_effect.add_argument("--harness", choices=("claude", "codex", "all"),
+    p_effect.add_argument("--harness", choices=HARNESSES + ("all",),
                           default="claude",
                           help="population to compare; defaults to claude "
                                "because the rule-change dates this command "

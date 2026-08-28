@@ -3,24 +3,13 @@
 Pins the counters, identity fields, and ending that the Codex ingestion
 change must not move. Written BEFORE that change, deliberately."""
 
-import importlib.util
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fixtures import build_corpus, claude_assistant, claude_user
-
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-
-
-def load_retro():
-    spec = importlib.util.spec_from_file_location(
-        "retro_measure_under_test", PLUGIN_ROOT / "bin" / "retro.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
+from test_retro_extract import load_retro
 
 RETRO = load_retro()
 

@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from fixtures import build_corpus, claude_assistant, claude_user
+from fixtures import (build_corpus, claude_assistant, claude_user,
+                      rollout_assistant, rollout_meta, rollout_user)
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,17 +25,8 @@ def load_retro():
 
 def minimal_rollout_lines():
     t = "2026-08-01T12:00:00.000Z"
-    return [
-        {"type": "session_meta", "timestamp": t, "payload": {
-            "session_id": "sess-cx-1", "cwd": "/tmp/w", "cli_version": "1.0",
-            "thread_source": "user", "git": {"branch": "main"}}},
-        {"type": "response_item", "timestamp": t, "payload": {
-            "type": "message", "role": "user",
-            "content": [{"type": "input_text", "text": "hello there"}]}},
-        {"type": "response_item", "timestamp": t, "payload": {
-            "type": "message", "role": "assistant",
-            "content": [{"type": "output_text", "text": "hi"}]}},
-    ]
+    return [rollout_meta(t), rollout_user("hello there", t),
+            rollout_assistant("hi", t)]
 
 
 def write_rollout(root, rel, lines=None):

@@ -174,16 +174,17 @@ class Reporting(unittest.TestCase):
     def test_pack_quotes_approvals_and_codex_moments(self):
         codex_home = Path(self.tmp.name) / "cx"
         import fixtures as fx
-        from test_retro_codex import write, T
+        from test_retro_codex import T
+        from test_retro_extract import write_rollout
         rel = "2026/08/01/rollout-a.jsonl"
-        write(codex_home / "sessions", [
+        write_rollout(codex_home / "sessions", rel, [
             fx.rollout_meta(T), fx.rollout_user("do the thing", T),
             fx.rollout_assistant("x" * 400, T),
             fx.rollout_user("no, wrong file", T),
             fx.rollout_assistant("y" * 400, T),
             fx.rollout_user("perfect", T),
             fx.rollout_assistant("done", T),
-        ], rel=rel)
+        ])
         retro = self.load_with_ledger([
             base_row(transcript=rel, harness="codex", project_key="cx-1",
                      date="2026-08-01", correction_candidates=1,

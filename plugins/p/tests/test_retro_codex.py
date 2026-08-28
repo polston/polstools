@@ -1,24 +1,14 @@
 """measure_codex over synthetic rollouts — every counter mapping."""
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
 import fixtures as fx
-from test_retro_extract import load_retro
+from test_retro_extract import load_retro, write_rollout
 
 T = "2026-08-01T12:00:00.000Z"
 T2 = "2026-08-01T12:30:00.000Z"
-
-
-def write(root, recs, rel="2026/08/01/rollout-a.jsonl"):
-    path = root / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        for rec in recs:
-            fh.write(json.dumps(rec) + "\n")
-    return path
 
 
 class CodexReducer(unittest.TestCase):
@@ -29,7 +19,8 @@ class CodexReducer(unittest.TestCase):
         self.root = Path(self.tmp.name)
 
     def measure(self, recs):
-        return self.retro.measure_codex(write(self.root, recs), self.root)
+        path = write_rollout(self.root, "2026/08/01/rollout-a.jsonl", recs)
+        return self.retro.measure_codex(path, self.root)
 
     def test_identity_population_and_ineligible(self):
         row = self.measure([fx.rollout_meta(T), fx.rollout_user("hi", T),
