@@ -55,3 +55,35 @@ def build_corpus(root, sessions):
             for row in spec["rows"]:
                 handle.write(json.dumps(row) + "\n")
     return root
+
+
+def claude_user(text, when, source="typed"):
+    """One typed user record, minimal but shaped like the real thing."""
+    return {
+        "type": "user",
+        "timestamp": when.isoformat().replace("+00:00", "Z"),
+        "sessionId": "sess-claude-1",
+        "cwd": "/tmp/proj",
+        "gitBranch": "main",
+        "version": "9.9.9",
+        "promptSource": source,
+        "message": {"role": "user",
+                    "content": [{"type": "text", "text": text}]},
+    }
+
+
+def claude_assistant(text, when, tools=()):
+    """One assistant record; `tools` is (name, input_dict) pairs."""
+    content = [{"type": "text", "text": text}]
+    for index, (name, tool_input) in enumerate(tools):
+        content.append({"type": "tool_use", "id": "tu-%d" % index,
+                        "name": name, "input": tool_input})
+    return {
+        "type": "assistant",
+        "timestamp": when.isoformat().replace("+00:00", "Z"),
+        "sessionId": "sess-claude-1",
+        "cwd": "/tmp/proj",
+        "message": {"role": "assistant", "content": content,
+                    "usage": {"input_tokens": 10, "output_tokens": 20,
+                              "cache_read_input_tokens": 5}},
+    }
