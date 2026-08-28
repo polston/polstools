@@ -76,7 +76,7 @@ class MeasureCharacterisation(unittest.TestCase):
         self.assertEqual("main", row["population"])
         self.assertEqual("projA", row["project_key"])
 
-    def test_subagent_layout_is_not_seen_under_temp_root(self):
+    def test_subagent_layout_is_recognised_under_a_real_root(self):
         sub_rows = [claude_user("go", datetime(2026, 8, 1, tzinfo=timezone.utc)),
                     claude_assistant("ok", datetime(2026, 8, 1, tzinfo=timezone.utc))]
         build_corpus(Path(self.tmp.name), [{
