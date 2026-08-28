@@ -27,6 +27,12 @@ spans, not metrics rows; the counters the measurement pipeline needs live only
 in `retro.py`'s reducer. This change teaches the measurement pipeline itself
 to read Codex history.
 
+Operator direction, 2026-08-27, recorded as scope: the point of one ledger is
+that a session in either harness can see both corpora — where each harness's
+sessions go wrong, and, by quoted example, which behaviors the operator
+actually likes. Packs therefore quote liked moments (approvals) alongside
+frictional ones, from both harnesses, not corrections only.
+
 ## Grounding
 
 Verified against the full rollout corpus on the development machine (317
@@ -199,6 +205,17 @@ are Claude harness-refusal markers a rollout never emits — and the `skill_runs
 semantic caveat stands: Claude counts contiguous active-skill stretches, Codex
 counts invocation blocks; the per-harness split keeps them apart.
 
+Moments read both harnesses and both polarities. `_moments` gains the
+`approval` kind beside `interrupt` and `correction` — an approval's captured
+context is the assistant text that earned the "sure/perfect", which is the
+operator's liked behavior by example. A parallel `_moments_codex(row)` walks
+the rollout under the Codex sessions root: `prior` accumulates from assistant
+`response_item` messages and resets on each counted user turn, wrapper-tagged
+and empty user messages are skipped with the same shared opener list, `at`
+comes from the record `timestamp` or `""`, the same three kinds are captured,
+and the same `MOMENTS_PER_SESSION` cap applies. `moments(row)` dispatches on
+`row["harness"]` and resolves the root per harness at call time.
+
 ### D4. Reporting
 
 1. Per-counter denominators: `totals()` returns a pair of `Counter`s —
@@ -214,18 +231,21 @@ counts invocation blocks; the per-harness split keeps them apart.
    Token and turn columns are never summed or compared across harnesses —
    the usage-accounting profile forbids it for tokens and D3's `turns`
    mapping is an analogue, not an identity.
-3. Ranking: Codex sessions are measured and reported in trends but are not
-   ranked into "Candidate moments" this changeset. `friction_score` is
-   `permission_mode_changes*3 + tool_errors` (the legacy terms are
-   rubric-gated off, pinned by an existing test), both ineligible for Codex,
-   so every Codex row scores 0 and `cmd_pack` skips zero rows; extending the
-   scoring function is a rubric-governance change with its own justification
-   and is deliberately not smuggled in here. The pack states, in the window
-   header, how many Codex sessions were measured but not rankable. The
-   `moments` machinery is untouched; no Codex moment is promised. One guard
-   for the day the rubric gate opens: `cmd_pack` skips a ranked row whose
-   harness the moment reader cannot resolve, rather than printing a headed
-   session block with no evidence under it.
+3. Ranking and moment selection are two different acts, and the pack now
+   says which is which. `friction_score` — decision-support ranking — is
+   unchanged: `permission_mode_changes*3 + tool_errors`, legacy terms
+   rubric-gated off (pinned by an existing test), so it ranks Claude
+   sessions only; extending it is a rubric-governance change deliberately
+   not smuggled in here. Codex sessions instead enter the moments section
+   by candidate sampling, which is a use the legacy rubric explicitly
+   allows (`candidate_sampling` is in `turn_friction_legacy`'s
+   `allowed_uses`): after the Claude ranked list, `cmd_pack` selects up to
+   the same per-window session cap of Codex main sessions ordered by
+   `correction_candidates + interrupts + approval_turns`, skipping zeros,
+   under a heading that labels them candidate-sampled, not ranked. Their
+   moments quote through `_moments_codex` and the shared redaction. A row
+   whose harness the moment reader cannot resolve is skipped rather than
+   printed as a headed block with no evidence.
 4. `skills` prints fired counts per harness, and per-harness never-fired
    lists: `installed_skills()` gains per-harness roots ($CODEX_HOME `skills/`
    and plugin cache, plus `~/.agents/skills`), each dormant entry names the
