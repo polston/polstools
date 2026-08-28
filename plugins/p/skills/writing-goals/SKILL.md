@@ -35,6 +35,23 @@ BOUNDS is never omitted. In baseline testing, agents reliably produced evidence-
 
 One goal = one finish line. If two conditions could complete at different times, they are two goals — set the one for this session. Drop slots with nothing to say; don't pad. Name the summary line that must appear, not "paste the full output" — long pasted-output demands bloat every evaluation.
 
+## Required-gate recovery
+
+A required gate's evidence means one successful PASS over the final required
+inputs, not one attempted execution. If an already-authorized required gate
+fails, automatically diagnose, make an in-scope fix, and rerun it. Ordinary
+fix-and-rerun recovery already required by the finish line needs no new
+operator authorization. A failed attempt does not consume wording such as
+"exactly once"; write that constraint as "exactly one final-input PASS" when
+the distinction matters.
+
+Do not mechanically rerun identical failing inputs. Rerun after a relevant
+fix, or when the failure is demonstrably transient and the workflow already
+authorizes retrying it. Keep the goal's turn and stall bounds in force, and
+stop at any genuine permission, scope, privacy, or external-mutation boundary.
+Never repeat a matching successful PASS merely to recover output; use retained
+receipts or logs.
+
 ## Common mistakes
 
 1. No bounds — always end with "or stop after N turns".
@@ -42,6 +59,7 @@ One goal = one finish line. If two conditions could complete at different times,
 3. Conditions the transcript cannot show — "CI is green" fails when CI runs elsewhere; use what the session itself runs.
 4. Multi-gate walls — the evaluator judges the whole condition every turn; compress.
 5. Missing CONSTRAINTS — a goal without them rewards deleting the test that blocks it.
+6. Treating the first failed attempt as "exactly once" — recover automatically until one final-input PASS or a stated bound decides the outcome.
 
 ## Mechanics
 
