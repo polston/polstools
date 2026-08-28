@@ -95,7 +95,10 @@ Two of these carry a known measurement caveat. `skill_runs` counts contiguous
 stretches of the same skill being active, which is not the same as the number of
 times it was deliberately invoked, and the field it derives from is absent from
 transcripts written by older CLI versions. `tool_errors` counts records carrying
-a failure marker, which includes failures that were expected and handled.
+a failure marker, which includes failures that were expected and handled. On a
+mixed corpus, `tool_errors`, `queued_prompts`, and `permission_mode_changes` are
+not observable for Codex rows; the pack marks those lines with the observable
+share, and per-session rates divide by it.
 
 Every metric's precise definition, and the measurement that settled it, lives in
 `docs/plans/2026-08-12-retro-design.md`. Read it before arguing with a number.
