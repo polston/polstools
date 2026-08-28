@@ -72,6 +72,30 @@ class Reporting(unittest.TestCase):
         self.assertIn("### codex", pack)
         self.assertIn("not friction-ranked", pack)
 
+    def test_pack_ranked_loop_keeps_heading_with_no_quotable_moments(self):
+        # Regression pin: the ranked-loop guard skips a session only when its
+        # transcript file is missing, never because moments() came back
+        # empty. A readable transcript with nothing quotable (here: only an
+        # assistant record, no user turn) must still get its "### <date>"
+        # heading and counter line.
+        claude_home = Path(self.tmp.name) / "cc"
+        transcript = claude_home / "projects" / "p" / "s.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(
+            json.dumps({"type": "assistant",
+                        "message": {"content": "no user turn follows"}}) + "\n",
+            encoding="utf-8")
+        patcher = mock.patch.dict(os.environ,
+                                  {"CLAUDE_CONFIG_DIR": str(claude_home)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        retro = self.load_with_ledger([base_row(tool_errors=1)])
+        self.run_cmd(retro, retro.cmd_pack, days=7, sessions=8)
+        pack = next(self.work.glob("pack-*.md")).read_text(encoding="utf-8")
+        today = datetime.now(timezone.utc).date().isoformat()
+        self.assertIn(f"### {today} ·", pack)
+        self.assertIn("correction candidates", pack)
+
     def test_skills_prints_per_harness_columns(self):
         retro = self.load_with_ledger([
             base_row(skills_used=["p:doctor"], skill_runs=1),
@@ -120,8 +144,9 @@ class Reporting(unittest.TestCase):
                             days=0, harness="claude")
         self.assertIn("harness=claude", text)
         self.assertIn("tokens_out", text)   # M4 guard: the row must render
-        # The codex row must not enter the after-side population.
-        self.assertNotIn("cx-1", text)
+        # The codex row must not enter the after-side population: only s2
+        # qualifies, so the After side must show exactly 1 session, not 2.
+        self.assertIn("After:  1 sessions", text)
 
     def test_pack_quotes_approvals_and_codex_moments(self):
         codex_home = Path(self.tmp.name) / "cx"

@@ -714,7 +714,8 @@ def read_records(path):
     cannot shift underneath it while this file is being rewritten. A fix to the
     parsing rules here needs applying there too. Both readers honour the
     config-directory variable; the remaining differences are gzip support and
-    missing-root behaviour, which are that script's own.
+    missing-root behaviour, which are that script's own, and a read failure
+    raises here where that copy returns silently.
     """
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -1608,8 +1609,11 @@ def cmd_pack(args):
                 for key in COUNTERS if h_eligible[key]))
             lines.append("")
         h_sub = [r for r in sub if (r.get("harness") or "claude") == harness]
+        h_prior_sub = [r for r in prior_sub
+                       if (r.get("harness") or "claude") == harness]
         h_sub_t, _ = totals(h_sub)
-        lines.append(f"Subagent spend — {len(h_sub)} transcripts: "
+        lines.append(f"Subagent spend — {len(h_sub)} transcripts "
+                     f"(prior window: {len(h_prior_sub)}): "
                      + ", ".join(f"{key} {h_sub_t[key]}"
                                  for key in ["tokens_out"] + COUNTERS))
         for extra_name in ("automation", "unknown"):
@@ -1702,9 +1706,8 @@ def installed_skills():
               | {p.parent.name for p in
                  (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")})
     # rglob from the plugin store root, not a "cache" subdirectory: the
-    # Codex store nests differently from Claude's (verified on the dev
-    # machine: 157 SKILL.md files under ~/.codex/plugins), and rglob
-    # covers whichever layout a version uses.
+    # Codex store nests differently from Claude's, and rglob covers
+    # whichever layout a version uses.
     codex = ({p.parent.name for p in (codex_home / "skills").glob("*/SKILL.md")}
              | {p.parent.name for p in
                 (codex_home / "plugins").rglob("skills/*/SKILL.md")}
@@ -1980,13 +1983,13 @@ def cmd_subagents(args):
         for threshold in (100, 150, 200):
             print(f"  {sum(1 for t in turns if t >= threshold)} transcripts "
                   f"at {threshold} turns or more")
+        print("\nA distribution, not a failure count: no turn number in this "
+              "corpus marks a boundary between a long job and a runaway one.")
 
     print(f"\nFailed to answer: {no_answer}. Answering through a "
           f"structured-result call is answering, and an interrupted run is the "
           f"caller's doing. Some of what is left is a transcript that had not "
           f"finished being written when the ledger was built.")
-    print("\nA distribution, not a failure count: no turn number in this "
-          "corpus marks a boundary between a long job and a runaway one.")
 
     return EXIT_FLAGGED if (flagged or no_answer) else EXIT_CLEAN
 # --- label -----------------------------------------------------------------
@@ -2487,12 +2490,19 @@ def cmd_effect(args):
     # relative to the work. When the two disagree, the second answers the
     # question and the first is telling you sessions changed shape.
     turns_b, turns_a = max(b["turns"], 1), max(a["turns"], 1)
+    mixed = args.harness == "all"
     print("Main-session rows only, one population throughout.\n")
     if not legacy_turn_labels_allow("decision_support"):
         print("Legacy correction and interrupt guesses are omitted: their "
               "rubric allows candidate sampling, not decision support.\n")
-    print("| signal | /session before | after | /100 turns before | after | change |")
-    print("|---|---|---|---|---|---|")
+    if mixed:
+        print("turn-normalised rows omitted for mixed harnesses - a Codex "
+              "turn is a structural analogue, not the same unit.\n")
+        print("| signal | /session before | after | change |")
+        print("|---|---|---|")
+    else:
+        print("| signal | /session before | after | /100 turns before | after | change |")
+        print("|---|---|---|---|---|---|")
     for key in COUNTERS + ["tokens_out"]:
         if key == "turns":
             continue
@@ -2502,16 +2512,21 @@ def cmd_effect(args):
         if not b_elig[key] or not a_elig[key]:
             continue
         sb, sa = b[key] / b_elig[key], a[key] / a_elig[key]
-        tb, ta = b[key] / turns_b * 100, a[key] / turns_a * 100
         if sb == 0 and sa == 0:
             continue
-        delta = "n/a" if not tb else f"{(ta - tb) / tb * 100:+.0f}%"
         fmt = "{:.0f}" if key == "tokens_out" else "{:.2f}"
-        print(f"| {key} | {fmt.format(sb)} | {fmt.format(sa)} | "
-              f"{fmt.format(tb)} | {fmt.format(ta)} | {delta} |")
-    sb, sa = b["turns"] / len(before), a["turns"] / len(after)
-    print(f"| **turns per session** | {sb:.1f} | {sa:.1f} | - | - | "
-          f"{(sa - sb) / sb * 100:+.0f}% |")
+        if mixed:
+            delta = "n/a" if not sb else f"{(sa - sb) / sb * 100:+.0f}%"
+            print(f"| {key} | {fmt.format(sb)} | {fmt.format(sa)} | {delta} |")
+        else:
+            tb, ta = b[key] / turns_b * 100, a[key] / turns_a * 100
+            delta = "n/a" if not tb else f"{(ta - tb) / tb * 100:+.0f}%"
+            print(f"| {key} | {fmt.format(sb)} | {fmt.format(sa)} | "
+                  f"{fmt.format(tb)} | {fmt.format(ta)} | {delta} |")
+    if not mixed:
+        sb, sa = b["turns"] / len(before), a["turns"] / len(after)
+        print(f"| **turns per session** | {sb:.1f} | {sa:.1f} | - | - | "
+              f"{(sa - sb) / sb * 100:+.0f}% |")
 
     print("\nThe change column compares the per-hundred-turn figures. Read the "
           "turns-per-session row first: if it moved a lot, every per-session "

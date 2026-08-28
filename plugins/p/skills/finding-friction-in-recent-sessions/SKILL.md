@@ -37,8 +37,9 @@ and retries that file on the next run.
 previous window, then the highest-friction sessions with the actual moments
 quoted.
 
-**2. Read the pack. Only the pack.** Do not open transcripts. The corpus is most
-of a gigabyte, and the pack is already redacted — transcripts are not.
+**2. Read the pack. Only the pack.** Do not open transcripts. The corpus is
+several gigabytes across both harnesses' transcripts, and the pack is already
+redacted — transcripts are not.
 
 **3. Read trends as rates, not totals.** Every raw total tracks how much work
 happened. A signal that rose while sessions stayed flat is real; a signal that
