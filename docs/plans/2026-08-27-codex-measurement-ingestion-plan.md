@@ -133,9 +133,6 @@ class MeasureCharacterisation(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = write_session(Path(self.tmp.name))
 
-    def measured(self):
-        return self.measure_row()
-
     def measure_row(self):
         return self.retro.measure(self.path)
 
@@ -384,10 +381,15 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [ ] **Step 2: Run to verify failure — the two unit classes only**
 
-Run: `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests -p "test_retro_extract.py" -v`
+Run: `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests -p "test_retro_extract.py" -k RootResolution -k HarnessDetection -v`
 Expected: FAIL — `AttributeError` on `codex_sessions_dir` / `is_rollout`, and `measure_outcome` arity.
+
+Do NOT run the `ExtractWalk` class before Step 5 lands: until the guard is
+reworked, `cmd_extract` still reads the module constant (which the env patch
+does not touch) and would walk the operator's real multi-GB Claude corpus
+into the scratch ledger — slow, and failing on the wrong assertion.
 
 - [ ] **Step 3: Implement roots and detection in retro.py**
 
@@ -696,6 +698,9 @@ def totals(rows):
             if key not in ineligible:
                 eligible_rows[key] += 1
         agg["tokens_out"] += int(row.get("tokens_out") or 0)
+        # tokens_out is observable on every harness; without this line a
+        # consumer dividing by its eligible count would drop the row.
+        eligible_rows["tokens_out"] += 1
     return agg, eligible_rows
 
 
@@ -774,11 +779,12 @@ spend counts to the subagent spend line: `split["automation"]` and
 
 with `dropped` computed from the same predicate before filtering.
 
-3. `cmd_effect` (~1926): same `split_population` dict unpack as cmd_pack;
-`totals` unpacks pairs everywhere it is called; automation rows are named:
-after the split add `spend = len(split["subagent"]) + len(split["automation"])`
-and include it in the printed population line. (Harness restriction is
-Task 5.)
+3. `cmd_effect` (~1926): BOTH splits become dict unpacks — name them
+`before_split` and `after_split` (one per side of the date); `totals`
+unpacks pairs everywhere it is called (line 1946 holds two calls); the
+printed population line carries spend for both sides:
+`before_split`/`after_split`'s `subagent + automation + unknown` lengths.
+(Harness restriction and per-counter denominators are Task 5 Step 6.)
 
 4. `measure()` row write — done in Step 2.
 
@@ -797,11 +803,9 @@ In `test_retro_measure.py`:
    its comment).
 3. The main-session tests additionally assert `row["population"] == "main"`
    and `row["project_key"] == "projA"`.
-4. The `CurrentShapes` class is REWRITTEN against the new contracts: its
-   totals test unpacks the pair (`sums, eligible = retro.totals(...)`), and
-   its split test asserts the dict shape — Task 3 Step 1's
-   `test_retro_rows.py` carries the authoritative versions, so simply delete
-   `CurrentShapes` here and note that `test_retro_rows.py` supersedes it.
+4. Delete the `CurrentShapes` class — it pinned the pre-change shapes and
+   has served its purpose; `test_retro_rows.py` carries the authoritative
+   tests of the new contracts.
 
 - [ ] **Step 6: Run both new modules, then the full suite**
 
@@ -1585,10 +1589,36 @@ class Reporting(unittest.TestCase):
         self.assertNotIn("## How codex runs answered", text)
         self.assertNotIn("codex subagent rows are excluded", text)
 
+    def test_effect_restricts_harness_and_renders(self):
+        # cmd_effect is otherwise driven by no test anywhere, while two
+        # tasks change its call contracts (split dict, totals pair,
+        # per-counter denominators, --harness).
+        retro = self.load_with_ledger([
+            base_row(date="2026-01-05", tool_errors=1, turns=10),
+            base_row(transcript="p/s2.jsonl", session_id="s2",
+                     date="2026-03-05", tool_errors=3, turns=10),
+            base_row(transcript="2026/08/x.jsonl", harness="codex",
+                     session_id="cx", project_key="cx-1",
+                     date="2026-03-05", turns=5,
+                     ineligible=["tool_errors", "queued_prompts",
+                                 "permission_mode_changes"]),
+        ])
+        text = self.run_cmd(retro, retro.cmd_effect, since="2026-02-01",
+                            days=0, harness="claude")
+        self.assertIn("harness=claude", text)
+        self.assertIn("tokens_out", text)   # M4 guard: the row must render
+        # The codex row must not enter the after-side population.
+        self.assertNotIn("cx-1", text)
+
 
 if __name__ == "__main__":
     unittest.main()
 ```
+
+(Adjust the `cmd_effect` mock kwargs to its real argparse names when
+implementing — read the `p_effect` block; `EFFECT_MIN_SESSIONS` may require
+more rows per side, in which case generate them in a loop with distinct
+`transcript`/`session_id` values.)
 
 (The third test's final assertion is deliberately loose — assert on whatever
 exact wording Step 4 chooses; tighten it there.)
@@ -1677,11 +1707,12 @@ f"(prior window: {len(prior_main)}).{compacted_note}"`.
 (The Codex candidate-sampled section and the approval moments land in
 Task 5b, which owns `moments` and the section that follows the ranked list.)
 
-(delete the old `lines += ["", "## Candidate moments", ""]`; compacted rows
-count goes in the window header: after computing `window`, add
-`compacted = sum(1 for r in window if r.get("compacted"))` and append
-`f" {compacted} compacted rollouts in window." if compacted else ""` to the
-Window line.)
+Delete outright: the old `lines += ["", "## Candidate moments", ""]`, and
+the old combined per-session and subagent-spend block (retro.py:1179-1187 —
+the bare `lines.append("")`, the `if main:` "Per session:" line, and the
+`Subagent spend — …` append). Their per-harness replacements live inside the
+new loop; left in place they would still execute and print combined-
+population lines beneath the per-harness ones, mixing what D4.2 separates.
 
 - [ ] **Step 4: Rework installed_skills and cmd_skills (spec D4.4)**
 
@@ -1695,6 +1726,10 @@ def installed_skills():
     claude = ({p.parent.name for p in (CLAUDE_DIR / "skills").glob("*/SKILL.md")}
               | {p.parent.name for p in
                  (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")})
+    # rglob from the plugin store root, not a "cache" subdirectory: the
+    # Codex store nests differently from Claude's (verified on the dev
+    # machine: 157 SKILL.md files under ~/.codex/plugins), and rglob
+    # covers whichever layout a version uses.
     codex = ({p.parent.name for p in (codex_home / "skills").glob("*/SKILL.md")}
              | {p.parent.name for p in
                 (codex_home / "plugins").rglob("skills/*/SKILL.md")}
@@ -2027,9 +2062,17 @@ After the ranked-Claude loop (before `out_path = ...`), add (spec D4.3):
         lines.append("")
 ```
 
-Apply the same guard to the ranked-Claude loop in `cmd_pack`: capture
-`evidence = moments(row)` before appending that loop's `###` heading, and
-`continue` on empty — same reason, same spec clause.
+The ranked-Claude loop gets a NARROWER guard — missing file only, never
+empty evidence. The ranking runs on `permission_mode_changes` and
+`tool_errors`, which produce no quotable moments, so a ranked session with a
+readable transcript and zero moments is normal and its heading plus counter
+line ARE the evidence; skipping it would empty the section the ranking
+exists to fill. Before that loop's heading append:
+
+```python
+        if not (claude_projects_dir() / row.get("transcript", "")).is_file():
+            continue   # moved or unreadable: no headed block with nothing under it
+```
 
 - [ ] **Step 5: Run the module, then the full suite.** Expected: PASS,
 including Step 1's new test.
@@ -2053,7 +2096,7 @@ MSG
 ### Task 6: Docs made false by the change (parallel with Tasks 2-5b)
 
 **Files:**
-- Modify: `plugins/p/EVALUATION.md`, `plugins/p/skills/finding-friction-in-recent-sessions/SKILL.md`, `plugins/p/skills/auditing-workflow-rules-against-behavior/SKILL.md`, `plugins/p/bin/stopped-promises.py` (docstring only), `plugins/p/bin/cache_ttl.py` (docstring only)
+- Modify: `plugins/p/EVALUATION.md`, `plugins/p/skills/finding-friction-in-recent-sessions/SKILL.md`, `plugins/p/skills/auditing-workflow-rules-against-behavior/SKILL.md`, `plugins/p/bin/stopped-promises.py` (docstring only), `plugins/p/bin/cache_ttl.py` (docstring only), `plugins/p/bin/format-ctl` (one comment line)
 
 **Interfaces:** none — prose only. Do not touch `retro.py` (Lane A owns it).
 
@@ -2075,11 +2118,15 @@ lists, and that a Codex-only skill is named with its harness.
 Claude transcript format only; Codex rollouts are a different format this
 reader does not parse."
 - [ ] **Step 5: cache_ttl.py docstring** — append the same one line.
+- [ ] **Step 5b: format-ctl** — one comment line above its session-variable
+tuple (~line 35) naming `retro.py`'s `reporting_session_ids` as the other
+holder of the same tuple (spec D4.6: "a comment in each names the other";
+retro.py's side lands in Task 3).
 - [ ] **Step 6: Run the full suite (README/CLAUDE mirroring tests must stay
 green), commit:**
 
 ```bash
-git add plugins/p/EVALUATION.md plugins/p/skills/finding-friction-in-recent-sessions/SKILL.md plugins/p/skills/auditing-workflow-rules-against-behavior/SKILL.md plugins/p/bin/stopped-promises.py plugins/p/bin/cache_ttl.py
+git add plugins/p/EVALUATION.md plugins/p/skills/finding-friction-in-recent-sessions/SKILL.md plugins/p/skills/auditing-workflow-rules-against-behavior/SKILL.md plugins/p/bin/stopped-promises.py plugins/p/bin/cache_ttl.py plugins/p/bin/format-ctl
 git commit -F - <<'MSG'
 Update docs the Codex ingestion makes false
 
@@ -2096,14 +2143,16 @@ MSG
 **Files:**
 - Modify: `plugins/p/.claude-plugin/plugin.json`, `plugins/p/.codex-plugin/plugin.json`, `.claude-plugin/marketplace.json` — `"version": "1.9.0"` → `"1.10.0"`
 - Modify: `plugins/p/tests/test_universal_plugin.py` — the `1.9.0` literal at ~line 37 and ~line 79, and rename `test_release_metadata_is_synchronized_at_1_9_0` → `test_release_metadata_is_synchronized_at_1_10_0`
+- Modify: `plugins/p/tests/test_doctor.py` — `test_release_metadata_uses_feature_version` asserts `"1.9.0"` against the real manifests at ~lines 272-274
 
 - [ ] **Step 1: Bump all three version fields.**
-- [ ] **Step 2: Update the test's two literals and its method name.**
-- [ ] **Step 3: Run `sh plugins/p/bin/p-validate` and the full suite.** Expected: `RESULT: 3 passed`, suite OK.
-- [ ] **Step 4: Commit:**
+- [ ] **Step 2: Update test_universal_plugin.py's two literals and its method name.**
+- [ ] **Step 3: Update test_doctor.py's three `"1.9.0"` literals (~lines 272-274) to `"1.10.0"`** — it reads the working-tree manifests, so leaving it makes every later task's suite gate red for an unrelated reason.
+- [ ] **Step 4: Run `sh plugins/p/bin/p-validate` and the full suite.** Expected: `RESULT: 3 passed`, suite OK.
+- [ ] **Step 5: Commit:**
 
 ```bash
-git add plugins/p/.claude-plugin/plugin.json plugins/p/.codex-plugin/plugin.json .claude-plugin/marketplace.json plugins/p/tests/test_universal_plugin.py
+git add plugins/p/.claude-plugin/plugin.json plugins/p/.codex-plugin/plugin.json .claude-plugin/marketplace.json plugins/p/tests/test_universal_plugin.py plugins/p/tests/test_doctor.py
 git commit -F - <<'MSG'
 Release 1.10.0 metadata for Codex measurement ingestion
 MSG
