@@ -115,8 +115,10 @@ def write_session(root):
                          tools=[("Read", {"file_path": "/tmp/a"})]),
         # Short reply after a long turn, corrective wording: a correction.
         claude_user("no, wrong file", t0 + timedelta(minutes=2)),
-        claude_assistant("done", t0 + timedelta(minutes=3)),
-        # Whole-reply affirmative: an approval.
+        # Long enough to clear CORRECTION_MIN_PRIOR_CHARS (200) — a short
+        # turn before "sure" classifies as nothing, not as an approval.
+        claude_assistant("z" * 400, t0 + timedelta(minutes=3)),
+        # Whole-reply affirmative after a long turn: an approval.
         claude_user("sure", t0 + timedelta(minutes=4)),
         claude_assistant("finished", t0 + timedelta(minutes=5)),
     ]
@@ -166,26 +168,36 @@ class MeasureCharacterisation(unittest.TestCase):
         sub_path = (Path(self.tmp.name) / "projA" / "s1" / "subagents"
                     / "agent-0.jsonl")
         row = self.retro.measure(sub_path)
-        # Field name changes to `population` in Task 3; this assertion is
-        # UPDATED there, not deleted.
-        self.assertTrue(row["is_subagent"])
+        # The temp-root fallback makes `rel` the bare filename, so the
+        # path-prefix rule cannot see `subagents/`. Task 3 replaces this
+        # with a root-relative test through measure(path, harness, root).
+        self.assertFalse(row["is_subagent"])
+
+
+class CurrentShapes(unittest.TestCase):
+    """Pin today's totals/split_population shapes. Task 3 REWRITES these
+    tests against the new contracts; until then they are the regression
+    net the spec's Verification 1 requires."""
+
+    def setUp(self):
+        self.retro = load_retro()
+
+    def test_totals_returns_one_counter_today(self):
+        agg = self.retro.totals([{"turns": 5, "tokens_out": 7},
+                                 {"turns": 2, "tokens_out": 1}])
+        self.assertEqual(7, agg["turns"])
+        self.assertEqual(8, agg["tokens_out"])
+
+    def test_split_population_returns_main_sub_tuple_today(self):
+        main, sub = self.retro.split_population(
+            [{"is_subagent": False}, {"is_subagent": True}])
+        self.assertEqual(1, len(main))
+        self.assertEqual(1, len(sub))
 
 
 if __name__ == "__main__":
     unittest.main()
 ```
-
-Note: `measure(path)` computes `transcript` relative to the module's
-`PROJECTS_DIR`, which the temp path is not under — it falls back to
-`path.name` (retro.py, the `except ValueError` branch in `measure`). Do not
-assert on `transcript` or `is_subagent` via the path-prefix rule for the main
-session; the subagent test works because the fallback keeps `subagents/` out
-of `rel`, so pass the full relative layout: the builder writes under
-`<root>/projA/s1/subagents/`, and `"subagents/" in rel` is False via the
-`path.name` fallback. **Therefore assert `is_subagent` is False here instead**
-— adjust the last test to `assertFalse` with a comment saying the temp-root
-fallback cannot see the layout, and that Task 3 replaces this with a
-root-relative test through the new `measure(path, harness, root)` signature.
 
 - [ ] **Step 3: Run the new module; expect all green (it pins current behaviour)**
 
@@ -193,10 +205,14 @@ Run: `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/test
 Expected: PASS. If an assertion fails, the pin is wrong — fix the test to
 match actual behaviour (print the row), never the code.
 
-- [ ] **Step 4: Run the full suite**
+- [ ] **Step 4: Run the full suite — three times, capturing verbose output**
 
-Run: `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests`
-Expected: 332 + new tests, OK (skipped=1).
+Run three times: `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests -v 2>&1 | tail -30`
+Expected: 332 + new tests, OK (skipped=1) every time. The review baseline saw
+one unreproduced failure in eight runs whose name was not captured; if any run
+fails here, record the failing test's name and fix or quarantine it in this
+task's commit — a flake left in place will read as a regression at every
+later task's gate.
 
 - [ ] **Step 5: Commit**
 
@@ -312,6 +328,19 @@ class HarnessDetection(unittest.TestCase):
         outcome, row = self.retro.measure_outcome(path, "claude", self.root)
         self.assertEqual(self.retro.NOT_TRANSCRIPT, outcome)
 
+    def test_rollout_without_session_meta_is_still_a_rollout(self):
+        recs = minimal_rollout_lines()[1:]   # drop the session_meta
+        path = write_rollout(self.root, "2026/08/01/no-meta.jsonl", recs)
+        self.assertTrue(self.retro.is_rollout(path))
+
+    def test_mixed_file_is_a_rollout(self):
+        # Any rollout-set type inside the first 20 records decides; a
+        # Claude-set record before it does not veto (spec D1.4).
+        recs = [{"type": "user", "message": {"content": []}},
+                {"type": "turn_context", "payload": {}}]
+        path = write_rollout(self.root, "2026/08/01/mixed.jsonl", recs)
+        self.assertTrue(self.retro.is_rollout(path))
+
 
 class ExtractWalk(unittest.TestCase):
     def run_extract(self, claude_home, codex_home, work):
@@ -339,6 +368,9 @@ class ExtractWalk(unittest.TestCase):
                                        self.work)
         self.assertEqual(retro.EXIT_CANNOT_RUN, code)
 
+    # Passes once measure_codex lands (Task 4 removes this decorator);
+    # until then the stub measures no rollout and the ledger stays empty.
+    @unittest.expectedFailure
     def test_single_root_is_enough(self):
         write_rollout(self.codex_home / "sessions", "2026/08/01/r.jsonl")
         retro, code = self.run_extract(self.claude_home, self.codex_home,
@@ -445,13 +477,20 @@ and its relative-path block (currently `path.relative_to(PROJECTS_DIR)`) to:
 
 Row contents are unchanged in this task.
 
-- [ ] **Step 5: Rework cmd_extract's walk**
+- [ ] **Step 5: Rework cmd_extract's walk — two separate anchored edits**
 
-Replace the guard and walk (from `if not PROJECTS_DIR.is_dir():` through the
-`transcripts = sorted(PROJECTS_DIR.rglob("*.jsonl"))` line) with:
+**Edit (a):** replace ONLY the three-line guard
 
 ```python
-    roots = [(harness, root) for harness, root in transcript_roots()]
+    if not PROJECTS_DIR.is_dir():
+        print(f"no session directory at {PROJECTS_DIR}", file=sys.stderr)
+        sys.exit(EXIT_CANNOT_RUN)
+```
+
+with:
+
+```python
+    roots = list(transcript_roots())
     live = [(harness, root) for harness, root in roots if root.is_dir()]
     if not live:
         print("no session directory at any root: "
@@ -460,7 +499,14 @@ Replace the guard and walk (from `if not PROJECTS_DIR.is_dir():` through the
     absent = [harness for harness, root in roots if not root.is_dir()]
 ```
 
-and build the candidate list deduplicated by resolved path, first root wins:
+The `rebuild` / `rows` / stale-schema-detection / `state` block between the
+guard and the walk (the ~15 lines from `rebuild = args.rebuild` through
+`state = {} if rebuild else load_state()`) is **untouched** — it is the
+mechanism that migrates the ledger across the schema bump.
+
+**Edit (b):** replace ONLY the single line
+`transcripts = sorted(PROJECTS_DIR.rglob("*.jsonl"))` with the candidate list
+deduplicated by resolved path, first root wins:
 
 ```python
     candidates = {}
@@ -476,7 +522,11 @@ and build the candidate list deduplicated by resolved path, first root wins:
 ```
 
 The stale/fingerprint loop iterates `for path, harness, root in transcripts:`
-and appends `(path, harness, root, fingerprint)`. The pool call becomes:
+and appends `(path, harness, root, fingerprint)`. Track measured counts per
+harness: initialise `measured_by_harness = Counter()` beside
+`measured = not_transcripts = 0`, and in the `outcome == MEASURED` branch add
+`measured_by_harness[row.get("harness") or harness] += 1`. The pool call
+becomes:
 
 ```python
         for (path, harness, root, fingerprint), (outcome, row) in zip(
@@ -493,20 +543,21 @@ Task 3; the composite key change happens there). Extend the summary print:
           f"unchanged: {unchanged}  not-transcripts: {not_transcripts}  "
           f"unreadable: {unreadable}")
     for harness in ("claude", "codex"):
-        note = "root absent" if harness in absent else \
-            f"{sum(1 for r in rows.values() if r.get('harness', 'claude') == harness)} in ledger"
-        print(f"  {harness}: {note}")
+        if harness in absent:
+            print(f"  {harness}: root absent")
+            continue
+        in_ledger = sum(1 for r in rows.values()
+                        if (r.get("harness") or "claude") == harness)
+        print(f"  {harness}: {measured_by_harness[harness]} measured, "
+              f"{in_ledger} in ledger")
     if duplicates:
         print(f"  duplicate paths skipped: {duplicates}")
 ```
 
 - [ ] **Step 6: Run the new module, then the full suite**
 
-Run the Task 2 module: expected PASS (the codex `test_single_root_is_enough`
-measures 0 rollouts via the stub — assert ledger line count 1 will FAIL until
-Task 4; mark that one test `@unittest.expectedFailure` with the comment
-`# becomes a plain pass when measure_codex lands (Task 4)` and remove the
-decorator in Task 4).
+Run the Task 2 module: expected PASS — `test_single_root_is_enough` shows as
+an expected failure (its decorator, written in Step 1, comes off in Task 4).
 Run the full suite: all green including Task 1's pins.
 
 - [ ] **Step 7: Commit**
@@ -567,17 +618,11 @@ class Totals(unittest.TestCase):
 class SplitPopulation(unittest.TestCase):
     def test_dict_keyed_by_population(self):
         retro = load_retro()
+        # A row with no population key (pre-rename writer; cannot occur
+        # after a rebuild, but the reader must not crash) counts as main.
         rows = [{"population": "main"}, {"population": "subagent"},
                 {"population": "automation"}, {}]
         split = retro.split_population(rows)
-        self.assertEqual(1, len(split["main"]) - 1 + 1)  # placeholder, see below
-```
-
-Replace that last assertion with the real contract — a row with no
-`population` key (pre-rename writer, cannot occur after rebuild, but the
-reader must not crash) counts as `main`:
-
-```python
         self.assertEqual(2, len(split["main"]))
         self.assertEqual(1, len(split["subagent"]))
         self.assertEqual(1, len(split["automation"]))
@@ -617,24 +662,22 @@ tuple; `project_key` ignores the column; env vars unread).
 
 `SCHEMA_VERSION = 6` → `SCHEMA_VERSION = 7`.
 
-In `measure()`'s row block, replace `"is_subagent": "subagents/" in rel,` with
-the labelled fields:
+In `measure()`'s row block: delete the single line
+`"is_subagent": "subagents/" in rel,` and in its place put these six lines
+(the rest of the dict, and the `schema`/`COUNTERS`/`ending` assignments after
+it, stay exactly as they are):
 
 ```python
-    population = "subagent" if "subagents/" in rel else "main"
-    row = {
-        "transcript": rel,
         "harness": harness,
-        "population": population,
+        "population": "subagent" if "subagents/" in rel else "main",
         "parent_session_id": "",
         "project_key": rel.split("/")[0] if "/" in rel else (rel or "?"),
         "ineligible": [],
         "compacted": False,
-        ...            # every existing field below stays exactly as it is
-    }
 ```
 
-(`automation` is Codex-only by design — spec D2.2 states the asymmetry.)
+(`automation` is Codex-only by design — spec D2.2 states the asymmetry.
+`population_source` is a Codex-row field only; Claude rows do not carry it.)
 
 - [ ] **Step 3: Rework totals, split_population, project_key, reporting_session_ids**
 
@@ -741,16 +784,31 @@ Task 5.)
 
 - [ ] **Step 5: Update Task 1's pins**
 
-In `test_retro_measure.py`: the subagent-layout test now calls
-`retro.measure(sub_path, "claude", Path(self.tmp.name))` and asserts
-`row["population"] == "subagent"`, `row["harness"] == "claude"`,
-`row["ineligible"] == []`; the main-session test asserts
-`row["population"] == "main"` and `row["project_key"] == "projA"`.
+In `test_retro_measure.py`:
+
+1. `measure_row()` becomes
+   `return self.retro.measure(self.path, "claude", Path(self.tmp.name))` —
+   with a real root, `transcript` is now `projA/s1.jsonl`, not the bare
+   filename fallback.
+2. The subagent-layout test calls
+   `retro.measure(sub_path, "claude", Path(self.tmp.name))` and asserts
+   `row["population"] == "subagent"`, `row["harness"] == "claude"`,
+   `row["ineligible"] == []` (delete the `assertFalse(is_subagent)` line and
+   its comment).
+3. The main-session tests additionally assert `row["population"] == "main"`
+   and `row["project_key"] == "projA"`.
+4. The `CurrentShapes` class is REWRITTEN against the new contracts: its
+   totals test unpacks the pair (`sums, eligible = retro.totals(...)`), and
+   its split test asserts the dict shape — Task 3 Step 1's
+   `test_retro_rows.py` carries the authoritative versions, so simply delete
+   `CurrentShapes` here and note that `test_retro_rows.py` supersedes it.
 
 - [ ] **Step 6: Run both new modules, then the full suite**
 
 Expected: PASS everywhere. Fix any missed `totals()` single-value unpack the
-suite surfaces (grep `totals(` to be sure: exactly three call sites).
+suite surfaces — grep `totals(`: three statements but FIVE calls (lines 1158,
+1159, 1946; the first and last lines each call it twice, and every call now
+returns a pair).
 
 - [ ] **Step 7: Commit**
 
@@ -886,6 +944,7 @@ class CodexReducer(unittest.TestCase):
         self.assertEqual(sorted(["tool_errors", "queued_prompts",
                                  "permission_mode_changes"]),
                          sorted(row["ineligible"]))
+        self.assertEqual("thread_source", row["population_source"])
         self.assertEqual([], row["eligible"])
         self.assertTrue(row["project_key"].startswith("cx-"))
         self.assertEqual("2026/08/01/rollout-a.jsonl", row["transcript"])
@@ -908,14 +967,30 @@ class CodexReducer(unittest.TestCase):
                             fx.rollout_user("x", T),
                             fx.rollout_assistant("y", T)])
         self.assertEqual("subagent", row["population"])
+        self.assertEqual("fallback", row["population_source"])
+        # Absent with no parent id: unknown, NEVER main — an unclassified
+        # file must not enter the per-session-rate population (spec D2.2).
         row = self.measure([fx.rollout_meta(T, thread_source=None),
                             fx.rollout_user("x", T),
                             fx.rollout_assistant("y", T)])
-        self.assertEqual("main", row["population"])
+        self.assertEqual("unknown", row["population"])
         row = self.measure([fx.rollout_meta(T, thread_source="new-kind"),
                             fx.rollout_user("x", T),
                             fx.rollout_assistant("y", T)])
         self.assertEqual("unknown", row["population"])
+
+    def test_every_machine_opener_filters_on_the_codex_path(self):
+        retro = self.retro
+        for opener in retro.MACHINE_PROMPT_OPENERS:
+            if not opener.startswith("<"):
+                continue   # the prose openers are Claude-transcript shapes
+            body = opener + ' x="1">' if not opener.endswith(">") else opener
+            row = self.measure([fx.rollout_meta(T),
+                                fx.rollout_user(body + "\npayload", T),
+                                fx.rollout_user("a real prompt", T),
+                                fx.rollout_assistant("ok", T)])
+            self.assertEqual(1, row["user_prompts"],
+                             "opener not filtered: %r" % opener)
 
     def test_wrapper_tagged_messages_are_not_prompts(self):
         row = self.measure([
@@ -933,7 +1008,9 @@ class CodexReducer(unittest.TestCase):
             fx.rollout_user("do the thing", T),
             fx.rollout_assistant("x" * 400, T),
             fx.rollout_user("no, wrong file", T),
-            fx.rollout_assistant("done", T),
+            # Long enough to clear CORRECTION_MIN_PRIOR_CHARS (200); a
+            # short prior turn makes "sure" classify as nothing.
+            fx.rollout_assistant("z" * 400, T),
             fx.rollout_user("sure", T),
             fx.rollout_assistant("finished", T),
         ])
@@ -1037,46 +1114,26 @@ everything; nearly every test fails. Expected.
 
 - [ ] **Step 4: Extend MACHINE_PROMPT_OPENERS**
 
-First, one structure-only probe against the real corpus (values never printed)
-to settle which of the eleven observed tags appear only with attributes —
-round 2 proved `codex_internal_context` and `in-app-browser-context` and one
-rare third; the probe names the third:
-
-```bash
-python - <<'EOF'
-import json, glob, re, collections
-attributed = collections.Counter(); bare = collections.Counter()
-for f in glob.glob(str(__import__("pathlib").Path.home() / ".codex/sessions/**/*.jsonl"), recursive=True):
-    for line in open(f, encoding="utf-8", errors="replace"):
-        try: r = json.loads(line)
-        except Exception: continue
-        p = (r or {}).get("payload") if isinstance(r, dict) else None
-        if not (isinstance(p, dict) and p.get("type") == "message" and p.get("role") == "user"): continue
-        for b in p.get("content") or []:
-            t = (b.get("text") or "") if isinstance(b, dict) else ""
-            m = re.match(r"\s*<([a-zA-Z_-]+)([\s>])", t)
-            if m: (bare if m.group(2) == ">" else attributed)[m.group(1)] += 1
-print("attributed:", dict(attributed)); print("bare:", dict(bare))
-EOF
-```
-
-Then replace the `MACHINE_PROMPT_OPENERS` tuple with (adjusting the
-attributed entries to what the probe printed):
+The attributed-tag question is already measured (plan review ran the probe
+over all 317 rollouts): exactly three tags never appear bare —
+`codex_internal_context` (130), `in-app-browser-context` (57), and `image`
+(4). Replace the `MACHINE_PROMPT_OPENERS` tuple with:
 
 ```python
 # One list for both harnesses (spec D3). Codex wrapper tags whose every
 # occurrence carries attributes enter as bracket-less prefixes; bare tags
 # keep the closed form so a person merely quoting a tag name mid-sentence
-# still counts. Anchored at the start deliberately.
+# still counts. Anchored at the start deliberately. Measured over the
+# rollout corpus: codex_internal_context, in-app-browser-context and image
+# only ever appear as <tag attr...>.
 MACHINE_PROMPT_OPENERS = (
     "<task-notification>", "<system-reminder>", "<command-name>",
     "<local-command-stdout>", "Base directory for this skill:",
     "This session is being continued", "Caveat: The messages below were generated",
-    # Codex-only wrapper tags, measured over the rollout corpus (spec
-    # Grounding 5): bare forms first, attributed-only tags as prefixes.
+    # Codex-only wrapper tags (spec Grounding 5).
     "<environment_context>", "<recommended_plugins>", "<skill>",
-    "<image>", "<turn_aborted>", "<codex_delegation>",
-    "<codex_internal_context", "<in-app-browser-context",
+    "<turn_aborted>", "<codex_delegation>",
+    "<codex_internal_context", "<in-app-browser-context", "<image",
 )
 ```
 
@@ -1092,13 +1149,14 @@ CODEX_INELIGIBLE = ("tool_errors", "queued_prompts", "permission_mode_changes")
 # Polls repeat identical arguments as their normal operation; counting them
 # as repeats is the defect signature()'s docstring records for Claude,
 # re-measured for rollouts: the naive rule flags 14.5% of calls, these
-# exclusions bring it to 9.9%, and the residual is real repetition.
-CODEX_POLL_TOOLS = frozenset(("wait", "wait_agent", "list_agents"))
-CODEX_CALL_TYPES = frozenset(("function_call", "custom_tool_call",
-                              "tool_search_call"))
-CODEX_OUTPUT_TYPES = frozenset(("function_call_output",
-                                "custom_tool_call_output",
-                                "tool_search_output"))
+# exclusions bring it to 9.9%, and the residual is real repetition. The
+# spec names exactly these two polls — the ones present in the corpus.
+CODEX_POLL_TOOLS = frozenset(("wait", "wait_agent"))
+# A call item is answered only by its own pair's output type (spec D3);
+# note tool_search's output name drops "_call".
+CODEX_CALL_PAIRS = {"function_call": "function_call_output",
+                    "custom_tool_call": "custom_tool_call_output",
+                    "tool_search_call": "tool_search_output"}
 CODEX_TOOL_EVENTS = frozenset(("web_search_end", "image_generation_end"))
 _SKILL_NAME = re.compile(r"<name>\s*([^<]+?)\s*</name>")
 
@@ -1117,16 +1175,21 @@ def _codex_text(payload):
 
 
 def _codex_population(meta):
+    """(population, how it was decided). Absent thread_source maps to
+    subagent when a parent id proves it, else to unknown — never to main:
+    an unclassified file must not enter the population every per-session
+    rate divides by. (All 50 absent-thread_source corpus files come from a
+    single alpha CLI build on one day, none with a parent id.)"""
     source = meta.get("thread_source")
     if source == "user":
-        return "main"
+        return "main", "thread_source"
     if source in ("subagent", "automation"):
-        return source
+        return source, "thread_source"
     if source is None:
-        # Older-CLI files carry no thread_source; every parent-linked file
-        # is a subagent (spec D2.2 — a forward guard on today's corpus).
-        return "subagent" if meta.get("parent_thread_id") else "main"
-    return "unknown"
+        if meta.get("parent_thread_id"):
+            return "subagent", "fallback"
+        return "unknown", "fallback"
+    return "unknown", "thread_source"
 ```
 
 Then the reducer:
@@ -1141,7 +1204,7 @@ def measure_codex(path, root):
     """
     m = Counter()
     meta = None
-    meta_count = 0
+    meta_disagrees = False
     first_ts = last_ts = None
     seen_sigs = set()
     skills = set()
@@ -1149,7 +1212,7 @@ def measure_codex(path, root):
     saw_message = False
     compacted = False
     aborted = False
-    open_call_ids = set()
+    open_calls = set()   # (expected_output_type, call_id) pairs
     last_assistant_text = ""
     # Cumulative token totals reset mid-file in 5 of 317 corpus rollouts;
     # bank the running total at each reset and add the final run.
@@ -1171,9 +1234,10 @@ def measure_codex(path, root):
         if not isinstance(payload, dict):
             continue
         if rtype == "session_meta":
-            meta_count += 1
             if meta is None:
                 meta = payload   # first meta wins (spec D2.2)
+            elif payload.get("thread_source") != meta.get("thread_source"):
+                meta_disagrees = True
             continue
         if rtype == "event_msg":
             etype = payload.get("type")
@@ -1216,21 +1280,26 @@ def measure_codex(path, root):
                             m["skill_runs"] += 1
                 elif body.strip():
                     kind = classify_user_turn(body, prior_assistant_chars)
-                    m["user_prompts"] += 1
-                    if kind == "correction":
-                        m["correction_candidates"] += 1
-                    elif kind == "approval":
-                        m["approval_turns"] += 1
+                    if kind == "interrupt":
+                        # Matches the Claude reducer: an interrupt is not a
+                        # prompt. The marker is Claude-shaped and expected
+                        # to be absent from rollouts.
+                        m["interrupts"] += 1
+                    else:
+                        m["user_prompts"] += 1
+                        if kind == "correction":
+                            m["correction_candidates"] += 1
+                        elif kind == "approval":
+                            m["approval_turns"] += 1
                     prior_assistant_chars = 0
             # developer-role messages never count (spec D3)
-        elif itype in CODEX_CALL_TYPES:
+        elif itype in CODEX_CALL_PAIRS:
             m["turns"] += 1
             m["tool_calls"] += 1
-            saw_message = True
             name = str(payload.get("name") or payload.get("tool_name") or "")
             call_id = str(payload.get("call_id") or payload.get("id") or "")
             if call_id:
-                open_call_ids.add(call_id)
+                open_calls.add((CODEX_CALL_PAIRS[itype], call_id))
             raw = payload.get("arguments")
             if raw is None:
                 raw = payload.get("input")
@@ -1248,9 +1317,9 @@ def measure_codex(path, root):
                 if key in seen_sigs:
                     m["repeat_calls"] += 1
                 seen_sigs.add(key)
-        elif itype in CODEX_OUTPUT_TYPES:
-            open_call_ids.discard(
-                str(payload.get("call_id") or payload.get("id") or ""))
+        elif itype in CODEX_CALL_PAIRS.values():
+            open_calls.discard(
+                (itype, str(payload.get("call_id") or payload.get("id") or "")))
 
     if not saw_message:
         return None
@@ -1270,15 +1339,19 @@ def measure_codex(path, root):
         ending = "text"
     elif aborted:
         ending = "interrupted"
-    elif open_call_ids:
+    elif open_calls:
         ending = "unanswered"
     else:
         ending = "silent"
 
+    population, population_source = _codex_population(meta)
     row = {
         "transcript": rel,
+        # harness names the transcript FORMAT; the walk's root decides
+        # ownership and dedup only (spec D1.3).
         "harness": "codex",
-        "population": _codex_population(meta),
+        "population": population,
+        "population_source": population_source,
         "parent_session_id": str(meta.get("parent_thread_id") or ""),
         "project_key": "cx-" + hashlib.sha1(
             project.encode("utf-8")).hexdigest()[:8],
@@ -1303,7 +1376,7 @@ def measure_codex(path, root):
         # The seven mechanical-failure signals are Claude harness-refusal
         # markers a rollout never emits.
         "eligible": [],
-        "meta_disagreements": meta_count,   # see step 6 note
+        "meta_disagrees": meta_disagrees,
     }
     for key in COUNTERS:
         row[key] = m[key]
@@ -1311,23 +1384,6 @@ def measure_codex(path, root):
         row[key] = 0
     return row
 ```
-
-Note on `meta_disagreements`: the summary needs the count of files whose
-metas disagree on `thread_source` (spec D2.2). Tracking full disagreement
-means comparing every meta: replace the `meta_count` bookkeeping with
-
-```python
-        if rtype == "session_meta":
-            if meta is None:
-                meta = payload
-            elif payload.get("thread_source") != meta.get("thread_source"):
-                meta_disagrees = True
-            continue
-```
-
-and store `"meta_disagrees": bool` on the row instead of the count. The
-`extract` summary sums it (Step 6). Drop the `meta_disagreements` line from
-the row dict above accordingly.
 
 - [ ] **Step 6: Extend the extract summary with the population lines**
 
@@ -1340,6 +1396,11 @@ In `cmd_extract`, after the per-harness ledger lines from Task 2, add:
         print("  codex populations: " + ", ".join(
             f"{name} {populations[name]}" for name in
             ("main", "subagent", "automation", "unknown") if populations[name]))
+        fallbacks = sum(1 for r in codex_rows
+                        if r.get("population_source") == "fallback")
+        if fallbacks:
+            print(f"  codex rows classified by fallback "
+                  f"(no thread_source): {fallbacks}")
         disagreements = sum(1 for r in codex_rows if r.get("meta_disagrees"))
         if disagreements:
             print(f"  codex files whose metas disagree on thread_source: "
@@ -1352,13 +1413,39 @@ Also change the ledger key to the composite (spec D2.7): in `cmd_extract`,
 `rows[row["transcript"]] = row` becomes
 `rows[(row.get("harness") or "claude", row["transcript"])] = row`.
 
-- [ ] **Step 7: Remove the expectedFailure marker in test_retro_extract.py**
+- [ ] **Step 7: Two structure-only probes; record their answers as comments**
+
+Spec D2.6 and the tool-events question both require a measured answer written
+into the code. Run one probe over the real corpus printing counts only:
+
+1. **Compaction shape:** for files containing a top-level `compacted`
+   record, count `response_item` records before vs after it. Record the
+   answer (append-preserving or rewriting) as a one-sentence comment beside
+   `compacted = True` in `measure_codex`.
+2. **Tool-event pairing:** count how many `patch_apply_end` and
+   `mcp_tool_call_end` events have a same-file `custom_tool_call`/
+   `function_call` item (match by any shared call/turn id key, or by
+   count parity per file). If a family has paired call items, it stays OUT
+   of `CODEX_TOOL_EVENTS` (counting both would double-count); if not, add
+   it. Either way, extend the `CODEX_TOOL_EVENTS` comment with the counts
+   and the decision — `web_search_end` (1,032) and `image_generation_end`
+   (18) are already measured as unpaired.
+
+- [ ] **Step 8: Remove the expectedFailure marker in test_retro_extract.py**
 (single-root test now measures the rollout), run both modules, then the full
 suite.
 
 Expected: PASS everywhere.
 
-- [ ] **Step 8: Commit**
+One caution for anyone running commands mid-plan: do NOT run `extract`
+against your real `RETRO_HOME` between Tasks 2 and 4 — the stub would
+fingerprint every rollout as not-a-transcript and the finished reducer would
+then skip them as unchanged. Task tests all use scratch `RETRO_HOME`s, and a
+deployed ledger migrates cleanly (its schema-6 rows force a full rebuild,
+which clears the fingerprint state). If it happens anyway, `extract
+--rebuild` recovers.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add plugins/p/bin/retro.py plugins/p/tests/fixtures.py plugins/p/tests/test_retro_codex.py plugins/p/tests/test_retro_extract.py
@@ -1454,7 +1541,7 @@ class Reporting(unittest.TestCase):
             func(mock.Mock(**args))
         return out.getvalue()
 
-    def test_pack_prints_per_harness_blocks_and_unrankable_count(self):
+    def test_pack_prints_per_harness_blocks_and_unranked_note(self):
         retro = self.load_with_ledger([
             base_row(tool_errors=2),
             base_row(transcript="2026/08/x.jsonl", harness="codex",
@@ -1462,10 +1549,11 @@ class Reporting(unittest.TestCase):
                      ineligible=["tool_errors", "queued_prompts",
                                  "permission_mode_changes"]),
         ])
-        text = self.run_cmd(retro, retro.cmd_pack, days=7, sessions=8)
+        self.run_cmd(retro, retro.cmd_pack, days=7, sessions=8)
         pack = next(self.work.glob("pack-*.md")).read_text(encoding="utf-8")
         self.assertIn("### claude", pack)
         self.assertIn("### codex", pack)
+        self.assertIn("not friction-ranked", pack)
 
     def test_skills_prints_per_harness_columns(self):
         retro = self.load_with_ledger([
@@ -1474,9 +1562,9 @@ class Reporting(unittest.TestCase):
                      skills_used=["doctor"], skill_runs=1),
         ])
         text = self.run_cmd(retro, retro.cmd_skills, days=0)
-        line = next(l for l in text.splitlines() if " doctor" in l)
-        self.assertIn("claude", text)
-        self.assertIn("codex", text)
+        self.assertIn("| doctor | 1 | 1 |", text)
+        self.assertIn("## Never fired — claude", text)
+        self.assertIn("## Never fired — codex", text)
 
     def test_subagents_excludes_codex_from_failure_table_and_guards_empty(self):
         retro = self.load_with_ledger([
@@ -1488,11 +1576,14 @@ class Reporting(unittest.TestCase):
         ])
         text = self.run_cmd(retro, retro.cmd_subagents, days=0,
                             exclude_session=[])
-        self.assertIn("codex", text.lower())
-        # excluding the parent id drops the codex row
+        self.assertIn("codex subagent rows are excluded", text)
+        self.assertIn("## How codex runs answered", text)
+        # Excluding the parent id drops the codex row entirely (D4.6):
+        # its per-harness sections must vanish, not just shrink.
         text = self.run_cmd(retro, retro.cmd_subagents, days=0,
                             exclude_session=["pp"])
-        self.assertNotIn("codex rows", text.lower().replace("excluded", ""))
+        self.assertNotIn("## How codex runs answered", text)
+        self.assertNotIn("codex subagent rows are excluded", text)
 
 
 if __name__ == "__main__":
@@ -1567,8 +1658,21 @@ Claude (spec D4.3):
 ```python
     rankable = [r for r in main if (r.get("harness") or "claude") == "claude"]
     lines += ["## Candidate moments", ""]
+    if len(main) > len(rankable):
+        lines.append(f"_{len(main) - len(rankable)} main sessions are not "
+                     f"friction-ranked - their harness emits no ranking "
+                     f"signal. See the candidate-sampled section below._")
+        lines.append("")
     ranked = sorted(rankable, key=friction_score, reverse=True)[:args.sessions]
 ```
+
+The compacted note interpolates as a local, not an append-to-f-string:
+compute `compacted = sum(1 for r in window if r.get("compacted"))` and
+`compacted_note = (f" {compacted} compacted rollouts in window."
+if compacted else "")` before the `lines = [...]` literal, and write the
+Window line as
+`f"Window: {start} to {now}. Main sessions: {len(main)} "
+f"(prior window: {len(prior_main)}).{compacted_note}"`.
 
 (The Codex candidate-sampled section and the approval moments land in
 Task 5b, which owns `moments` and the section that follows the ranked list.)
@@ -1584,13 +1688,13 @@ Window line.)
 ```python
 def installed_skills():
     """Per-harness skill inventories, by directory name. glob on a missing
-    directory yields nothing, so no existence guards."""
-    claude_home = Path(os.environ.get("CLAUDE_CONFIG_DIR")
-                       or (HOME / ".claude"))
+    directory yields nothing, so no existence guards. The Claude half keeps
+    CLAUDE_DIR deliberately — the spec sanctions adding Codex roots, not
+    moving the Claude one."""
     codex_home = Path(os.environ.get("CODEX_HOME") or (HOME / ".codex"))
-    claude = ({p.parent.name for p in (claude_home / "skills").glob("*/SKILL.md")}
+    claude = ({p.parent.name for p in (CLAUDE_DIR / "skills").glob("*/SKILL.md")}
               | {p.parent.name for p in
-                 (claude_home / "plugins" / "cache").rglob("skills/*/SKILL.md")})
+                 (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")})
     codex = ({p.parent.name for p in (codex_home / "skills").glob("*/SKILL.md")}
              | {p.parent.name for p in
                 (codex_home / "plugins").rglob("skills/*/SKILL.md")}
@@ -1657,52 +1761,103 @@ The failure table header gains, when `codex_rows`:
 f"- their harness emits none of these signals.")` — and the table loops over
 `claude_rows` (both the tallies and `concentration(claude_rows, key)`).
 
-Endings and length sections become a loop:
+`no_answer` is computed ONCE, over all rows, BEFORE the per-harness loop —
+left after a loop it would read only the last harness's counter, silently
+changing both the printed figure and the exit code:
 
 ```python
+    all_endings = Counter(r.get("ending") or "?" for r in rows)
+    no_answer = all_endings.get("unanswered", 0) + all_endings.get("silent", 0)
     for harness, h_rows in (("claude", claude_rows), ("codex", codex_rows)):
         if not h_rows:
             continue
         print(f"\n## How {harness} runs answered\n")
-        ...same table over h_rows...
+        print("| ending | transcripts | share |")
+        print("|---|---|---|")
+        endings = Counter(r.get("ending") or "?" for r in h_rows)
+        for name in ENDINGS:
+            count = endings.get(name, 0)
+            print(f"| {name} - {ENDING_MEANING[name]} | {count} | "
+                  f"{count / len(h_rows) * 100:.1f}% |")
         turns = sorted(int(r.get("turns") or 0) for r in h_rows)
-        if turns:
-            print(f"\n## {harness} length\n\nturns: median "
-                  f"{quantile(turns, 0.5)}, p90 {quantile(turns, 0.90)}, "
-                  f"p95 {quantile(turns, 0.95)}, max {turns[-1]}.")
+        print(f"\n## {harness} length\n\nturns: median "
+              f"{quantile(turns, 0.5)}, p90 {quantile(turns, 0.90)}, "
+              f"p95 {quantile(turns, 0.95)}, max {turns[-1]}.")
+        for threshold in (100, 150, 200):
+            print(f"  {sum(1 for t in turns if t >= threshold)} transcripts "
+                  f"at {threshold} turns or more")
 ```
 
-`no_answer` sums over all rows as before.
+The "Failed to answer" paragraph prints once, after the loop, from
+`no_answer`; the `structured`-explanation paragraph moves above the loop and
+prints once. Delete the old single-table versions of both sections.
 
 - [ ] **Step 6: Restrict cmd_effect and add --harness (spec D4.7)**
 
-In the argparse block (~line 2029): `p_effect.add_argument("--harness",
-choices=("claude", "codex", "all"), default=None, help="restrict the "
-"population; defaults to claude when the date came from Claude config "
-"history, else all")`.
+The command cannot see where a `--since` date came from — its no-argument
+mode (`if not args.since: return print_candidates()`, the function's first
+lines) only prints candidate dates for the operator to retype — so the
+default is unconditional, not provenance-triggered:
 
-In `cmd_effect`: determine `from_rules = args.since is None` (the
-`rule_change_dates` path); resolve
-`harness = args.harness or ("claude" if from_rules else "all")`; filter
-`rows = [r for r in rows if harness == "all" or (r.get("harness") or "claude") == harness]`
-before the split, and print one line
-`print(f"population: harness={harness}, main sessions only; automation and "
-f"unknown rows are spend and excluded")`. (Anchor by reading `cmd_effect` —
-whichever variable carries the rule-derived dates decides `from_rules`.)
+1. Argparse block (~line 2029): `p_effect.add_argument("--harness",
+   choices=("claude", "codex", "all"), default="claude", help="population "
+   "to compare; defaults to claude because the rule-change dates this "
+   "command anchors on come from Claude config history")`.
+2. In `cmd_effect`, after the window rows are selected and before the
+   split: `if args.harness != "all": rows = [r for r in rows if
+   (r.get("harness") or "claude") == args.harness]`, then
+   `print(f"population: harness={args.harness}, main sessions only; "
+   f"subagent, automation and unknown rows are spend and excluded")`.
+3. Have `print_candidates()`'s closing usage line mention
+   `[--harness codex|all]`.
+4. Per-counter denominators (spec D4.1 names `effect` as the second
+   consumer): the totals line becomes `b, b_elig = totals(before)` /
+   `a, a_elig = totals(after)` (each side its own statement now), and the
+   per-session computation `sb, sa = b[key] / len(before), a[key] /
+   len(after)` becomes division by `b_elig[key]` / `a_elig[key]`, skipping
+   the counter's row entirely when either eligible count is 0.
 
-- [ ] **Step 7: Update the module docstring (spec D6.1)**
+- [ ] **Step 7: Retire PROJECTS_DIR and mark cmd_label's pools (spec D1.1, D5.4)**
 
-Line 2: "derive workflow-friction metrics from Claude Code and Codex session
-history." In the exit-codes block: `2  could not run (no session directory at
-any root, no ledger)`. In the "Stdlib only" paragraph: "a KeyError partway
-through a 5GB corpus loses the whole run." Add one sentence to the ledger
-paragraph: "Rows are labelled by harness and population; three counters are
-declared ineligible on Codex rows rather than reported as zeros."
+Every remaining `PROJECTS_DIR` reader resolves through the call-time
+function, and the constant is deleted so a divergent fifth use cannot
+reappear:
 
-- [ ] **Step 8: Run the new module, then the full suite; tighten the loose
-assertion from Step 1 to the exact wording chosen.** Expected: PASS.
+1. `_moments` (~line 1118): `path = PROJECTS_DIR / row.get("transcript", "")`
+   → `path = claude_projects_dir() / row.get("transcript", "")`. Without
+   this, on a machine setting `CLAUDE_CONFIG_DIR`, extract writes rows
+   relative to one root while the moment reader resolves under another and
+   every Claude moment silently vanishes from packs.
+2. `label_candidates` (~lines 1514, 1516) and `cmd_label`'s existence guard
+   (~line 1716): same substitution — a local
+   `projects = claude_projects_dir()` at the top of each function. The
+   guard's behaviour (exit 2, Claude-only pools) is unchanged.
+3. Delete the `PROJECTS_DIR = CLAUDE_DIR / "projects"` line. (`CLAUDE_DIR`
+   stays — `installed_skills` and `cmd_rules` use it.)
+4. `cmd_label`'s pools line (~line 1734): append
+   ` (Claude transcripts only - classifier calibrated on Claude turns)` to
+   the printed f-string.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Update the module and read_records docstrings (spec D6.1)**
+
+Module docstring — line 2: "derive workflow-friction metrics from Claude
+Code and Codex session history." In the exit-codes block: `2  could not run
+(no session directory at any root, no ledger)`. In the "Stdlib only"
+paragraph: "a KeyError partway through a 5GB corpus loses the whole run."
+Add one sentence to the ledger paragraph: "Rows are labelled by harness and
+population; three counters are declared ineligible on Codex rows rather
+than reported as zeros."
+
+`read_records` docstring — the paragraph claiming `stopped-promises.py`
+"resolves its transcript root differently — it honours the harness
+config-directory variable and this does not" is now false; rewrite it to:
+"Both readers honour the config-directory variable; the remaining
+differences are gzip support and missing-root behaviour, which are that
+script's own."
+
+- [ ] **Step 9: Run the new module, then the full suite.** Expected: PASS.
+
+- [ ] **Step 10: Commit**
 
 ```bash
 git add plugins/p/bin/retro.py plugins/p/tests/test_retro_reporting.py
@@ -1710,7 +1865,7 @@ git commit -F - <<'MSG'
 Split every retro report by harness
 
 Packs print per-harness trend blocks with per-counter observable
-denominators and name unrankable codex sessions; skills reports
+denominators and a note counting sessions no ranking covers; skills reports
 per-harness fired columns and dormant lists over per-harness installed
 roots; the subagent lens confines mechanical failures to the harness
 that emits them and splits endings and length; effect restricts to the
@@ -1857,15 +2012,24 @@ After the ranked-Claude loop (before `out_path = ...`), add (spec D4.3):
                   "Selected by candidate signals (a use the legacy rubric "
                   "allows); nothing here is a friction ranking.", ""]
     for row in sampled:
+        evidence = moments(row)
+        if not evidence:
+            # A moved or unreadable rollout must not print a headed block
+            # with nothing under it (spec D4.3).
+            continue
         lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
                      f"branch `{row.get('git_branch') or '-'}`")
-        for moment in moments(row):
+        for moment in evidence:
             lines.append("")
             lines.append(f"- **{moment['kind']}** at {moment['at']}")
             lines.append(f"  - assistant, just before: _{moment['after']}_")
             lines.append(f"  - user said: **{moment['said']}**")
         lines.append("")
 ```
+
+Apply the same guard to the ranked-Claude loop in `cmd_pack`: capture
+`evidence = moments(row)` before appending that loop's `###` heading, and
+`continue` on empty — same reason, same spec clause.
 
 - [ ] **Step 5: Run the module, then the full suite.** Expected: PASS,
 including Step 1's new test.
@@ -1893,10 +2057,13 @@ MSG
 
 **Interfaces:** none — prose only. Do not touch `retro.py` (Lane A owns it).
 
-- [ ] **Step 1: EVALUATION.md** — add one sentence where the retro commands
+- [ ] **Step 1: EVALUATION.md** — add two sentences where the retro commands
 are described: "The measurement pipeline reads both harnesses' transcripts;
 the evaluation adapters exclude non-user Codex threads, so an evaluation
-report and a pack may legitimately disagree about corpus size."
+report and a pack may legitimately disagree about corpus size. They may also
+disagree on token totals for the handful of rollouts whose cumulative token
+counter resets mid-file: the ledger banks across resets, the adapter takes
+the last count."
 - [ ] **Step 2: friction skill** — in the reading-the-signals table's
 paragraph, add: "On a mixed corpus, `tool_errors`, `queued_prompts`, and
 `permission_mode_changes` are not observable for Codex rows; the pack marks
@@ -1963,14 +2130,16 @@ Expected: all clean.
 - [ ] **Step 2: Local end-to-end against the real corpora, scratch ledger**
 
 ```bash
-RETRO_HOME="$(mktemp -d)/retro-e2e" sh plugins/p/bin/python-launcher plugins/p/bin/retro.py extract
+RETRO_E2E="$(mktemp -d)/retro-e2e"
+RETRO_HOME="$RETRO_E2E" sh plugins/p/bin/python-launcher plugins/p/bin/retro.py extract
 ```
 
 Expected: the summary prints both harness lines; Codex measured ≥ 200; the
-codex populations line shows a nonzero `main`. Then:
+codex populations line shows a nonzero `main`. Then, same shell so the
+variable survives:
 
 ```bash
-RETRO_HOME=<same dir> sh plugins/p/bin/python-launcher plugins/p/bin/retro.py skills --days 30
+RETRO_HOME="$RETRO_E2E" sh plugins/p/bin/python-launcher plugins/p/bin/retro.py skills --days 30
 ```
 
 Expected: the fired table has claude and codex columns; per-harness dormant
@@ -1983,12 +2152,13 @@ the session's report.**
 
 ## Self-review notes (already applied)
 
-1. Spec coverage: D1 → Task 2; D2 → Tasks 3-4; D3 → Tasks 4 and 5b
-   (moments); D4.1-4.2 → Tasks 3/5; D4.3 → Tasks 5 and 5b; D4.4-4.7 →
-   Task 5; D5 → Task 6 (docstrings) and no-op scoping; D6 → Tasks 5
-   (docstring) and 6; the operator's liked-examples direction → Task 5b;
-   Verification 1 → Task 1, 2 → Tasks 2-5b, 3 → Tasks 7-8, 4 → Task 8.
-   Lane D → Task 7.
+1. Spec coverage: D1 → Task 2 plus Task 5 Step 7 (constant retirement);
+   D2 → Tasks 3-4; D3 → Tasks 4 and 5b (moments); D4.1 → Task 3 and Task 5
+   Step 6.4 (`effect`); D4.2 → Task 5; D4.3 → Tasks 5 and 5b; D4.4-4.7 →
+   Task 5; D4.8 → Task 2 Step 5 + Task 4 Step 6; D5.1-5.3/5.5 → Task 6 and
+   no-op scoping; D5.4 → Task 5 Step 7.4; D6 → Tasks 5 (Step 8) and 6; the
+   operator's liked-examples direction → Task 5b; Verification 1 → Task 1,
+   2 → Tasks 2-5b, 3 → Tasks 7-8, 4 → Task 8. Lane D → Task 7.
 2. The `meta_disagrees` field is defined in Task 4 Step 5's note and consumed
    in Step 6 — one name, one writer, one reader.
 3. `installed_skills()`'s return-shape change (set → dict) has exactly one

@@ -67,10 +67,10 @@ counts; no transcript content copied anywhere):
    distinct tags were observed, the most common being `task-notification`
    (390), `environment_context` (149), `codex_internal_context` (130),
    `recommended_plugins` (113), `in-app-browser-context` (57), `skill` (29).
-   Three of the eleven tags — `codex_internal_context`,
-   `in-app-browser-context`, and one rare third — never appear bare; all 187
-   of their occurrences carry attributes (`<tag attr…>`), so a closed-bracket
-   literal cannot match them. `retro.py`'s `MACHINE_PROMPT_OPENERS` already
+   Three of the eleven tags — `codex_internal_context` (130),
+   `in-app-browser-context` (57), and `image` (4) — never appear bare; all
+   191 of their occurrences carry attributes (`<tag attr…>`), so a
+   closed-bracket literal cannot match them. `retro.py`'s `MACHINE_PROMPT_OPENERS` already
    names three of the bare tags.
 6. `<skill>` wrapper blocks: 29 across 24 files, every one carrying a
    parsable inner `<name>`. The shipped source profile
@@ -96,9 +96,13 @@ counts; no transcript content copied anywhere):
 1. Extraction resolves roots at call time, not import time, so tests inject
    them through the environment: the Claude root is
    `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`; the Codex root is
-   `$CODEX_HOME/sessions` or `~/.codex/sessions`. (This also retires the
-   documented asymmetry in `read_records`'s docstring — `stopped-promises`
-   honours the config-directory variable and `retro.py` did not.)
+   `$CODEX_HOME/sessions` or `~/.codex/sessions`. Every Claude-root reader
+   in the file — the walk, the moment reader, `cmd_label` and its
+   candidate pools — resolves through the same function, and the
+   import-time module constant is deleted so a divergent fifth use cannot
+   reappear. (This also retires the documented asymmetry in
+   `read_records`'s docstring — `stopped-promises` honours the
+   config-directory variable and `retro.py` did not.)
 2. The missing-root guard moves after root resolution: when every root is
    missing, `extract` exits 2 with a message naming each looked-for path;
    when at least one root exists, absent roots are skipped and named in the
@@ -136,14 +140,19 @@ New or changed columns:
    and stated. Codex rows map `thread_source`: `user` → main, `subagent` →
    subagent, `automation` → automation; when `thread_source` is absent,
    `parent_thread_id` present → subagent, else main; an unrecognised value →
-   `unknown`. `unknown` and `automation` rows are excluded from every
-   per-session rate and reported as their own spend lines; the `extract`
-   summary prints the fallback and `unknown` counts so a new value surfaces
-   instead of being absorbed. On today's corpus the fallback is a forward
-   guard, not a live rule: every `parent_thread_id` file is already labelled
-   `subagent`, and all 50 absent-`thread_source` files fall outside the
-   30-day window. The first `session_meta` record wins; the summary counts
-   files whose metas disagree on `thread_source`.
+   `unknown`; when `thread_source` is absent, `parent_thread_id` present →
+   subagent, else → `unknown` — never `main`, because an unclassified file
+   must not enter the population every per-session rate divides by.
+   (Measured: all 50 absent-`thread_source` files come from one alpha CLI
+   build on a single day, none carrying a parent id; defaulting them to
+   `main` would have inflated the Codex all-history main population by two
+   thirds.) `unknown` and `automation` rows are excluded from every
+   per-session rate and reported as their own spend lines. Rows record how
+   their population was decided in `population_source`
+   (`"thread_source"` or `"fallback"`), and the `extract` summary prints the
+   fallback and `unknown` counts so a new value surfaces instead of being
+   absorbed. The first `session_meta` record wins; the summary counts files
+   whose metas disagree on `thread_source`.
    The evaluation layer's span schema keeps its own `is_subagent` field on
    purpose — it is a separate versioned contract with its own tests; the two
    are not unified in this changeset. `label_candidates` re-derives the
@@ -186,7 +195,7 @@ Counter mapping:
 | Counter | Codex source |
 |---|---|
 | `turns` | assistant `response_item` messages plus `function_call`, `custom_tool_call`, and `tool_search_call` items — the structural analogue of a Claude assistant record, which carries its tool calls inside itself. `turns` is still never compared across harnesses (D4.2) |
-| `user_prompts`, `correction_candidates`, `approval_turns` | user-role `response_item` messages whose first non-whitespace is not a machine-prompt opener and which are non-empty, classified by the shared classifier. The opener list is `MACHINE_PROMPT_OPENERS`, extended with the Codex tags from Grounding 5 — one shared, anchored list for both harnesses, with a test over the union. Tags that only appear with attributes enter the list as bracket-less prefixes (`"<codex_internal_context"`), since a closed-bracket literal matches none of their 187 occurrences; the bare tags keep the existing closed form so a person merely quoting a tag name mid-sentence still counts. `developer`-role messages never count. `reasoning` items do not feed `prior_assistant_chars` (the operator never saw them); assistant messages do |
+| `user_prompts`, `correction_candidates`, `approval_turns` | user-role `response_item` messages whose first non-whitespace is not a machine-prompt opener and which are non-empty, classified by the shared classifier. The opener list is `MACHINE_PROMPT_OPENERS`, extended with the Codex tags from Grounding 5 — one shared, anchored list for both harnesses, with a test over the union. Tags that only appear with attributes enter the list as bracket-less prefixes (`"<codex_internal_context"`), since a closed-bracket literal matches none of their 187 occurrences; the bare tags keep the existing closed form so a person merely quoting a tag name mid-sentence still counts. `developer`-role messages never count. A message the shared classifier calls an `interrupt` counts as an interrupt, not a user prompt — matching the Claude reducer, though the marker it keys on is Claude-shaped and expected to be absent from rollouts. `reasoning` items do not feed `prior_assistant_chars` (the operator never saw them); assistant messages do |
 | `interrupts` | `turn_aborted` events only (the wrapper-tag mirror is excluded to avoid double-counting); 76 corpus events, so the mapping is observed, not assumed |
 | `tool_calls` | `function_call` + `custom_tool_call` + `tool_search_call` items, plus `web_search_end` and `image_generation_end` events (tool uses that leave no call item) |
 | `repeat_calls` | same (name, argument-signature) — the argument value is `json.loads`-parsed when it is a string (falling back to the raw string) and hashed through `signature()` so key order normalises as on the Claude side; `arguments` preferred over `input`. Polling primitives (`wait`, `wait_agent` — the polls present in the corpus) and empty-argument calls are excluded. Measured: the naive rule flags 14.50% of all-population Codex calls against Claude's 1.05% (main rows, all history; 0.67% over all rows); the exclusions take Codex to 9.88%, so the residual is real workload repetition, not just polling, and the number is recorded here rather than discovered during implementation |
@@ -239,7 +248,9 @@ and the same `MOMENTS_PER_SESSION` cap applies. `moments(row)` dispatches on
    not smuggled in here. Codex sessions instead enter the moments section
    by candidate sampling, which is a use the legacy rubric explicitly
    allows (`candidate_sampling` is in `turn_friction_legacy`'s
-   `allowed_uses`): after the Claude ranked list, `cmd_pack` selects up to
+   `allowed_uses`): after the Claude ranked list — which prints one line
+   naming how many main sessions were not friction-ranked because their
+   harness emits no ranking signal — `cmd_pack` selects up to
    the same per-window session cap of Codex main sessions ordered by
    `correction_candidates + interrupts + approval_turns`, skipping zeros,
    under a heading that labels them candidate-sampled, not ranked. Their
@@ -267,11 +278,16 @@ and the same `MOMENTS_PER_SESSION` cap applies. `moments(row)` dispatches on
    `cmd_subagents` drops rows whose `session_id` or `parent_session_id`
    matches — Codex subagent rows carry the parent's id in
    `parent_session_id`, not `session_id`.
-7. `effect`: when the comparison date came from `rule_change_dates` (Claude
-   config history), the population is restricted to `harness == "claude"`,
-   `population == "main"`, and the output says so; a `--harness` flag
-   overrides. `split_population` returns a dict keyed by population value;
-   both call sites (`cmd_pack`, `cmd_effect`) are updated, and `cmd_effect`
+7. `effect`: the comparison defaults to `harness == "claude"`,
+   `population == "main"`, because the rule-change dates it is normally
+   anchored to come from Claude's config history — and the command cannot
+   see where a `--since` date came from (its no-argument mode only prints
+   candidate dates for the operator to retype), so the safe default is
+   unconditional and `--harness codex|all` opts in to a wider population.
+   The output names the restriction. `split_population` returns a dict
+   keyed by population value; both call sites (`cmd_pack`, `cmd_effect`)
+   are updated; `cmd_effect`'s per-session column divides each counter by
+   its own eligible-row count (D4.1 names it as the second consumer) and
    states what it does with `automation` rows (spend line, never in rates).
    The `EFFECT_MIN_SESSIONS` floor now applies to the restricted population.
 8. `extract` summary: the existing totals line is unchanged (`unreadable`
@@ -290,9 +306,11 @@ and the same `MOMENTS_PER_SESSION` cap applies. `moments(row)` dispatches on
    scope, same one-sentence docstring note. Nothing here changes
    `parse_ts`'s contract (it already accepts every rollout timestamp).
 3. The evaluation layer and its adapters: untouched. Its Codex adapter
-   excludes non-`user` threads, so eval reports and packs will disagree on
-   corpus size by construction; `plugins/p/EVALUATION.md`'s boundary note
-   says so (Lane C).
+   excludes non-`user` threads and takes the last token count where the
+   ledger banks across mid-file resets, so eval reports and packs will
+   disagree on corpus size by construction and on token totals for the
+   handful of reset-carrying sessions; `plugins/p/EVALUATION.md`'s boundary
+   note names both (Lane C).
 4. Label sampling (`cmd_label`): pools stay Claude-only — the candidate
    classifier's precision/recall was calibrated on Claude turns. The pools
    line gains the suffix `(Claude transcripts only — classifier calibrated
