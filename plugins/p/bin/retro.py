@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""retro — derive workflow-friction metrics from Claude Code session history.
+"""retro — derive workflow-friction metrics from Claude Code and Codex session
+history.
 
 Seven subcommands:
 
@@ -22,16 +23,18 @@ paths of whatever the sessions were about.
 
 The ledger is not "counts only", though it long claimed to be: a row carries the
 working directory it was measured from. That is why the work directory is placed
-outside repositories rather than merely kept out of one.
+outside repositories rather than merely kept out of one. Rows are labelled by
+harness and population; three counters are declared ineligible on Codex rows
+rather than reported as zeros.
 
 Stdlib only. Every field access is guarded: transcript shape varies by CLI
-version, and a KeyError partway through a 900MB corpus loses the whole run.
+version, and a KeyError partway through a 5GB corpus loses the whole run.
 
 Exit codes match the sibling scripts in plugins/p/bin:
     0  ran clean, nothing flagged
     1  ran clean, something was flagged (a transcript that would not read,
        friction in the window, dormant skills)
-    2  could not run (no session directory, no ledger)
+    2  could not run (no session directory at any root, no ledger)
 """
 
 EXIT_CLEAN, EXIT_FLAGGED, EXIT_CANNOT_RUN = 0, 1, 2
@@ -50,7 +53,6 @@ from pathlib import Path
 
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
-PROJECTS_DIR = CLAUDE_DIR / "projects"
 
 
 def claude_projects_dir():
@@ -710,10 +712,9 @@ def read_records(path):
     DUPLICATED, on purpose: plugins/p/bin/stopped-promises.py carries its own
     copy of this reader rather than importing it, so a measurement tool's parser
     cannot shift underneath it while this file is being rewritten. A fix to the
-    parsing rules here needs applying there too. That script also resolves its
-    transcript root differently -- it honours the harness config-directory
-    variable and this does not -- so on a machine that sets it the two read
-    different corpora and will report different session counts for "the corpus".
+    parsing rules here needs applying there too. Both readers honour the
+    config-directory variable; the remaining differences are gzip support and
+    missing-root behaviour, which are that script's own.
     """
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -1483,7 +1484,7 @@ def moments(row):
 def _moments(row):
     """Pull the user turns that scored this session as frictional, with the
     assistant text immediately before each. Redacted."""
-    path = PROJECTS_DIR / row.get("transcript", "")
+    path = claude_projects_dir() / row.get("transcript", "")
     if not path.is_file():
         return []
     out = []
@@ -1525,45 +1526,69 @@ def cmd_pack(args):
     prior_split = split_population(prior)
     main, sub = split["main"], split["subagent"]
     prior_main, prior_sub = prior_split["main"], prior_split["subagent"]
-    now_t, now_eligible = totals(main)
-    prev_t, _ = totals(prior_main)
-    now_s, _ = totals(sub)
+    compacted = sum(1 for r in window if r.get("compacted"))
+    compacted_note = (f" {compacted} compacted rollouts in window."
+                      if compacted else "")
 
     lines = [f"# Evidence pack — last {args.days} days",
-             f"Window: {start} to {now}. Sessions: {len(main)} "
-             f"(prior window: {len(prior_main)}).", "",
-             "## Trends", "",
-             "Main sessions only. Subagent transcripts are spend and are "
-             "reported under the table — every rate here divides one "
-             "population by itself.", "",
-             "Legacy correction and interrupt labels are candidate-sampler "
-             "output only. They do not affect ranking and cannot justify a "
-             "prompt, skill, rule, hook, agent, or process change.", "",
-             "| signal | this window | prior | delta |", "|---|---|---|---|"]
-    table = [("sessions", len(main), len(prior_main))]
-    table += [(key, now_t[key], prev_t[key]) for key in ["tokens_out"] + COUNTERS]
-    for key, a, b in table:
-        delta = "n/a" if not b else f"{(a - b) / b * 100:+.0f}%"
-        label = key + " (candidate only)" if key in LEGACY_TURN_COUNTERS else key
-        lines.append(f"| {label} | {a} | {b} | {delta} |")
+             f"Window: {start} to {now}. Main sessions: {len(main)} "
+             f"(prior window: {len(prior_main)}).{compacted_note}", "",
+             "## Trends", ""]
+    lines += [
+        "Per-harness blocks; token and turn columns are never summed or "
+        "compared across harnesses (the usage-accounting profile forbids "
+        "cross-source token statistics, and a Codex `turn` is a structural "
+        "analogue, not the same unit).", "",
+        "Legacy correction and interrupt labels are candidate-sampler "
+        "output only. They do not affect ranking and cannot justify a "
+        "prompt, skill, rule, hook, agent, or process change.", ""]
+    for harness in ("claude", "codex"):
+        h_main = [r for r in main if (r.get("harness") or "claude") == harness]
+        h_prior = [r for r in prior_main
+                   if (r.get("harness") or "claude") == harness]
+        if not h_main and not h_prior:
+            continue
+        h_now, h_eligible = totals(h_main)
+        h_prev, _ = totals(h_prior)
+        lines += [f"### {harness}", "",
+                  "| signal | this window | prior | delta |",
+                  "|---|---|---|---|"]
+        table = [("sessions", len(h_main), len(h_prior))]
+        table += [(key, h_now[key], h_prev[key])
+                  for key in ["tokens_out"] + COUNTERS]
+        for key, a, b in table:
+            delta = "n/a" if not b else f"{(a - b) / b * 100:+.0f}%"
+            label = key + " (candidate only)" if key in LEGACY_TURN_COUNTERS else key
+            if key in COUNTERS and h_eligible[key] < len(h_main):
+                label += f" ({h_eligible[key]} of {len(h_main)} rows observable)"
+            lines.append(f"| {label} | {a} | {b} | {delta} |")
+        lines.append("")
+        if h_main and any(h_eligible[key] for key in COUNTERS):
+            lines.append("Per session: " + ", ".join(
+                f"{key} {h_now[key] / h_eligible[key]:.1f}"
+                for key in COUNTERS if h_eligible[key]))
+            lines.append("")
+        h_sub = [r for r in sub if (r.get("harness") or "claude") == harness]
+        h_sub_t, _ = totals(h_sub)
+        lines.append(f"Subagent spend — {len(h_sub)} transcripts: "
+                     + ", ".join(f"{key} {h_sub_t[key]}"
+                                 for key in ["tokens_out"] + COUNTERS))
+        for extra_name in ("automation", "unknown"):
+            extra = [r for r in split[extra_name]
+                     if (r.get("harness") or "claude") == harness]
+            if extra:
+                lines.append(f"{extra_name.capitalize()} spend — "
+                             f"{len(extra)} transcripts.")
+        lines.append("")
 
-    lines.append("")
-    if main:
-        lines.append("Per session: " + ", ".join(
-            f"{key} {now_t[key] / now_eligible[key]:.1f}"
-            for key in COUNTERS if now_eligible[key]))
-    lines.append("")
-    other_note = "".join(
-        f", {len(split[pop])} {pop}" for pop in ("automation", "unknown")
-        if split[pop])
-    lines.append(f"Subagent spend — {len(sub)} transcripts "
-                 f"(prior window: {len(prior_sub)}){other_note}, "
-                 "no per-session rate: "
-                 + ", ".join(f"{key} {now_s[key]}"
-                             for key in ["tokens_out"] + COUNTERS))
-    lines += ["", "## Candidate moments", ""]
-
-    ranked = sorted(main, key=friction_score, reverse=True)[:args.sessions]
+    rankable = [r for r in main if (r.get("harness") or "claude") == "claude"]
+    lines += ["## Candidate moments", ""]
+    if len(main) > len(rankable):
+        lines.append(f"_{len(main) - len(rankable)} main sessions are not "
+                     f"friction-ranked - their harness emits no ranking "
+                     f"signal. See the candidate-sampled section below._")
+        lines.append("")
+    ranked = sorted(rankable, key=friction_score, reverse=True)[:args.sessions]
     if not ranked:
         lines.append("_No sessions in window._")
     for row in ranked:
@@ -1599,13 +1624,24 @@ def cmd_pack(args):
 # --- skills ----------------------------------------------------------------
 
 def installed_skills():
-    """Every skill available to this machine, by directory name. Two homes:
-    loose skills under the user's skills directory, and skills vendored inside
-    installed plugins. glob on a missing directory yields nothing, so neither
-    needs an existence guard."""
-    loose = (CLAUDE_DIR / "skills").glob("*/SKILL.md")
-    vendored = (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")
-    return {p.parent.name for p in loose} | {p.parent.name for p in vendored}
+    """Per-harness skill inventories, by directory name. glob on a missing
+    directory yields nothing, so no existence guards. The Claude half keeps
+    CLAUDE_DIR deliberately — the spec sanctions adding Codex roots, not
+    moving the Claude one."""
+    codex_home = Path(os.environ.get("CODEX_HOME") or (HOME / ".codex"))
+    claude = ({p.parent.name for p in (CLAUDE_DIR / "skills").glob("*/SKILL.md")}
+              | {p.parent.name for p in
+                 (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")})
+    # rglob from the plugin store root, not a "cache" subdirectory: the
+    # Codex store nests differently from Claude's (verified on the dev
+    # machine: 157 SKILL.md files under ~/.codex/plugins), and rglob
+    # covers whichever layout a version uses.
+    codex = ({p.parent.name for p in (codex_home / "skills").glob("*/SKILL.md")}
+             | {p.parent.name for p in
+                (codex_home / "plugins").rglob("skills/*/SKILL.md")}
+             | {p.parent.name for p in
+                (HOME / ".agents" / "skills").glob("*/SKILL.md")})
+    return {"claude": claude, "codex": codex}
 
 
 def cmd_skills(args):
@@ -1613,25 +1649,42 @@ def cmd_skills(args):
     if args.days:
         start = (datetime.now(timezone.utc).date() - timedelta(days=args.days)).isoformat()
         rows = [r for r in rows if (r.get("date") or "") >= start]
-    used = Counter()
+    used = {"claude": Counter(), "codex": Counter()}
+    signal_files = Counter()
     for row in rows:
+        harness = row.get("harness") or "claude"
+        if row.get("skills_used"):
+            signal_files[harness] += 1
         for name in row.get("skills_used") or []:
-            used[name.split(":")[-1]] += 1
+            used[harness][name.split(":")[-1]] += 1
 
     installed = installed_skills()
     window = f"last {args.days} days" if args.days else "all history"
     print(f"# Skill firing - {window}, {len(rows)} transcripts\n")
-    print("## Fired")
-    for name, count in used.most_common():
-        # Names with no SKILL.md on disk are harness built-ins (/simplify,
-        # /loop, deep-research) or a skill that has since been renamed.
-        mark = "" if name in installed else "   (built-in command, or renamed)"
-        print(f"  {count:5d}  {name}{mark}")
-    dormant = sorted(installed - set(used))
-    print(f"\n## Never fired ({len(dormant)} of {len(installed)} installed)")
-    for name in dormant:
-        print(f"         {name}")
-    return EXIT_FLAGGED if dormant else EXIT_CLEAN
+    print("## Fired\n")
+    print("| skill | claude | codex | note |")
+    print("|---|---|---|---|")
+    every = Counter()
+    for harness_counts in used.values():
+        every.update(harness_counts)
+    for name, _total in every.most_common():
+        in_claude = name in installed["claude"]
+        in_codex = name in installed["codex"]
+        note = "" if (in_claude or in_codex) else "built-in command, or renamed"
+        print(f"| {name} | {used['claude'][name] or ''} "
+              f"| {used['codex'][name] or ''} | {note} |")
+    print(f"\nCodex denominator: {signal_files['codex']} transcripts carried "
+          f"any skill signal — a heuristic count, not authoritative "
+          f"attribution (the source profile declares none exists).")
+    dormant_total = 0
+    for harness in ("claude", "codex"):
+        dormant = sorted(installed[harness] - set(used[harness]))
+        dormant_total += len(dormant)
+        print(f"\n## Never fired — {harness} "
+              f"({len(dormant)} of {len(installed[harness])} installed)")
+        for name in dormant:
+            print(f"         {name}")
+    return EXIT_FLAGGED if dormant_total else EXIT_CLEAN
 
 
 # --- subagents -------------------------------------------------------------
@@ -1795,27 +1848,33 @@ def cmd_subagents(args):
         print(f"\n{dropped} rows written by the session running this report "
               f"were left out - transcripts still being written.")
 
+    claude_rows = [r for r in rows if (r.get("harness") or "claude") == "claude"]
+    codex_rows = [r for r in rows if r.get("harness") == "codex"]
+
     print("\n## Mechanical failures\n")
     print("Each share divides by the population the signal could have occurred "
           "in, named per row - never by every transcript. `top project` is the "
           "share of that signal's occurrences coming from its single largest "
           "project; a high one means one workflow repeating itself rather than "
           "a general pattern. No project is named.\n")
+    if codex_rows:
+        print(f"{len(codex_rows)} codex subagent rows are excluded from this "
+              f"table - their harness emits none of these signals.\n")
     print("| signal | occurrences | transcripts | could occur in | share "
           "| top project | actionable |")
     print("|---|---|---|---|---|---|---|")
     flagged = 0
     tallies = []
     for key, _meaning, population, fix in SUBAGENT_SIGNALS:
-        occurrences = sum(int(r.get(key) or 0) for r in rows)
-        carrying = sum(1 for r in rows if int(r.get(key) or 0))
-        eligible = sum(1 for r in rows if key in (r.get("eligible") or []))
+        occurrences = sum(int(r.get(key) or 0) for r in claude_rows)
+        carrying = sum(1 for r in claude_rows if int(r.get(key) or 0))
+        eligible = sum(1 for r in claude_rows if key in (r.get("eligible") or []))
         flagged += occurrences
         tallies.append((occurrences, carrying, eligible, key, population, fix))
     for occurrences, carrying, eligible, key, population, fix in sorted(
             tallies, reverse=True):
         share = f"{carrying / eligible * 100:.1f}%" if eligible else "n/a"
-        top = concentration(rows, key)
+        top = concentration(claude_rows, key)
         top_text = "n/a" if top is None else f"{top:.0f}%"
         print(f"| {key} | {occurrences} | {carrying} | {eligible} {population} "
               f"| {share} | {top_text} | {'yes' if fix else 'no'} |")
@@ -1828,30 +1887,35 @@ def cmd_subagents(args):
           "tool use the operator declined, and one a permission rule declined. "
           "None of the three is an agent mistake.")
 
-    print("\n## How runs answered\n")
-    print("A run answered structurally if it handed a result back through a "
+    print("\nA run answered structurally if it handed a result back through a "
           "structured-result call at any point. Asking instead which record "
-          "came last put runs that had done exactly that into `text`.\n")
-    print("| ending | transcripts | share |")
-    print("|---|---|---|")
-    endings = Counter(r.get("ending") or "?" for r in rows)
-    for name in ENDINGS:
-        count = endings.get(name, 0)
-        print(f"| {name} - {ENDING_MEANING[name]} | {count} | "
-              f"{count / len(rows) * 100:.1f}% |")
-    no_answer = endings.get("unanswered", 0) + endings.get("silent", 0)
+          "came last put runs that had done exactly that into `text`.")
+
+    all_endings = Counter(r.get("ending") or "?" for r in rows)
+    no_answer = all_endings.get("unanswered", 0) + all_endings.get("silent", 0)
+    for harness, h_rows in (("claude", claude_rows), ("codex", codex_rows)):
+        if not h_rows:
+            continue
+        print(f"\n## How {harness} runs answered\n")
+        print("| ending | transcripts | share |")
+        print("|---|---|---|")
+        endings = Counter(r.get("ending") or "?" for r in h_rows)
+        for name in ENDINGS:
+            count = endings.get(name, 0)
+            print(f"| {name} - {ENDING_MEANING[name]} | {count} | "
+                  f"{count / len(h_rows) * 100:.1f}% |")
+        turns = sorted(int(r.get("turns") or 0) for r in h_rows)
+        print(f"\n## {harness} length\n\nturns: median "
+              f"{quantile(turns, 0.5)}, p90 {quantile(turns, 0.90)}, "
+              f"p95 {quantile(turns, 0.95)}, max {turns[-1]}.")
+        for threshold in (100, 150, 200):
+            print(f"  {sum(1 for t in turns if t >= threshold)} transcripts "
+                  f"at {threshold} turns or more")
+
     print(f"\nFailed to answer: {no_answer}. Answering through a "
           f"structured-result call is answering, and an interrupted run is the "
           f"caller's doing. Some of what is left is a transcript that had not "
           f"finished being written when the ledger was built.")
-
-    turns = sorted(int(r.get("turns") or 0) for r in rows)
-    print(f"\n## Length\n\nturns: median {quantile(turns, 0.5)}, "
-          f"p90 {quantile(turns, 0.90)}, p95 {quantile(turns, 0.95)}, "
-          f"max {turns[-1]}.")
-    for threshold in (100, 150, 200):
-        print(f"  {sum(1 for t in turns if t >= threshold)} transcripts at "
-              f"{threshold} turns or more")
     print("\nA distribution, not a failure count: no turn number in this "
           "corpus marks a boundary between a long job and a runaway one.")
 
@@ -1897,10 +1961,11 @@ def label_candidates():
     Main sessions only - the thresholds exist to rank sessions, and subagent
     transcripts are excluded from that ranking.
     """
+    projects = claude_projects_dir()
     fires, quiet, retries = [], [], []
-    for path in sorted(PROJECTS_DIR.rglob("*.jsonl")):
+    for path in sorted(projects.rglob("*.jsonl")):
         try:
-            rel = path.relative_to(PROJECTS_DIR).as_posix()
+            rel = path.relative_to(projects).as_posix()
         except ValueError:
             rel = path.name
         if "subagents/" in rel:
@@ -2100,8 +2165,9 @@ def cmd_label(args):
     refuse_inside_repo(path)
     if args.report:
         return report_labels(read_labels(path))
-    if not PROJECTS_DIR.is_dir():
-        print(f"no session directory at {PROJECTS_DIR}", file=sys.stderr)
+    projects = claude_projects_dir()
+    if not projects.is_dir():
+        print(f"no session directory at {projects}", file=sys.stderr)
         sys.exit(EXIT_CANNOT_RUN)
     if path.exists() and not args.resample:
         print(f"{path} exists - mark it, then run `label --report` "
@@ -2119,7 +2185,8 @@ def cmd_label(args):
             carried += 1
     write_labels(samples, path)
     print(f"pools: {len(fires)} firing, {len(quiet)} quiet, "
-          f"{len(retries)} retry candidates")
+          f"{len(retries)} retry candidates "
+          "(Claude transcripts only - classifier calibrated on Claude turns)")
     print(f"sampled {len(samples)} into {path}" +
           (f", {carried} marks carried over" if carried else ""))
     print('mark each line\'s "label": turns take one of '
@@ -2279,7 +2346,7 @@ def print_candidates():
         # Terminal only. A commit subject can name anything the operator was
         # working on, and this is why none of it is written to a file.
         print(f"| {date} | {count} | {ok} | {subjects[0][:56]} |")
-    print("\nThen: retro effect --since YYYY-MM-DD")
+    print("\nThen: retro effect --since YYYY-MM-DD [--harness codex|all]")
     print("Bear in mind the counters only see tool use, prompts, interrupts and "
           "permission changes. A rule about something else will not show up here "
           "however well it worked.")
@@ -2307,6 +2374,10 @@ def cmd_effect(args):
         lo = (cut - timedelta(days=args.days)).isoformat()
         hi = (cut + timedelta(days=args.days)).isoformat()
         rows = [r for r in rows if lo <= r["date"] <= hi]
+    if args.harness != "all":
+        rows = [r for r in rows if (r.get("harness") or "claude") == args.harness]
+    print(f"population: harness={args.harness}, main sessions only; "
+          f"subagent, automation and unknown rows are spend and excluded")
 
     before_rows = [r for r in rows if r["date"] < cut.isoformat()]
     after_rows = [r for r in rows if r["date"] >= cut.isoformat()]
@@ -2337,7 +2408,8 @@ def cmd_effect(args):
               "side. The numbers are printed because hiding them would be worse, "
               "but a handful of sessions swings any per-session rate by half.\n")
 
-    (b, _), (a, _) = totals(before), totals(after)
+    b, b_elig = totals(before)
+    a, a_elig = totals(after)
     # Two normalisations, because per session lies on its own. It moves whenever
     # sessions get longer or shorter: on the first real run of this command every
     # signal fell by half or more, INCLUDING turns and tokens, which is a change
@@ -2358,7 +2430,9 @@ def cmd_effect(args):
         if key in LEGACY_TURN_COUNTERS \
                 and not legacy_turn_labels_allow("decision_support"):
             continue
-        sb, sa = b[key] / len(before), a[key] / len(after)
+        if not b_elig[key] or not a_elig[key]:
+            continue
+        sb, sa = b[key] / b_elig[key], a[key] / a_elig[key]
         tb, ta = b[key] / turns_b * 100, a[key] / turns_a * 100
         if sb == 0 and sa == 0:
             continue
@@ -2425,6 +2499,11 @@ def main():
                                "dates the machine's own rule files changed")
     p_effect.add_argument("--days", type=int, default=0,
                           help="limit to this many days either side; 0 means all")
+    p_effect.add_argument("--harness", choices=("claude", "codex", "all"),
+                          default="claude",
+                          help="population to compare; defaults to claude "
+                               "because the rule-change dates this command "
+                               "anchors on come from Claude config history")
     p_effect.set_defaults(func=cmd_effect)
 
     p_rules = sub.add_parser("rules",
