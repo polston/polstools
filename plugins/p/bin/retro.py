@@ -51,6 +51,27 @@ from pathlib import Path
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
+
+
+def claude_projects_dir():
+    """The Claude transcript root, resolved at call time so tests can
+    inject it and so CLAUDE_CONFIG_DIR is honoured — retiring the
+    documented asymmetry with stopped-promises (spec D1.1)."""
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    return (Path(config) if config else HOME / ".claude") / "projects"
+
+
+def codex_sessions_dir():
+    home = os.environ.get("CODEX_HOME")
+    return (Path(home) if home else HOME / ".codex") / "sessions"
+
+
+def transcript_roots():
+    """(harness, root) pairs, Claude first: a file reachable from two
+    roots is owned by the first (spec D1.3)."""
+    return (("claude", claude_projects_dir()), ("codex", codex_sessions_dir()))
+
+
 WORK_DIR = Path(os.environ.get("RETRO_HOME", HOME / ".retro"))
 METRICS_FILE = WORK_DIR / "metrics.jsonl"
 STATE_FILE = WORK_DIR / "state.json"
@@ -702,8 +723,27 @@ def read_records(path):
 # separate counts, and they must sum to the number of files walked.
 MEASURED, NOT_TRANSCRIPT, UNREADABLE = "measured", "not-transcript", "unreadable"
 
+# Structural harness detection (spec D1.4). Every observed rollout opens
+# with session_meta, so record 1 decides in practice; the 20-record cap
+# guards a future leading sidecar. Claude transcripts never carry these
+# types in their first 20 records (0 of 2,362 measured), and anything
+# that is not a rollout falls through to measure(), whose whole-file
+# conversation test keeps deciding NOT_TRANSCRIPT exactly as before.
+ROLLOUT_TYPES = frozenset((
+    "session_meta", "response_item", "event_msg", "turn_context",
+    "world_state", "compacted", "inter_agent_communication_metadata"))
 
-def measure(path):
+
+def is_rollout(path):
+    for count, rec in enumerate(read_records(path)):
+        if isinstance(rec, dict) and rec.get("type") in ROLLOUT_TYPES:
+            return True
+        if count >= 19:
+            return False
+    return False
+
+
+def measure(path, harness="claude", root=None):
     """Reduce one transcript to a metrics row.
 
     Returns None for a file that read fine and holds no conversation. Raises
@@ -863,8 +903,9 @@ def measure(path):
     # Subagent transcripts live under <session>/subagents/ and carry the PARENT
     # session's id. Keying rows by session id would let them overwrite the
     # parent's row — one row per transcript, tagged, is what aggregates right.
+    base = root if root is not None else claude_projects_dir()
     try:
-        rel = path.relative_to(PROJECTS_DIR).as_posix()
+        rel = path.relative_to(base).as_posix()
     except ValueError:
         rel = path.name
 
@@ -911,12 +952,21 @@ def measure(path):
     return row
 
 
-def measure_outcome(path):
+def measure_codex(path, root):
+    """Implemented in the Codex-reducer task; a rollout is measured there.
+    Until then it is not a transcript this pipeline can reduce."""
+    return None
+
+
+def measure_outcome(path, harness, root):
     """One file's outcome: (MEASURED, row), (NOT_TRANSCRIPT, None) or
     (UNREADABLE, None). Never raises for an unreadable file - the thread pool
     in cmd_extract abandons its whole result stream on the first exception."""
     try:
-        row = measure(path)
+        if is_rollout(path):
+            row = measure_codex(path, root)
+        else:
+            row = measure(path, harness, root)
     except TranscriptUnreadable:
         return UNREADABLE, None
     return (MEASURED, row) if row is not None else (NOT_TRANSCRIPT, None)
@@ -946,9 +996,13 @@ def ensure_work_dir(what):
 
 def cmd_extract(args):
     ensure_work_dir(METRICS_FILE.name)
-    if not PROJECTS_DIR.is_dir():
-        print(f"no session directory at {PROJECTS_DIR}", file=sys.stderr)
+    roots = list(transcript_roots())
+    live = [(harness, root) for harness, root in roots if root.is_dir()]
+    if not live:
+        print("no session directory at any root: "
+              + ", ".join(str(root) for _, root in roots), file=sys.stderr)
         sys.exit(EXIT_CANNOT_RUN)
+    absent = [harness for harness, root in roots if not root.is_dir()]
 
     rebuild = args.rebuild
     rows = {}
@@ -966,11 +1020,21 @@ def cmd_extract(args):
             rows = {r["transcript"]: r for r in existing if "transcript" in r}
     state = {} if rebuild else load_state()
 
-    transcripts = sorted(PROJECTS_DIR.rglob("*.jsonl"))
+    candidates = {}
+    duplicates = 0
+    for harness, root in live:
+        for path in sorted(root.rglob("*.jsonl")):
+            key = str(path.resolve())
+            if key in candidates:
+                duplicates += 1
+                continue
+            candidates[key] = (path, harness, root)
+    transcripts = list(candidates.values())
+
     stale = []
     unchanged = 0
     unreadable = 0
-    for path in transcripts:
+    for path, harness, root in transcripts:
         try:
             stat = path.stat()
         except OSError:
@@ -983,7 +1047,7 @@ def cmd_extract(args):
         if state.get(str(path)) == fingerprint:
             unchanged += 1
             continue
-        stale.append((path, fingerprint))
+        stale.append((path, harness, root, fingerprint))
 
     # measure() shares no state, and the work is dominated by reading a
     # gigabyte off disk, so a thread pool converts most of the wall clock into
@@ -991,9 +1055,12 @@ def cmd_extract(args):
     # raced by the workers.
     _redaction_patterns()
     measured = not_transcripts = 0
+    measured_by_harness = Counter()
     with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
-        for (path, fingerprint), (outcome, row) in zip(
-                stale, pool.map(lambda item: measure_outcome(item[0]), stale)):
+        for (path, harness, root, fingerprint), (outcome, row) in zip(
+                stale, pool.map(
+                    lambda item: measure_outcome(item[0], item[1], item[2]),
+                    stale)):
             if outcome == UNREADABLE:
                 # Deliberately not fingerprinted. Recording one would retire
                 # the file until it changes, so a live transcript that was
@@ -1003,6 +1070,7 @@ def cmd_extract(args):
             if outcome == MEASURED:
                 rows[row["transcript"]] = row
                 measured += 1
+                measured_by_harness[row.get("harness") or harness] += 1
             else:
                 not_transcripts += 1
             state[str(path)] = fingerprint
@@ -1015,6 +1083,16 @@ def cmd_extract(args):
     print(f"transcripts: {len(transcripts)}  measured: {measured}  "
           f"unchanged: {unchanged}  not-transcripts: {not_transcripts}  "
           f"unreadable: {unreadable}")
+    for harness in ("claude", "codex"):
+        if harness in absent:
+            print(f"  {harness}: root absent")
+            continue
+        in_ledger = sum(1 for r in rows.values()
+                        if (r.get("harness") or "claude") == harness)
+        print(f"  {harness}: {measured_by_harness[harness]} measured, "
+              f"{in_ledger} in ledger")
+    if duplicates:
+        print(f"  duplicate paths skipped: {duplicates}")
     print(f"sessions in ledger: {len(rows)}")
     print(f"ledger: {METRICS_FILE}")
     return EXIT_FLAGGED if unreadable else EXIT_CLEAN
