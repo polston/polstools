@@ -1,6 +1,7 @@
 # Codex measurement ingestion — spec
 
-2026-08-27. Status: review round folded; awaiting fold confirmation.
+2026-08-27. Status: settled — round 1 (four concurrent lenses) and round 2
+(fold confirmation) both folded.
 
 Prior art, both read and bound here: `2026-08-19-plan-fix3-extra-roots.md` and
 `2026-08-20-plan-extra-roots-rebuild.md` designed multi-root extraction for
@@ -44,10 +45,11 @@ counts; no transcript content copied anywhere):
    per file; 3 files' metas disagree on `thread_source`. Every subagent
    rollout carries `parent_thread_id`; no other population does.
 3. `response_item.payload.type` values: `reasoning`, `message` (roles
-   `assistant`, `user`, `developer`), `custom_tool_call`(+`_output`),
-   `function_call`(+`_output`), `agent_message`, `tool_search_call`
-   (+`_output`). `exec` is 96.7% of `custom_tool_call` names and 74% of all
-   call items.
+   `assistant`, `user`, `developer`), `custom_tool_call`/
+   `custom_tool_call_output`, `function_call`/`function_call_output`,
+   `agent_message`, and `tool_search_call`/`tool_search_output` — the third
+   pair's output name drops `_call`. `exec` is 96.7% of `custom_tool_call`
+   names and 74% of all call items.
 4. `event_msg.payload.type` includes `token_count` (cumulative
    `info.total_token_usage`: `input_tokens`, `cached_input_tokens`,
    `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`,
@@ -55,11 +57,15 @@ counts; no transcript content copied anywhere):
    files), `task_complete`, `turn_aborted` (76 events across 35 files; also
    mirrored as a wrapper tag on 76 messages, so only the event form may be
    counted), `web_search_end` (1,032), `image_generation_end` (18).
-5. Of 11,077 user-role messages, 891 open with a harness wrapper tag; 11
+5. Of 11,078 user-role messages, 891 open with a harness wrapper tag; 11
    distinct tags were observed, the most common being `task-notification`
    (390), `environment_context` (149), `codex_internal_context` (130),
    `recommended_plugins` (113), `in-app-browser-context` (57), `skill` (29).
-   `retro.py`'s `MACHINE_PROMPT_OPENERS` already names three of them.
+   Three of the eleven tags — `codex_internal_context`,
+   `in-app-browser-context`, and one rare third — never appear bare; all 187
+   of their occurrences carry attributes (`<tag attr…>`), so a closed-bracket
+   literal cannot match them. `retro.py`'s `MACHINE_PROMPT_OPENERS` already
+   names three of the bare tags.
 6. `<skill>` wrapper blocks: 29 across 24 files, every one carrying a
    parsable inner `<name>`. The shipped source profile
    (`plugins/p/profiles/sources.json`) declares `skill_attribution`
@@ -95,14 +101,19 @@ counts; no transcript content copied anywhere):
 3. Candidate files are collected from all roots into one map keyed by
    `Path.resolve()`, Claude root first; a file reachable twice is measured
    once under the first root, and the summary prints the duplicate count.
-4. Harness detection is structural: read up to the first 20 parsed records;
-   any top-level `type` from the rollout set (`session_meta`,
-   `response_item`, `event_msg`, `turn_context`, `world_state`, `compacted`,
-   `inter_agent_communication_metadata`) marks a rollout; any from the Claude
-   set (`user`, `assistant`, `permission-mode`, `queue-operation`) marks a
-   Claude transcript; first match wins; neither means NOT_TRANSCRIPT. The
-   evaluation layer selects rollouts by filename glob; the two layers may
-   therefore disagree on corpus size, and EVALUATION.md says so (Lane C).
+4. Harness detection is structural and asymmetric: a file whose first 20
+   parsed records include a top-level `type` from the rollout set
+   (`session_meta`, `response_item`, `event_msg`, `turn_context`,
+   `world_state`, `compacted`, `inter_agent_communication_metadata`) is a
+   rollout — every one of 317 real rollouts is decided by record 1, and no
+   Claude transcript's first 20 records contain any of these (0 of 2,362).
+   Everything else falls through to `measure()`, whose whole-file
+   conversation test keeps deciding NOT_TRANSCRIPT exactly as today —
+   Claude transcripts open with a wide spread of sidecar types, and a
+   20-record Claude gate would newly drop 4 currently-measured files, which
+   this rule deliberately avoids. The evaluation layer selects rollouts by
+   filename glob; the two layers may therefore disagree on corpus size, and
+   `plugins/p/EVALUATION.md` says so (Lane C).
 5. `~/.codex/archived_sessions` is out of scope this changeset, stated here
    so its absence from the numbers is a decision, not an oversight.
 
@@ -122,8 +133,11 @@ New or changed columns:
    `unknown`. `unknown` and `automation` rows are excluded from every
    per-session rate and reported as their own spend lines; the `extract`
    summary prints the fallback and `unknown` counts so a new value surfaces
-   instead of being absorbed. The first `session_meta` record wins; the
-   summary counts files whose metas disagree on `thread_source`.
+   instead of being absorbed. On today's corpus the fallback is a forward
+   guard, not a live rule: every `parent_thread_id` file is already labelled
+   `subagent`, and all 50 absent-`thread_source` files fall outside the
+   30-day window. The first `session_meta` record wins; the summary counts
+   files whose metas disagree on `thread_source`.
    The evaluation layer's span schema keeps its own `is_subagent` field on
    purpose — it is a separate versioned contract with its own tests; the two
    are not unified in this changeset. `label_candidates` re-derives the
@@ -166,17 +180,17 @@ Counter mapping:
 | Counter | Codex source |
 |---|---|
 | `turns` | assistant `response_item` messages plus `function_call`, `custom_tool_call`, and `tool_search_call` items — the structural analogue of a Claude assistant record, which carries its tool calls inside itself. `turns` is still never compared across harnesses (D4.2) |
-| `user_prompts`, `correction_candidates`, `approval_turns` | user-role `response_item` messages whose first non-whitespace is not a machine-prompt opener and which are non-empty, classified by the shared classifier. The opener list is `MACHINE_PROMPT_OPENERS`, extended with the Codex tags from Grounding 5 — one shared, anchored list for both harnesses, with a test over the union. `developer`-role messages never count. `reasoning` items do not feed `prior_assistant_chars` (the operator never saw them); assistant messages do |
+| `user_prompts`, `correction_candidates`, `approval_turns` | user-role `response_item` messages whose first non-whitespace is not a machine-prompt opener and which are non-empty, classified by the shared classifier. The opener list is `MACHINE_PROMPT_OPENERS`, extended with the Codex tags from Grounding 5 — one shared, anchored list for both harnesses, with a test over the union. Tags that only appear with attributes enter the list as bracket-less prefixes (`"<codex_internal_context"`), since a closed-bracket literal matches none of their 187 occurrences; the bare tags keep the existing closed form so a person merely quoting a tag name mid-sentence still counts. `developer`-role messages never count. `reasoning` items do not feed `prior_assistant_chars` (the operator never saw them); assistant messages do |
 | `interrupts` | `turn_aborted` events only (the wrapper-tag mirror is excluded to avoid double-counting); 76 corpus events, so the mapping is observed, not assumed |
 | `tool_calls` | `function_call` + `custom_tool_call` + `tool_search_call` items, plus `web_search_end` and `image_generation_end` events (tool uses that leave no call item) |
-| `repeat_calls` | same (name, argument-signature) — the argument value is `json.loads`-parsed when it is a string (falling back to the raw string) and hashed through `signature()` so key order normalises as on the Claude side; `arguments` preferred over `input`. Polling primitives (`wait`, `wait_agent`, `list_agents`) and empty-argument calls are excluded — measured unfiltered, the spec's naive rule flags 14.5% of Codex calls against Claude's 1.05%, concentrated in polls; the implementation records its measured post-exclusion rate in a comment beside the rule, as `signature()` does for Claude |
+| `repeat_calls` | same (name, argument-signature) — the argument value is `json.loads`-parsed when it is a string (falling back to the raw string) and hashed through `signature()` so key order normalises as on the Claude side; `arguments` preferred over `input`. Polling primitives (`wait`, `wait_agent` — the polls present in the corpus) and empty-argument calls are excluded. Measured: the naive rule flags 14.50% of all-population Codex calls against Claude's 1.05% (main rows, all history; 0.67% over all rows); the exclusions take Codex to 9.88%, so the residual is real workload repetition, not just polling, and the number is recorded here rather than discovered during implementation |
 | `tool_errors`, `queued_prompts`, `permission_mode_changes` | ineligible (D2.5) |
 | `skill_runs`, `skills_used` | `<skill>` wrapper blocks; the name is the text of the first `<name>` element, trimmed, with `split(":")[-1]` applied as on the Claude side. 29 corpus events — a thin signal, labelled heuristic per Grounding 6 |
 | `tokens_in` | last cumulative `input_tokens` minus `cached_input_tokens`, clamped at 0, per the usage-accounting profile (Grounding 9), so the column means non-cache-read input on both harnesses |
 | `tokens_out` | `output_tokens + reasoning_output_tokens`, so visible and reasoning output are both spend |
 | `cache_read` | `cached_input_tokens` |
 | cumulative-reset handling | when a `token_count` total drops below its predecessor, the predecessor is banked and accumulation restarts; the row's value is bank + last (Grounding 4) |
-| `ending` | `text` when the last assistant message has prose; `interrupted` on `turn_aborted`; `unanswered` when a call item's `call_id` has no matching output (the same open-call mechanism as Claude — 4 corpus instances); else `silent`. `structured` cannot occur: rollouts have no structured-result tool |
+| `ending` | `text` when the last assistant message has prose; `interrupted` on `turn_aborted`; `unanswered` when a call item's `call_id` has no matching output record of its pair's output type — `tool_search_call` matches `tool_search_output` (2 corpus files, 3 unmatched ids); else `silent`. `structured` cannot occur: rollouts have no structured-result tool |
 | identity, date, duration | first `session_meta` + first/last record timestamps, fallbacks per D2.8 |
 | ignored record types | `reasoning` (except as noted), `turn_context`, `world_state`, `compacted` (except the flag), `inter_agent_communication_metadata`, `agent_message` items |
 
@@ -187,13 +201,14 @@ counts invocation blocks; the per-harness split keeps them apart.
 
 ### D4. Reporting
 
-1. Per-counter denominators: `totals()` also returns, per counter, the number
-   of rows for which that counter is not in `ineligible`. `cmd_pack`'s
-   per-session line and `cmd_effect`'s per-session column divide each counter
-   by its own eligible-row count; when a window contains rows ineligible for
-   a counter, the trend table marks that counter's line with the eligible
-   share (`N of M rows observable`). Nothing sums a counter over rows that
-   cannot observe it into a rate over rows that can.
+1. Per-counter denominators: `totals()` returns a pair of `Counter`s —
+   the sums as today, plus per-counter eligible-row counts — and its three
+   call sites unpack the pair. `cmd_pack`'s per-session line and
+   `cmd_effect`'s per-session column divide each counter by its own
+   eligible-row count; when a window contains rows ineligible for a counter,
+   the trend table marks that counter's line with the eligible share
+   (`N of M rows observable`). Nothing sums a counter over rows that cannot
+   observe it into a rate over rows that can.
 2. The pack's trend section prints one block per harness (same signal rows,
    that harness's sessions only) plus a single combined `sessions` line.
    Token and turn columns are never summed or compared across harnesses —
@@ -207,7 +222,10 @@ counts invocation blocks; the per-harness split keeps them apart.
    scoring function is a rubric-governance change with its own justification
    and is deliberately not smuggled in here. The pack states, in the window
    header, how many Codex sessions were measured but not rankable. The
-   `moments` machinery is untouched; no Codex moment is promised.
+   `moments` machinery is untouched; no Codex moment is promised. One guard
+   for the day the rubric gate opens: `cmd_pack` skips a ranked row whose
+   harness the moment reader cannot resolve, rather than printing a headed
+   session block with no evidence under it.
 4. `skills` prints fired counts per harness, and per-harness never-fired
    lists: `installed_skills()` gains per-harness roots ($CODEX_HOME `skills/`
    and plugin cache, plus `~/.agents/skills`), each dormant entry names the
@@ -220,7 +238,9 @@ counts invocation blocks; the per-harness split keeps them apart.
    empty, so including them would only pad denominators). The endings and
    length tables split by harness — Codex endings draw from a smaller set and
    `silent` means less there (D3), so one mixed denominator would report a
-   number belonging to neither.
+   number belonging to neither — and each per-harness table guards its empty
+   case (`quantile` and the length line both raise on an empty list; today's
+   single `if not rows` guard no longer covers them).
 6. Self-exclusion: `reporting_session_ids` reads `CLAUDE_CODE_SESSION_ID`,
    `CODEX_SESSION_ID`, and `CODEX_THREAD_ID` (the same tuple as
    `plugins/p/bin/format-ctl`; a comment in each names the other), and
@@ -251,8 +271,8 @@ counts invocation blocks; the per-harness split keeps them apart.
    `parse_ts`'s contract (it already accepts every rollout timestamp).
 3. The evaluation layer and its adapters: untouched. Its Codex adapter
    excludes non-`user` threads, so eval reports and packs will disagree on
-   corpus size by construction; EVALUATION.md's boundary note says so
-   (Lane C).
+   corpus size by construction; `plugins/p/EVALUATION.md`'s boundary note
+   says so (Lane C).
 4. Label sampling (`cmd_label`): pools stay Claude-only — the candidate
    classifier's precision/recall was calibrated on Claude turns. The pools
    line gains the suffix `(Claude transcripts only — classifier calibrated
@@ -265,7 +285,8 @@ counts invocation blocks; the per-harness split keeps them apart.
 1. `retro.py`'s own module docstring — harness wording, the exit-2 line, the
    ledger description, the corpus-size figure — is Lane A's, since Lane A
    owns the file.
-2. README corpus wording; EVALUATION.md boundary note (D5.3).
+2. `plugins/p/EVALUATION.md` boundary note (D5.3). (The root README carries
+   no corpus wording — checked, nothing to edit there.)
 3. `finding-friction-in-recent-sessions/SKILL.md`: the reading-the-signals
    table gains the per-harness eligibility caveat (which counters a Codex
    row cannot observe), named here explicitly so Lane C's sweep reaches it.
@@ -298,8 +319,10 @@ counts invocation blocks; the per-harness split keeps them apart.
 4. Local-only end-to-end (CI has no transcripts): `extract` with `RETRO_HOME`
    pointed at a scratch directory reports ≥200 Codex transcripts measured
    (317 structural rollouts exist; the measured criterion is at least one
-   `response_item` message record); `skills --days 30` prints the
-   per-harness split. These are the goal's evidence gates.
+   `response_item` message record) and a nonzero Codex `main` population in
+   its per-harness summary — the count alone cannot fail, the population
+   split can; `skills --days 30` prints the per-harness split. These are the
+   goal's evidence gates.
 
 ## Parallelization
 
@@ -308,13 +331,19 @@ counts invocation blocks; the per-harness split keeps them apart.
 1. Lane B first, Claude characterisation slice (Verification 1): must land
    before Lane A's rename so the rename has a regression net.
 2. Lane A (serial internally): `retro.py` — roots, schema 7, `measure_codex`,
-   reporting, module docstring, the three `is_subagent` call sites.
-   Depends on Lane B's characterisation slice.
+   reporting, module docstring, and the four `is_subagent` occurrences
+   across three functions (the row writer, `split_population`,
+   `cmd_subagents`). Depends on Lane B's characterisation slice.
 3. Lane B second slice: rollout fixtures and Codex-path tests (Verification
    2), written against this spec's row contract; file-disjoint from Lane A
    until integration.
 4. Lane C: docs per D6.2-5 — README, EVALUATION.md, two skill files, two
    docstring sentences. File-disjoint from Lane A.
-5. Lane D: release metadata — version bump to 1.10.0 everywhere `p-validate`
-   requires it to agree (both harness manifests and the marketplace
-   entries). File-disjoint from all lanes.
+5. Lane D: release metadata — version bump to 1.10.0 in the three files that
+   carry one (`plugins/p/.claude-plugin/plugin.json`,
+   `plugins/p/.codex-plugin/plugin.json`, `.claude-plugin/marketplace.json`;
+   the universal marketplace entry carries none) plus
+   `plugins/p/tests/test_universal_plugin.py`, which pins the literal twice
+   and in a test method name — that test, not `p-validate`, is the agreement
+   gate (`p-validate` checks presence and semver only). File-disjoint from
+   the other lanes, including Lane B's new test modules.
