@@ -162,7 +162,33 @@ def _find_executable(name):
     override = os.environ.get("P_UPDATE_" + name.upper())
     if override:
         return override if Path(override).is_file() else None
-    return shutil.which(name)
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.name != "nt":
+        candidate = Path.home() / ".local" / "bin" / name
+        return str(candidate) if candidate.is_file() else None
+    return None
+
+
+def update_agy(runner, plugin_root, executable="agy"):
+    runner([executable, "plugin", "install", str(plugin_root)])
+
+
+def _agy_has_p(executable):
+    try:
+        completed = subprocess.run(
+            [executable, "plugin", "list"],
+            text=True, encoding="utf-8", capture_output=True, check=False,
+        )
+        out = completed.stdout.strip()
+        if not out or out == "No imported plugins.":
+            return False
+        data = json.loads(out)
+        imports = data.get("imports") or []
+        return any(isinstance(x, dict) and x.get("name") == "p" for x in imports)
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        return False
 
 
 def _new_doctor_root(claude_item, codex_item):
@@ -209,8 +235,9 @@ def main(argv=None):
     parser.parse_args(argv)
     claude = _find_executable("claude")
     codex = _find_executable("codex")
-    if not claude and not codex:
-        print("p update: neither Claude nor Codex CLI is available", file=sys.stderr)
+    agy = _find_executable("agy")
+    if not claude and not codex and not agy:
+        print("p update: no supported harness CLI is available", file=sys.stderr)
         return 2
 
     try:
@@ -236,6 +263,10 @@ def main(argv=None):
                 codex,
             )
             print("PASS Codex p update with live-session cache preservation")
+
+        if agy and _agy_has_p(agy):
+            update_agy(run_checked, Path(__file__).resolve().parent.parent, agy)
+            print("PASS Antigravity p update")
 
         version = _verify_versions(claude, codex)
         current_claude = (

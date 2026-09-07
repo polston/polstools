@@ -297,11 +297,16 @@ class SchemaAndPackagingTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        antigravity_manifest = json.loads(
+            (PLUGIN_ROOT / "plugin.json").read_text(encoding="utf-8")
+        )
         entry = next(item for item in marketplace["plugins"] if item["name"] == "p")
         self.assertEqual("1.10.0", entry["version"])
         self.assertEqual("1.10.0", manifest["version"])
         self.assertEqual("1.10.0", codex_manifest["version"])
+        self.assertEqual("1.10.0", antigravity_manifest["version"])
         self.assertEqual(manifest["description"], codex_manifest["description"])
+        self.assertEqual(manifest["description"], antigravity_manifest["description"])
 
 
 if __name__ == "__main__":

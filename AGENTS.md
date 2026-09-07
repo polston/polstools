@@ -42,9 +42,10 @@ substitution is silent, and nobody re-reads metadata.
 
 - `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json` list
   the same `p` source for Claude and universal Codex packaging respectively.
-- `plugins/p/.claude-plugin/plugin.json` and
-  `plugins/p/.codex-plugin/plugin.json` are the harness manifests; release
-  metadata must stay in step across both and the Claude marketplace entry.
+- `plugins/p/.claude-plugin/plugin.json`,
+  `plugins/p/.codex-plugin/plugin.json`, and `plugins/p/plugin.json` are the
+  harness manifests for Claude, Codex, and Antigravity; release metadata must
+  stay in step across all three and the marketplace entries.
 - `plugins/p/skills/<skill>/SKILL.md` — one directory per canonical skill.
 - `plugins/p/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
   dependencies, no compiled artifacts.

@@ -83,7 +83,7 @@ carrying a number around.
 
 A run with no verdicts file is an unfinished measurement. It exits 1 and says so.
 
-## Running it on another machine
+## Running it on another machine or harness
 
 Transcript roots are resolved highest-precedence-first:
 
@@ -91,6 +91,13 @@ Transcript roots are resolved highest-precedence-first:
 2. `STOPPED_PROMISES_ROOTS`, separated by the platform path separator
 3. `$CLAUDE_CONFIG_DIR/projects`
 4. `~/.claude/projects`
+
+To measure transcripts from other harnesses or locations, supply `--root` or `STOPPED_PROMISES_ROOTS`:
+- **Claude Code**: `~/.claude/projects/`
+- **Codex**: `~/.codex/sessions/`
+- **Antigravity (`agy`)**: `~/.gemini/antigravity-cli/brain/` (subagents and main conversations each store logs under `<conversation-id>/.system_generated/logs/transcript.jsonl`). Conversation DBs sit under `~/.gemini/antigravity-cli/conversations/`.
+
+**Local retention**: Antigravity session transcripts and conversation databases are preserved locally indefinitely. Unlike environments with automated pruning or expiration workers, `agy` has no automated eviction; historical sessions remain intact indefinitely (1+ years) unless manually deleted.
 
 A value that is empty or only whitespace counts as unset, so a misconfigured
 shell cannot redirect the walk. Both `.jsonl` and `.jsonl.gz` are read. The

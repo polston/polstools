@@ -20,6 +20,19 @@ The failure mode this replaces is retrospection from memory: recalling the
 annoyances that happened to be recent or loud, and missing the one that cost the
 most turns. What you remember and what the numbers say are routinely different.
 
+## Session corpus locations and retention
+
+Session transcripts and event logs reside under harness-specific paths:
+
+- **Claude Code**: `~/.claude/projects/<project-slug>/<session-id>.jsonl`
+- **Codex**: `~/.codex/sessions/**/rollout-*.jsonl`
+- **Antigravity (`agy`)**:
+  - Transcripts: `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` (and `transcript_full.jsonl`)
+  - Session databases: `~/.gemini/antigravity-cli/conversations/<conversation-id>.db` and `conversation_summaries.db`
+  - Prompt history: `~/.gemini/antigravity-cli/history.jsonl`
+
+**Local retention**: Antigravity maintains its local session history indefinitely on disk. There is no automated background expiration worker, TTL eviction, or age-based pruning; sessions remain preserved for 1+ years as long as the user directory is kept.
+
 ## The procedure
 
 **1. Measure.** Incremental: only transcripts whose size or mtime moved are

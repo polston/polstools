@@ -44,6 +44,12 @@ while [ $# -gt 0 ]; do
 done
 
 command -v git >/dev/null 2>&1 || { echo "git not found" >&2; exit 2; }
+if ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+  # If ~/.gitconfig is inaccessible (e.g. inside a restricted sandbox), isolate global config
+  if [ -z "${GIT_CONFIG_GLOBAL:-}" ]; then
+    export GIT_CONFIG_GLOBAL=/dev/null
+  fi
+fi
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || {
   echo "not a git repository: $REPO" >&2; exit 2; }
 

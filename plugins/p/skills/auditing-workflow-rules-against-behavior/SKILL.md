@@ -23,6 +23,19 @@ these are visible in measured history.
 The point is deletion. A shorter instruction file that is entirely load-bearing
 beats a long one where the reader cannot tell.
 
+## Session history sources and retention
+
+Behavioral evidence is drawn from the active harness's session history:
+
+- **Claude Code**: `~/.claude/projects/<project-slug>/<session-id>.jsonl`
+- **Codex**: `~/.codex/sessions/**/rollout-*.jsonl`
+- **Antigravity (`agy`)**:
+  - Transcripts: `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`
+  - Conversation databases: `~/.gemini/antigravity-cli/conversations/<conversation-id>.db` and `conversation_summaries.db`
+  - Prompt history: `~/.gemini/antigravity-cli/history.jsonl`
+
+**Local retention**: Antigravity retains all session logs and SQLite databases locally without automated TTL eviction or background purging. Historical records persist indefinitely (spanning 1+ years) unless explicitly pruned by the user.
+
 ## The procedure
 
 **1. Measure and list skill firing.**

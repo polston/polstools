@@ -40,6 +40,11 @@ and retries that file on the next run.
 Take the top signals from the pack. If nothing is elevated, stop and report that
 — an empty scout is a valid result and a cheap one.
 
+Friction evidence across harnesses is found in their respective session corpora:
+- **Claude Code**: `~/.claude/projects/`
+- **Codex**: `~/.codex/sessions/`
+- **Antigravity (`agy`)**: `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` (and `~/.gemini/antigravity-cli/conversations/<conversation-id>.db`). Antigravity maintains its conversation history locally indefinitely with no automated TTL pruning.
+
 **2. Turn each friction into a search that describes the problem.** Search the
 symptom and its consequence, not a guessed product category. The category is what
 you are trying to discover; assuming it up front narrows the search to what you

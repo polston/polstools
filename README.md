@@ -22,13 +22,19 @@ codex plugin marketplace add polston/polstools
 codex plugin add p@polstools
 ```
 
+### Antigravity (`agy`)
+
+```sh
+agy plugin install ./plugins/p
+```
+
 Start a new session after installing or changing the plugin. Skills may trigger
-from their descriptions; invoke one explicitly as `/p:<skill>` in Claude Code
-or `$p:<skill>` in Codex.
+from their descriptions; invoke one explicitly as `/p:<skill>` in Claude Code,
+`$p:<skill>` in Codex, or `/<skill>` in Antigravity.
 
 ## Diagnose
 
-Run `/p:doctor` in Claude Code or `$p:doctor` in Codex. From a development
+Run `/p:doctor` in Claude Code, `$p:doctor` in Codex, or `/doctor` in Antigravity. From a development
 checkout, compare the live installations with that checkout directly:
 
 ```sh

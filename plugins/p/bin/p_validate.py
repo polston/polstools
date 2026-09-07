@@ -166,6 +166,11 @@ def validate_package(plugin_root):
         "universal plugin manifest",
         errors,
     )
+    agy = _read_json(
+        plugin_root / "plugin.json",
+        "Antigravity plugin manifest",
+        errors,
+    )
     if claude is not None:
         for field in ("name", "version", "description"):
             if not _non_empty(claude.get(field)):
@@ -201,10 +206,21 @@ def validate_package(plugin_root):
                 and all(_non_empty(item) for item in prompt)
             ):
                 errors.append("universal plugin interface.defaultPrompt must be non-empty")
-    if claude is not None and codex is not None:
+    if agy is not None:
         for field in ("name", "version", "description"):
-            if claude.get(field) != codex.get(field):
-                errors.append("Claude and universal plugin %s differ" % field)
+            if not _non_empty(agy.get(field)):
+                errors.append("Antigravity plugin manifest field %s must be non-empty" % field)
+        if not SEMVER_RE.fullmatch(str(agy.get("version", ""))):
+            errors.append("Antigravity plugin version must be strict semver")
+        author = agy.get("author")
+        if not isinstance(author, dict) or not _non_empty(author.get("name")):
+            errors.append("Antigravity plugin author.name must be non-empty")
+    manifests = [("Claude", claude), ("universal", codex), ("Antigravity", agy)]
+    for field in ("name", "version", "description"):
+        values = [(label, m.get(field)) for label, m in manifests if m is not None]
+        if len({v for _, v in values}) > 1:
+            differs = ", ".join("%s (%s)" % (l, v) for l, v in values)
+            errors.append("Plugin manifests differ for %s: %s" % (field, differs))
 
     skills_root = plugin_root / "skills"
     skill_ids = set()
@@ -346,6 +362,24 @@ def smoke_installed_copy(plugin_root, label):
             )
             if result.returncode != 0:
                 errors.append("installed-copy smoke command failed")
+        if label.lower() == "antigravity":
+            agy_bin = shutil.which("agy")
+            if not agy_bin and os.name != "nt":
+                candidate = Path.home() / ".local" / "bin" / "agy"
+                if candidate.is_file():
+                    agy_bin = str(candidate)
+            if agy_bin:
+                try:
+                    agy_res = subprocess.run(
+                        [agy_bin, "plugin", "validate", str(copy_root)],
+                        text=True,
+                        encoding="utf-8",
+                        capture_output=True,
+                    )
+                    if agy_res.returncode != 0:
+                        errors.append("agy plugin validate failed")
+                except OSError:
+                    pass
         return errors
 
 
@@ -364,6 +398,7 @@ def main():
             _report("source package", validate_repository()),
             _report("Claude installed copy", smoke_installed_copy(PLUGIN_ROOT, "Claude")),
             _report("Codex installed copy", smoke_installed_copy(PLUGIN_ROOT, "Codex")),
+            _report("Antigravity installed copy", smoke_installed_copy(PLUGIN_ROOT, "Antigravity")),
         ]
     except (OSError, UnicodeError, json.JSONDecodeError, subprocess.SubprocessError):
         print("ERROR plugin validation could not run", file=sys.stderr)

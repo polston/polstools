@@ -49,7 +49,10 @@ available.
 
 There is not yet one cross-harness history parser. State which harness produced
 each denominator and treat a small or inferred cohort as illustrative rather
-than general evidence.
+than general evidence:
+- **Claude Code**: `~/.claude/projects/<project-slug>/<session-id>.jsonl`
+- **Codex**: `~/.codex/sessions/**/rollout-*.jsonl`
+- **Antigravity (`agy`)**: `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` (and `~/.gemini/antigravity-cli/conversations/<conversation-id>.db`). Antigravity maintains its local session transcripts indefinitely without background eviction or TTL expiration.
 
 ## Repairing — committed state is canonical
 

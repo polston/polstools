@@ -24,12 +24,16 @@ class RepoPrivacyAuditTests(unittest.TestCase):
         return local_part + "@" + "example" + ".test"
 
     def run_git(self, *args):
+        env = dict(os.environ)
+        env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
         return subprocess.run(
             ["git", *args],
             cwd=self.repo,
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         )
 
     def commit(self, message):

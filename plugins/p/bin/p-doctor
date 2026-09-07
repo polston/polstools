@@ -105,6 +105,29 @@ def package_metadata_checks(plugin_root=PLUGIN_ROOT):
             else "universal metadata version or description differs from Claude"
         ),
     ))
+    agy_path = root / "plugin.json"
+    if agy_path.is_file():
+        try:
+            agy = _read_plugin_manifest(agy_path)
+            matches_agy = all(
+                agy.get(field) == claude.get(field)
+                for field in ("name", "version", "description")
+            )
+            checks.append(Check(
+                "package.antigravity_manifest",
+                "PASS" if matches_agy else "FAIL",
+                (
+                    "Antigravity metadata matches the Claude package"
+                    if matches_agy
+                    else "Antigravity metadata version or description differs from Claude"
+                ),
+            ))
+        except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
+            checks.append(Check(
+                "package.antigravity_manifest",
+                "ERROR",
+                "the Antigravity plugin manifest is malformed",
+            ))
     return checks
 
 
@@ -159,6 +182,46 @@ def normalize_codex_plugins(payload):
     return result
 
 
+def normalize_agy_plugins(payload):
+    if not isinstance(payload, dict) or not isinstance(payload.get("imports"), list):
+        return []
+    result = []
+    config_path = Path.home() / ".gemini" / "config" / "config.json"
+    enabled_map = {}
+    if config_path.is_file():
+        try:
+            with config_path.open(encoding="utf-8") as handle:
+                cfg = json.load(handle)
+            enabled_map = cfg.get("plugins") or {}
+        except (OSError, ValueError):
+            pass
+    for item in payload["imports"]:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or ""
+        root = Path.home() / ".gemini" / "config" / "plugins" / name
+        version = ""
+        manifest_path = root / "plugin.json"
+        if manifest_path.is_file():
+            try:
+                with manifest_path.open(encoding="utf-8") as handle:
+                    mdata = json.load(handle)
+                version = mdata.get("version") or ""
+            except (OSError, ValueError):
+                pass
+        enabled = True
+        if name in enabled_map and isinstance(enabled_map[name], dict):
+            enabled = enabled_map[name].get("enabled", True)
+        result.append({
+            "id": PLUGIN_ID if name == "p" else (name + "@polstools"),
+            "version": version,
+            "enabled": enabled,
+            "root": str(root) if root.is_dir() else "",
+            "scope": "user",
+        })
+    return result
+
+
 def _scope(value):
     return value if value in {"user", "project", "local", "managed"} else "user"
 
@@ -173,8 +236,10 @@ def _remove_fix(harness, plugin_ids, scope="user"):
             "`claude plugin uninstall %s --scope %s`" % (item, _scope(scope))
             for item in plugin_ids
         ]
-    else:
+    elif harness == "codex":
         commands = ["`codex plugin remove %s`" % item for item in plugin_ids]
+    else:
+        commands = ["`agy plugin uninstall %s`" % item for item in plugin_ids]
     return "Run " + ", then ".join(commands) + "."
 
 
@@ -441,31 +506,46 @@ def collect(repo_root=None):
     checks = package_metadata_checks()
     installed_by_harness = {}
 
-    for harness in ("claude", "codex"):
+    for harness in ("claude", "codex", "agy"):
         executable = _find_executable(harness)
+        harness_label = "AGY" if harness == "agy" else harness.capitalize()
         if not executable:
             checks.append(Check(
                 harness + ".cli", "SKIP",
-                "%s CLI is unavailable" % harness.capitalize(),
+                "%s CLI is unavailable" % harness_label,
             ))
             installed_by_harness[harness] = []
             continue
         try:
-            plugin_payload = _run_json(executable, ["plugin", "list", "--json"])
-            market_payload = _run_json(
-                executable, ["plugin", "marketplace", "list", "--json"]
-            )
-            plugins = (
-                normalize_claude_plugins(plugin_payload)
-                if harness == "claude" else normalize_codex_plugins(plugin_payload)
-            )
-            local_version = _local_expected_version(harness, market_payload)
-        except (OSError, RuntimeError, TypeError, ValueError):
+            if harness == "agy":
+                completed = subprocess.run(
+                    [executable, "plugin", "list"],
+                    text=True, encoding="utf-8", capture_output=True, check=False,
+                )
+                out = completed.stdout.strip()
+                if not out or out == "No imported plugins.":
+                    plugin_payload = {"imports": []}
+                else:
+                    plugin_payload = json.loads(out)
+                plugins = normalize_agy_plugins(plugin_payload)
+                local_version = None
+            else:
+                plugin_payload = _run_json(executable, ["plugin", "list", "--json"])
+                market_payload = _run_json(
+                    executable, ["plugin", "marketplace", "list", "--json"]
+                )
+                plugins = (
+                    normalize_claude_plugins(plugin_payload)
+                    if harness == "claude" else normalize_codex_plugins(plugin_payload)
+                )
+                local_version = _local_expected_version(harness, market_payload)
+        except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
+            flag = "" if harness == "agy" else " --json"
             checks.append(Check(
                 harness + ".query", "ERROR",
-                "%s plugin state could not be queried" % harness.capitalize(),
-                "Run `%s plugin list --json` directly, repair that error, then rerun p doctor."
-                % harness,
+                "%s plugin state could not be queried" % harness_label,
+                "Run `%s plugin list%s` directly, repair that error, then rerun p doctor."
+                % (harness, flag),
             ))
             installed_by_harness[harness] = []
             continue
@@ -474,7 +554,7 @@ def collect(repo_root=None):
         checks.extend(evaluate_harness(harness, plugins, expected))
         installed = [item for item in plugins if item.get("id") == PLUGIN_ID]
         installed_by_harness[harness] = installed
-        if len(installed) == 1 and installed[0].get("enabled"):
+        if harness in ("claude", "codex") and len(installed) == 1 and installed[0].get("enabled"):
             root = installed[0].get("root")
             if root:
                 checks.extend(probe_plugin_hooks(harness, root))
@@ -492,7 +572,7 @@ def collect(repo_root=None):
     if len(versions) > 1:
         checks.append(Check(
             "cross_harness.version", "FAIL",
-            "Claude and Codex load different p versions",
+            "installed harnesses load different p versions",
             "Run p's `p-update` guard, then start new sessions.",
         ))
     elif versions:
