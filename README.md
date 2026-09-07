@@ -24,6 +24,12 @@ codex plugin add p@polstools
 
 ### Antigravity (`agy`)
 
+From GitHub:
+```sh
+agy plugin install https://github.com/polston/polstools/tree/main/plugins/p
+```
+
+Or from a local checkout:
 ```sh
 agy plugin install ./plugins/p
 ```
