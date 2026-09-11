@@ -25,6 +25,7 @@ def _message_text(payload):
 
 class CodexAdapter(AdapterBase):
     source = "codex"
+    adapter_version = 2
 
     def __init__(self, id_salt: bytes, excluded_session_ids=None,
                  handoff_tools=None, capabilities=None):

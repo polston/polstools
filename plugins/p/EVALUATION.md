@@ -117,6 +117,26 @@ requires exactly one row per source and paired case, matching task family,
 difficulty, cache treatment, accounting profile, and source accounting version.
 It does not run or authorize a paired experiment.
 
+## Completion and coverage
+
+`source_completion_rate` and `input_tokens_per_source_completion` describe
+source status and its observable input usage. A completed reply can leave the
+requested task unfinished. Neither metric establishes successful delivery.
+
+Verified-outcome and cost-per-verified-outcome scorer version 2 require
+contract-bound verification. Current adapters do not capture that evidence,
+so these scorers abstain even on historical snapshots that advertised an
+`outcomes` capability. No arbitrary normalized attribute or task-complete
+message supplies the missing verification. Historical version 1 scores used a
+source-completion proxy and must not be compared as verified delivery.
+
+Report schema version 2 preserves requested sources with zero included traces,
+separates included main and child populations, and carries observed snapshot
+timestamps and exclusion counts. These bounds do not prove tasks are closed.
+Re-extract into a new external work directory to capture changed capability
+declarations; preserve old snapshots and their provenance unchanged. Missing
+attribution is not evidence of a missed trigger or an unused skill.
+
 ## Privacy boundary
 
 Set `RETRO_HOME` to a directory outside every Git repository. Normalized traces
@@ -137,6 +157,44 @@ provenance. The review generator suppresses an unrelated proposal when that
 rubric has not earned `decision_support`, while scorer-validation proposals
 remain visible. Resolved proposal statuses remain recorded but leave the active
 ranking.
+
+## Follow implemented proposals into use
+
+The `reviewing-improvement-effects` skill registers or recovers one reversible
+pilot using the existing proposal identity and named evidence index. Its private
+record binds activation, task family, baseline and follow-up, owner, review
+trigger, quality constraints, rollback, disposition, and next action. The six
+observation signals keep response completion, verified delivery, later use,
+reopened work, parent rework, and user interventions distinct. Missing evidence
+remains null, including when the implementation is complete.
+
+Use the skill's `references/record-template.json` and `references/record-format.md`.
+Every record and referenced artifact remains outside repositories. The checker
+reuses the proposal evidence resolver, verifies artifact fingerprints and the
+selected proposal identity, checks declared comparison and activation metadata,
+and applies rubric decision-use gates:
+
+```text
+<python> <plugin-root>/skills/reviewing-improvement-effects/scripts/check_record.py \
+  --record <RETRO_HOME>/proposals/<pilot>/effect-record.json \
+  --evidence-index <RETRO_HOME>/proposals/<pilot>/evidence-index.json
+```
+
+Exit 0 means checked bindings and declared prerequisites; exit 1 preserves
+evidence gaps or rubric restrictions; exit 2 means invalid input or links. The
+checker does not validate the truth of an authored observation, infer causality,
+or apply a disposition. The skill reviews the actual evidence and records keep,
+revise, revert, or insufficient evidence with a concrete next action. A directly
+observed quality regression can justify a narrow rollback even while broader
+effects remain unknown.
+
+The older `retro.py effect` report is a Claude main-session before/after lens.
+Different task or source populations and absent activation provenance prevent
+an effect claim, even when token use or error counts fall. A completed local
+pilot registration with no future observations has an insufficient-evidence
+review; producing it does not prove adoption or benefit. The skill's cadence
+guide connects later reviews to the existing friction, rule, stopped-promises,
+format, agent-contract, adequacy-review, and tool-scouting diagnostics.
 
 ## Reproducible commands
 

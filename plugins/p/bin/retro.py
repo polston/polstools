@@ -1161,6 +1161,9 @@ def cmd_pack(args):
     lines = [f"# Evidence pack — last {args.days} days",
              f"Window: {start} to {now}. Sessions: {len(main)} "
              f"(prior window: {len(prior_main)}).", "",
+             "Source: Claude only; Codex and Antigravity are not measured by "
+             "this command. Snapshot grouped by session start date; sessions "
+             "may still be active. Rows without a date are excluded.", "",
              "## Trends", "",
              "Main sessions only. Subagent transcripts are spend and are "
              "reported under the table — every rate here divides one "
@@ -1245,6 +1248,11 @@ def cmd_skills(args):
     installed = installed_skills()
     window = f"last {args.days} days" if args.days else "all history"
     print(f"# Skill firing - {window}, {len(rows)} transcripts\n")
+    main, sub = split_population(rows)
+    print(f"Source: Claude only; main {len(main)}, subagent {len(sub)}. "
+          "These populations are counted together below, not compared.")
+    print("Inventory includes cached installations, not proof of active skills. "
+          "Absent attribution and missed opportunities are not observable.\n")
     print("## Fired")
     for name, count in used.most_common():
         # Names with no SKILL.md on disk are harness built-ins (/simplify,
@@ -1252,7 +1260,7 @@ def cmd_skills(args):
         mark = "" if name in installed else "   (built-in command, or renamed)"
         print(f"  {count:5d}  {name}{mark}")
     dormant = sorted(installed - set(used))
-    print(f"\n## Never fired ({len(dormant)} of {len(installed)} installed)")
+    print(f"\n## No observed attribution ({len(dormant)} of {len(installed)} inventoried)")
     for name in dormant:
         print(f"         {name}")
     return EXIT_FLAGGED if dormant else EXIT_CLEAN
@@ -1928,6 +1936,8 @@ def cmd_effect(args):
 
     span = f", within {args.days} days either side" if args.days else ""
     print(f"# Effect around {cut}{span}\n")
+    print("Claude main-session before/after snapshot; task families and activation "
+          "are not matched. Trends alone do not establish an effect.\n")
     print(f"Before: {len(before)} sessions, {min((r['date'] for r in before), default='-')} "
           f"to {max((r['date'] for r in before), default='-')}")
     print(f"After:  {len(after)} sessions, {min((r['date'] for r in after), default='-')} "
@@ -1949,8 +1959,8 @@ def cmd_effect(args):
     # signal fell by half or more, INCLUDING turns and tokens, which is a change
     # in how the work was done rather than an effect of any edit. Per hundred
     # turns holds session length still, so a signal that moves there moved
-    # relative to the work. When the two disagree, the second answers the
-    # question and the first is telling you sessions changed shape.
+    # relative to turns. Neither normalization controls task mix, activation,
+    # quality, or follow-up; disagreement is a reason to inspect the cohorts.
     turns_b, turns_a = max(b["turns"], 1), max(a["turns"], 1)
     print("Main-session rows only, one population throughout.\n")
     if not legacy_turn_labels_allow("decision_support"):

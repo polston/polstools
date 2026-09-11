@@ -92,12 +92,11 @@ Transcript roots are resolved highest-precedence-first:
 3. `$CLAUDE_CONFIG_DIR/projects`
 4. `~/.claude/projects`
 
-To measure transcripts from other harnesses or locations, supply `--root` or `STOPPED_PROMISES_ROOTS`:
-- **Claude Code**: `~/.claude/projects/`
-- **Codex**: `~/.codex/sessions/`
-- **Antigravity (`agy`)**: `~/.gemini/antigravity-cli/brain/` (subagents and main conversations each store logs under `<conversation-id>/.system_generated/logs/transcript.jsonl`). Conversation DBs sit under `~/.gemini/antigravity-cli/conversations/`.
-
-**Local retention**: Antigravity session transcripts and conversation databases are preserved locally indefinitely. Unlike environments with automated pruning or expiration workers, `agy` has no automated eviction; historical sessions remain intact indefinitely (1+ years) unless manually deleted.
+The parser measures Claude-format transcripts. Extra roots are supported only
+when their record schema is compatible. Codex and Antigravity directories do
+not become supported by passing `--root`: unknown formats are counted as
+unsupported. A mixed corpus reports partial coverage; no supported transcripts
+in the window is a cannot-run result, never a clean zero.
 
 A value that is empty or only whitespace counts as unset, so a misconfigured
 shell cannot redirect the walk. Both `.jsonl` and `.jsonl.gz` are read. The
@@ -106,7 +105,7 @@ refuses to write it inside a git work tree — it is the only file carrying
 message text, and it carries it redacted.
 
 Exit codes follow the other scripts here: `0` every candidate has a verdict,
-`1` some are unreviewed, `2` could not run.
+`1` some are unreviewed or coverage is partial, `2` could not run.
 
 ## Red flags
 

@@ -696,6 +696,9 @@ def _session_in_window(records, since, until):
 def collect(roots, since, until):
     census = {"roots": len(roots), "files_seen": 0, "files_unreadable": 0,
               "files_empty": 0, "files_outside_window": 0, "files_measured": 0,
+              "files_unsupported": 0,
+              "files_unknown_window": 0, "files_without_eligible_turn_ends": 0,
+              "sidechain_records_excluded": 0, "sdk_records_excluded": 0,
               "sessions": set(), "first_day": None, "last_day": None,
               "active_days": set()}
     candidates, totals, seen = [], new_counts(), set()
@@ -708,18 +711,39 @@ def collect(roots, since, until):
             if status != "unreadable":
                 census["files_empty"] += 1         # opened fine, held nothing
             continue
-        inside, _first, _last = _session_in_window(records, since, until)
+        objects = [record for record in records if isinstance(record, dict)]
+        inside, first, _last = _session_in_window(objects, since, until)
+        if first is not None and not inside:
+            census["files_outside_window"] += 1
+            continue
+        if first is None and (since or until):
+            census["files_unknown_window"] += 1
+        if (len(objects) != len(records)
+                or any(record.get("type") in ("session_meta", "response_item", "event_msg")
+                       for record in objects)
+                or any(record.get("type") in ("assistant", "user")
+                       and not isinstance(record.get("message"), dict)
+                       for record in objects)
+                or not any(isinstance(record.get("message"), dict)
+                           and record.get("type") in ("assistant", "user")
+                           for record in objects)):
+            census["files_unsupported"] += 1
+            continue
         if not inside:
-            census["files_outside_window"] += 1     # readable, just not in scope
             continue
         census["files_measured"] += 1
         for record in records:
+            census["sidechain_records_excluded"] += bool(record.get("isSidechain"))
+            census["sdk_records_excluded"] += bool(is_excluded_record(record))
             if record.get("sessionId"):
                 census["sessions"].add(record["sessionId"])
             stamp = record.get("timestamp")
             if isinstance(stamp, str) and len(stamp) >= 10:
                 census["active_days"].add(stamp[:10])
-        found, _ = find_candidates(turn_ends(records), seen=seen, counts=totals)
+        ends = turn_ends(records)
+        if not any(end.closer not in {"eof", "interrupt"} for end in ends):
+            census["files_without_eligible_turn_ends"] += 1
+        found, _ = find_candidates(ends, seen=seen, counts=totals)
         candidates.extend(found)
     days = sorted(census.pop("active_days"))
     census["sessions"] = len(census["sessions"])
@@ -767,7 +791,9 @@ def main(argv=None):
 
     payload = {"classifier": _classifier_version(), "window": window,
                "census": report["census"], "counts": report["counts"],
-               "candidates": len(candidates)}
+               "candidates": len(candidates),
+               "coverage": {"supported_format": "claude",
+                            "unsupported_formats": "excluded; not measured as zero"}}
 
     status = EXIT_FLAGGED if candidates else EXIT_CLEAN
     if args.verdicts:
@@ -782,10 +808,25 @@ def main(argv=None):
         payload["verdicts"] = result
         status = EXIT_FLAGGED if result["unreviewed"] else EXIT_CLEAN
 
+    census = report["census"]
+    if not report["counts"]["ended_by_speaker"]:
+        status = EXIT_CANNOT_RUN
+        payload["coverage"]["status"] = "cannot_run"
+        print("no eligible main-thread turn ends in the selected window", file=sys.stderr)
+    elif (census["files_unsupported"] or census["files_unreadable"]
+          or census["files_unknown_window"] or complaints):
+        status = EXIT_FLAGGED
+        payload["coverage"]["status"] = "partial"
+        print("partial coverage: unsupported, unreadable, or unscoped inputs were excluded",
+              file=sys.stderr)
+    else:
+        payload["coverage"]["status"] = "supported"
+
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         print(f"classifier {_classifier_version()}   window {window}")
+        print(f"  source: Claude; coverage: {payload['coverage']['status']}")
         print("  -- census (structural, quotable) --")
         for key, value in report["census"].items():
             print(f"    {key:22s} {value}")

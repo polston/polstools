@@ -13,6 +13,7 @@
     "cache_usage",
     "handoffs",
     "agent_prompt_structure",
+    "source_completion",
     "outcomes",
     "instruction_provenance",
     "permissions",

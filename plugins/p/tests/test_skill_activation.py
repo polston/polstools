@@ -80,7 +80,12 @@ class ActivationPolicyTests(unittest.TestCase):
                 for component in self.manifest["components"]
                 if self.activation.component_state(resolved, component) == "limited"
             },
-            {"maintaining-the-format-plugin", "scouting-tools-for-open-frictions"},
+            {
+                "auditing-agent-contracts",
+                "maintaining-the-format-plugin",
+                "reviewing-improvement-effects",
+                "scouting-tools-for-open-frictions",
+            },
         )
 
     def test_precedence_is_environment_then_session_then_global_then_default(self):

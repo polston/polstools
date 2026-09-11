@@ -45,10 +45,13 @@ class MetricCatalogueTests(unittest.TestCase):
         self.assertEqual(3, versions["repeated_call_rate"])
         self.assertEqual(3, versions["tool_failure_rate"])
         self.assertEqual(2, versions["skill_invocation_rate"])
+        self.assertEqual(2, versions["verified_outcome_rate"])
+        self.assertEqual(2, versions["input_tokens_per_verified_outcome"])
         self.assertTrue(all(version == 1 for metric_id, version in versions.items()
                             if metric_id not in {
                                 "repeated_call_rate", "tool_failure_rate",
-                                "skill_invocation_rate"}))
+                                "skill_invocation_rate", "verified_outcome_rate",
+                                "input_tokens_per_verified_outcome"}))
 
     def test_catalogue_and_definition_extensions_survive_loading(self):
         payload = json.loads((RUBRICS / "metrics.json").read_text(encoding="utf-8"))

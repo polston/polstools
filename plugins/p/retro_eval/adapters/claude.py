@@ -39,7 +39,7 @@ def _integer_or_zero(value):
 
 class ClaudeAdapter(AdapterBase):
     source = "claude"
-    adapter_version = 3
+    adapter_version = 4
 
     def __init__(self, id_salt: bytes, direct_prompt_sources=None, capabilities=None):
         super().__init__(id_salt)

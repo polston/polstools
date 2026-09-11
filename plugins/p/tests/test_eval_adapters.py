@@ -117,6 +117,35 @@ class ClaudeAdapterTests(unittest.TestCase):
 
 
 class CodexAdapterTests(unittest.TestCase):
+    def test_task_complete_without_delivery_is_only_structural_completion(self):
+        from retro_eval.deterministic_scorers import (
+            SourceCompletionScorer, VerifiedOutcomeScorer,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "fixture.jsonl"
+            write_jsonl(path, [
+                {"type": "session_meta", "payload": {"thread_source": "user"}},
+                {"type": "response_item", "payload": {
+                    "type": "message", "role": "user", "content": [
+                        {"type": "input_text", "text": "Create result.txt and verify it."}]}},
+                {"type": "response_item", "payload": {
+                    "type": "message", "role": "assistant", "content": [
+                        {"type": "output_text", "text": "I have not created or verified the file."}]}},
+                {"type": "event_msg", "payload": {"type": "task_complete"}},
+            ])
+            adapter = CodexAdapter(b"fixture")
+            result = adapter.read(path, root)
+            self.assertTrue(result.included)
+            self.assertFalse((root / "result.txt").exists())
+            self.assertEqual(1.0, SourceCompletionScorer(
+                "source_completion_rate", 1).score(result.records).value)
+            verified = VerifiedOutcomeScorer("verified_outcome_rate", 1).score(result.records)
+            self.assertTrue(verified.abstained)
+            self.assertIsNone(verified.value)
+            self.assertFalse(adapter.capabilities["outcomes"].observable)
+            self.assertTrue(adapter.capabilities["source_completion"].observable)
+
     def rows(self, thread_source="user"):
         return [
             {"type": "session_meta", "timestamp": "2026-08-01T12:00:00Z", "payload": {

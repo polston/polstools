@@ -99,6 +99,8 @@ Start a new session, then run the doctor against `<repo-root>`.
 | Skill activation | `home`, `work`, `managing-skill-activation` | Switch session profiles and manage defaults or overrides |
 | Repository safety | `auditing-a-repo-for-private-data`, `checking-branch-base-before-a-pr`, `finding-what-a-change-made-false` | Catch private data, branch-base mistakes, and documentation drift |
 | Workflow evidence | `auditing-workflow-rules-against-behavior`, `counting-stopped-promises`, `deciding-the-prompt-cache-ttl`, `finding-friction-in-recent-sessions`, `scouting-tools-for-open-frictions` | Measure recurring friction before changing rules or tools |
+| Agent contracts | `auditing-agent-contracts` | Diagnose dispatch scope, missing inputs, unusable results, and parent rework before adding agent roles |
+| Improvement follow-up | `reviewing-improvement-effects` | Bind a reversible pilot to comparable evidence, quality constraints, and a keep/revise/revert or insufficient-evidence review |
 | Goals and decisions | `writing-goals`, `robust-over-simple` | Bound autonomous work and preserve expandable design seams |
 | Response format | `fmt-off`, `fmt-on`, `maintaining-the-format-plugin` | Toggle sessions, set global or per-harness defaults (off by default), and audit the structured response format |
 | Interface fixes | `aligning-statuslines`, `shift-enter-in-windows-terminal` | Align harness status information and repair multiline input |

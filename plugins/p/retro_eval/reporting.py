@@ -165,7 +165,9 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
     raw_results = {}
     coverage = {}
     coverage_summary = {}
-    for source, source_records in sorted(by_source.items()):
+    populations = {}
+    for source in sorted(set(by_source) | set(extraction.get("sources", {}))):
+        source_records = by_source.get(source, [])
         raw_capabilities = extraction.get("sources", {}).get(source, {})
         capabilities = {
             key: value for key, value in raw_capabilities.items()
@@ -178,8 +180,22 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
         coverage_summary[source] = dict(sorted(Counter(
             item["status"] for item in coverage[source]
         ).items()))
+        traces = [record for record in source_records
+                  if record.span_kind == "trace"]
+        timestamps = [value for record in traces
+                      for value in (record.started_at, record.ended_at)
+                      if value is not None]
+        populations[source] = {
+            "included_traces": len(traces),
+            "main_traces": sum(record.main_or_subagent == "main" for record in traces),
+            "subagent_traces": sum(record.main_or_subagent == "subagent" for record in traces),
+            "excluded_traces": raw_capabilities.get("excluded"),
+            "discovered_files": raw_capabilities.get("files"),
+            "snapshot_start": min(timestamps).isoformat() if timestamps else None,
+            "snapshot_end": max(timestamps).isoformat() if timestamps else None,
+        }
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "manifest": {
             "trace_sha256": _sha256(trace_path),
             "trace_schema_versions": sorted({record.schema_version for record in records}),
@@ -191,6 +207,14 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
         "sources": reports,
         "coverage": coverage,
         "coverage_summary": coverage_summary,
+        "source_populations": populations,
+        "source_selection": {
+            "requested_sources": sorted(extraction.get("sources", {})),
+            "observed_sources": sorted(by_source),
+            "exclusion_reasons": extraction.get("exclusion_reasons", {}),
+            "comparison": "separate source populations; no matched comparison established",
+            "bounds": "observed snapshot timestamps, not proof of closed task outcomes",
+        },
     }
     if instruction_manifest_sha256:
         report["manifest"]["instruction_manifest_sha256"] = (
