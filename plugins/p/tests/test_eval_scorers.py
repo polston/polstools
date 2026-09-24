@@ -13,7 +13,8 @@ from retro_eval.schema import SCHEMA_VERSION, SpanKind, TraceRecord  # noqa: E40
 from retro_eval.catalog import load_metric_catalogue  # noqa: E402
 from retro_eval.scorers import ScorerRegistry  # noqa: E402
 from retro_eval.deterministic_scorers import (  # noqa: E402
-    InputTokensPerOutcomeScorer, SkillLifecycleScorer,
+    InputTokensPerSourceCompletionScorer, SkillLifecycleScorer,
+    VerifiedOutcomeScorer, InputTokensPerOutcomeScorer,
 )
 from retro_eval.reporting import run_deterministic_report  # noqa: E402
 from retro_eval.storage import JsonlTraceStore  # noqa: E402
@@ -31,6 +32,46 @@ def record(trace, sequence, kind, **values):
 
 
 class ScorerRegistryTests(unittest.TestCase):
+    def test_source_status_and_untrusted_attributes_never_verify_delivery(self):
+        for attributes in ({}, {"done_contract": "create a file"},
+                           {"done_contract": "create a file", "verified": True}):
+            with self.subTest(attributes=attributes):
+                rows = [record("a", 0, SpanKind.TRACE, status="complete",
+                               input_tokens=100, attributes=attributes)]
+                for scorer in (VerifiedOutcomeScorer("verified_outcome_rate", 1),
+                               InputTokensPerOutcomeScorer(
+                                   "input_tokens_per_verified_outcome", 1,
+                                   interval_backend={"module": "absent_backend"})):
+                    result = scorer.score(rows)
+                    self.assertTrue(result.abstained)
+                    self.assertEqual("not_observable", result.label)
+                    self.assertIsNone(result.value)
+                    self.assertEqual(2, result.scorer_version)
+                    self.assertEqual(0, result.eligible_population)
+                    self.assertEqual(1, result.population)
+
+    def test_historical_outcome_capability_cannot_restore_the_old_proxy(self):
+        from retro_eval.scorers import default_scorers
+        results = default_scorers().score([
+            record("a", 0, SpanKind.TRACE, status="complete", input_tokens=100),
+            record("a", 1, SpanKind.LLM),
+        ], capabilities={"outcomes": True, "usage": True})
+        by_id = {item.scorer_id: item for item in results}
+        for name in ("verified_outcome_rate", "input_tokens_per_verified_outcome"):
+            self.assertTrue(by_id[name].abstained)
+            self.assertIsNone(by_id[name].value)
+        self.assertEqual(1, by_id["source_completion_rate"].population)
+
+    def test_abstention_keeps_each_scorers_population_unit(self):
+        from retro_eval.scorers import default_scorers
+        rows = [record("a", 0, SpanKind.TRACE, status="complete")]
+        rows += [record("a", i, SpanKind.TOOL) for i in range(1, 11)]
+        rows += [record("a", i, "retro.tool_result") for i in range(11, 41)]
+        by_id = {item.scorer_id: item for item in default_scorers().score(rows, capabilities={})}
+        self.assertEqual(1, by_id["verified_outcome_rate"].population)
+        self.assertEqual(10, by_id["repeated_call_rate"].population)
+        self.assertEqual(30, by_id["tool_failure_rate"].population)
+
     def test_skill_lifecycle_reports_explicit_boundaries_not_opportunities(self):
         result = SkillLifecycleScorer(
             "skill_invocation_rate", minimum_n=1).score([
@@ -82,7 +123,7 @@ class ScorerRegistryTests(unittest.TestCase):
                  "class": "RepeatedCallScorer", "options": {"minimum_n": 1,
                                                                "max_evidence_refs": 1}},
                 {"id": "outcome", "module": "retro_eval.deterministic_scorers",
-                 "class": "VerifiedOutcomeScorer", "options": {"minimum_n": 1}},
+                 "class": "SourceCompletionScorer", "options": {"minimum_n": 1}},
                 {"id": "tool_failure", "module": "retro_eval.deterministic_scorers",
                  "class": "ToolFailureScorer", "options": {"minimum_n": 1}},
             ],
@@ -102,7 +143,7 @@ class ScorerRegistryTests(unittest.TestCase):
         ]
         results = registry.score(records, capabilities={"tool_trajectory": True,
                                                         "tool_result_status": True,
-                                                        "outcomes": True})
+                                                        "source_completion": True})
         by_id = {item.scorer_id: item for item in results}
         self.assertEqual(.5, by_id["repeat"].value)
         self.assertEqual(.5, by_id["outcome"].value)
@@ -133,15 +174,15 @@ class ScorerRegistryTests(unittest.TestCase):
     def test_minimum_population_is_configuration(self):
         profile = {
             "schema_version": 1,
-            "scorers": [{"id": "verified_outcome_rate", "module": "retro_eval.deterministic_scorers",
-                         "class": "VerifiedOutcomeScorer", "options": {"minimum_n": 3}}],
+            "scorers": [{"id": "source_completion_rate", "module": "retro_eval.deterministic_scorers",
+                         "class": "SourceCompletionScorer", "options": {"minimum_n": 3}}],
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "scorers.json"
             path.write_text(json.dumps(profile), encoding="utf-8")
             result = ScorerRegistry.from_profile(path).score(
                 [record("a", 0, SpanKind.TRACE, status="complete")],
-                capabilities={"outcomes": True},
+                capabilities={"source_completion": True},
             )[0]
         self.assertTrue(result.abstained)
         self.assertEqual("insufficient_evidence", result.label)
@@ -149,8 +190,8 @@ class ScorerRegistryTests(unittest.TestCase):
     def test_report_groups_capabilities_by_source_and_contains_manifest(self):
         profile = {
             "schema_version": 1,
-            "scorers": [{"id": "verified_outcome_rate", "module": "retro_eval.deterministic_scorers",
-                         "class": "VerifiedOutcomeScorer", "options": {"minimum_n": 1}}],
+            "scorers": [{"id": "source_completion_rate", "module": "retro_eval.deterministic_scorers",
+                         "class": "SourceCompletionScorer", "options": {"minimum_n": 1}}],
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -166,10 +207,13 @@ class ScorerRegistryTests(unittest.TestCase):
             (root / "extraction.json").write_text(json.dumps({
                 "schema_version": 1,
                 "sources": {
-                    "one": {"outcomes": {"state": "available"},
+                    "one": {"source_completion": {"state": "available"},
                             "source_set_sha256": "a" * 64},
-                    "two": {"outcomes": {"state": "unavailable"},
+                    "two": {"source_completion": {"state": "unavailable"},
                             "source_set_sha256": "b" * 64},
+                    "empty": {"source_completion": {"state": "available"},
+                              "files": 1, "excluded": 1,
+                              "source_set_sha256": "c" * 64},
                 },
                 "included_traces": 2,
                 "excluded_traces": 1,
@@ -179,6 +223,11 @@ class ScorerRegistryTests(unittest.TestCase):
                 root, registry=ScorerRegistry.from_profile(profile_path),
                 created_commit="abc123")
         self.assertFalse(report["sources"]["one"][0]["abstained"])
+        self.assertEqual("insufficient_evidence", report["sources"]["empty"][0]["label"])
+        self.assertEqual(0, report["source_populations"]["empty"]["included_traces"])
+        self.assertEqual(1, report["source_populations"]["empty"]["excluded_traces"])
+        self.assertEqual(["one", "two"], report["source_selection"]["observed_sources"])
+        self.assertEqual(["empty", "one", "two"], report["source_selection"]["requested_sources"])
         self.assertEqual("not_observable", report["sources"]["two"][0]["label"])
         self.assertEqual(2, report["manifest"]["spans"])
         self.assertIn("trace_sha256", report["manifest"])
@@ -188,7 +237,7 @@ class ScorerRegistryTests(unittest.TestCase):
         metric_count = len(load_metric_catalogue(
             PLUGIN_ROOT / "rubrics" / "metrics.json").metrics)
         self.assertEqual(metric_count, len(coverage))
-        self.assertEqual("measured", coverage["verified_outcome_rate"]["status"])
+        self.assertEqual("measured", coverage["source_completion_rate"]["status"])
         self.assertEqual(
             "not_observable", coverage["skill_chain_completion_rate"]["status"])
         self.assertEqual(
@@ -201,9 +250,9 @@ class ScorerRegistryTests(unittest.TestCase):
         self.assertEqual("abc123", manifest["created_commit"])
         self.assertEqual(2, manifest["population"])
         self.assertEqual(1, manifest["excluded_population"])
-        self.assertEqual(["a" * 64, "b" * 64], manifest["source_fingerprints"])
+        self.assertEqual(["c" * 64, "a" * 64, "b" * 64], manifest["source_fingerprints"])
         self.assertEqual(
-            ["one", "two"], manifest["split_policy"]["fingerprint_source_order"])
+            ["empty", "one", "two"], manifest["split_policy"]["fingerprint_source_order"])
 
     def test_cost_scorer_uses_injected_uncertainty_backend(self):
         class OracleBackend:
@@ -214,7 +263,7 @@ class ScorerRegistryTests(unittest.TestCase):
                 return (10.0, 20.0)
 
         backend = OracleBackend()
-        result = InputTokensPerOutcomeScorer(
+        result = InputTokensPerSourceCompletionScorer(
             scorer_id="cost", minimum_n=2, interval_backend=backend,
             confidence=.95, seed=7, max_evidence_refs=1,
         ).score([

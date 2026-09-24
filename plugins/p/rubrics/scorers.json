@@ -6,30 +6,51 @@
       "id": "skill_invocation_rate",
       "module": "retro_eval.deterministic_scorers",
       "class": "SkillLifecycleScorer",
-      "options": {"minimum_n": 20, "max_evidence_refs": 20}
+      "options": {
+        "minimum_n": 20,
+        "max_evidence_refs": 20
+      }
     },
     {
       "id": "repeated_call_rate",
       "module": "retro_eval.deterministic_scorers",
       "class": "RepeatedCallScorer",
-      "options": {"minimum_n": 30, "max_evidence_refs": 20}
+      "options": {
+        "minimum_n": 30,
+        "max_evidence_refs": 20
+      }
+    },
+    {
+      "id": "source_completion_rate",
+      "module": "retro_eval.deterministic_scorers",
+      "class": "SourceCompletionScorer",
+      "options": {
+        "minimum_n": 20,
+        "max_evidence_refs": 20
+      }
     },
     {
       "id": "verified_outcome_rate",
       "module": "retro_eval.deterministic_scorers",
       "class": "VerifiedOutcomeScorer",
-      "options": {"minimum_n": 20, "max_evidence_refs": 20}
+      "options": {
+        "minimum_n": 20,
+        "max_evidence_refs": 20
+      }
     },
     {
       "id": "tool_failure_rate",
       "module": "retro_eval.deterministic_scorers",
       "class": "ToolFailureScorer",
-      "options": {"minimum_n": 30, "max_evidence_refs": 20}
+      "options": {
+        "minimum_n": 30,
+        "max_evidence_refs": 20
+      }
     },
     {
-      "id": "input_tokens_per_verified_outcome",
+      "id": "input_tokens_per_source_completion",
       "module": "retro_eval.deterministic_scorers",
-      "class": "InputTokensPerOutcomeScorer",
+      "class": "InputTokensPerSourceCompletionScorer",
       "options": {
         "minimum_n": 20,
         "max_evidence_refs": 20,
@@ -38,8 +59,19 @@
         "interval_backend": {
           "module": "retro_eval.scipy_statistics",
           "class": "ScipyBcaBackend",
-          "options": {"resamples": 9999}
+          "options": {
+            "resamples": 9999
+          }
         }
+      }
+    },
+    {
+      "id": "input_tokens_per_verified_outcome",
+      "module": "retro_eval.deterministic_scorers",
+      "class": "InputTokensPerOutcomeScorer",
+      "options": {
+        "minimum_n": 20,
+        "max_evidence_refs": 20
       }
     }
   ]

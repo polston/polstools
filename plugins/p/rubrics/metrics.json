@@ -64,9 +64,50 @@
       "known_biases": ["expected probes remain unknown until human validation", "tool-specific task mix confounds rates"], "retirement_rule": "replace when source-native structured failure kinds meet held-out targets"
     },
     {
-      "id": "input_tokens_per_verified_outcome", "version": 1, "domain": "context_cost", "unit": "tokens", "direction": "lower when quality holds", "numerator": "observable input tokens", "denominator": "verified completed outcomes", "eligible_population": "traces with both usage and outcome evidence",
-      "source_capabilities": ["usage", "outcomes"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "BCa bootstrap 95% interval", "validation_dataset": "context-cost-v1",
-      "known_biases": ["harder tasks legitimately consume more context"], "retirement_rule": "replace when task difficulty matching is available"
+      "id": "input_tokens_per_source_completion",
+      "version": 1,
+      "domain": "context_cost",
+      "unit": "tokens",
+      "direction": "lower when quality holds",
+      "numerator": "input tokens of source-completed traces with observable usage",
+      "denominator": "source-completed traces with observable usage",
+      "eligible_population": "included source-completed traces with positive input usage",
+      "source_capabilities": [
+        "usage",
+        "source_completion"
+      ],
+      "version_floor": "adapter declared",
+      "minimum_n": 20,
+      "uncertainty_method": "BCa bootstrap 95% interval",
+      "validation_dataset": "source-completion-cost-v1",
+      "known_biases": [
+        "source completion does not verify delivery",
+        "task difficulty is not matched"
+      ],
+      "retirement_rule": "replace when task difficulty matching is available"
+    },
+    {
+      "id": "input_tokens_per_verified_outcome",
+      "version": 2,
+      "domain": "context_cost",
+      "unit": "tokens",
+      "direction": "lower when quality holds",
+      "numerator": "observable input tokens within the eligible contract-verified population",
+      "denominator": "verified completed outcomes within that same eligible population",
+      "eligible_population": "closed tasks with recoverable done contracts and authoritative contract-bound verification; unavailable in current adapters",
+      "source_capabilities": [
+        "usage",
+        "outcomes"
+      ],
+      "version_floor": "contract-bound verifier required; currently unavailable",
+      "minimum_n": 20,
+      "uncertainty_method": "BCa bootstrap 95% interval",
+      "validation_dataset": "context-cost-v1",
+      "known_biases": [
+        "source completion is not verified delivery",
+        "missing task contracts or verification evidence require abstention"
+      ],
+      "retirement_rule": "replace when task difficulty matching is available"
     },
     {
       "id": "cache_read_share", "version": 1, "domain": "context_cost", "unit": "rate", "direction": "contextual", "numerator": "cache-read input tokens", "denominator": "all observable input tokens", "eligible_population": "model calls emitting cache and input usage",
@@ -114,9 +155,47 @@
       "known_biases": ["dynamic command targets may be unresolvable statically"], "retirement_rule": "replace when the control emits authoritative target verdicts"
     },
     {
-      "id": "verified_outcome_rate", "version": 1, "domain": "outcomes", "unit": "rate", "direction": "higher", "numerator": "traces ending with evidence satisfying the declared done contract", "denominator": "closed traces with a recoverable done contract", "eligible_population": "tasks whose requested outcome and final evidence are observable",
-      "source_capabilities": ["outcomes"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "outcome-state-v1",
-      "known_biases": ["subjective quality remains a human review decision"], "retirement_rule": "replace when harness emits evaluator verdicts tied to the contract"
+      "id": "source_completion_rate",
+      "version": 1,
+      "domain": "outcomes",
+      "unit": "rate",
+      "direction": "higher",
+      "numerator": "traces whose source status is complete",
+      "denominator": "all included traces",
+      "eligible_population": "included traces with observable source completion status",
+      "source_capabilities": [
+        "source_completion"
+      ],
+      "version_floor": "adapter declared",
+      "minimum_n": 20,
+      "uncertainty_method": "Wilson 95% interval",
+      "validation_dataset": "source-completion-v1",
+      "known_biases": [
+        "a source-completed reply can leave the requested task unfinished"
+      ],
+      "retirement_rule": "replace when source completion semantics change"
+    },
+    {
+      "id": "verified_outcome_rate",
+      "version": 2,
+      "domain": "outcomes",
+      "unit": "rate",
+      "direction": "higher",
+      "numerator": "traces ending with evidence satisfying the declared done contract",
+      "denominator": "eligible closed tasks with recoverable done contracts and contract-bound verification results",
+      "eligible_population": "closed tasks with recoverable done contracts and authoritative contract-bound verification; unavailable in current adapters",
+      "source_capabilities": [
+        "outcomes"
+      ],
+      "version_floor": "contract-bound verifier required; currently unavailable",
+      "minimum_n": 20,
+      "uncertainty_method": "Wilson 95% interval",
+      "validation_dataset": "outcome-state-v1",
+      "known_biases": [
+        "source completion is not verified delivery",
+        "missing task contracts or verification evidence require abstention"
+      ],
+      "retirement_rule": "replace when harness emits evaluator verdicts tied to the contract"
     },
     {
       "id": "premature_stop_rate", "version": 1, "domain": "outcomes", "unit": "rate", "direction": "lower", "numerator": "closed traces labelled premature stop or unsupported completion", "denominator": "closed traces with a recoverable done contract", "eligible_population": "tasks with observable remaining safe work or failed done evidence",

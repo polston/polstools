@@ -49,7 +49,7 @@ class RootResolution(unittest.TestCase):
             self.assertEqual(Path("/tmp/cchome") / "projects",
                              retro.claude_projects_dir())
         roots = retro.transcript_roots()
-        self.assertEqual(("claude", "codex"), tuple(h for h, _ in roots))
+        self.assertEqual(("claude", "codex", "antigravity"), tuple(h for h, _ in roots))
 
 
 class HarnessDetection(unittest.TestCase):
@@ -93,7 +93,8 @@ class HarnessDetection(unittest.TestCase):
 class ExtractWalk(unittest.TestCase):
     def run_extract(self, claude_home, codex_home, work):
         env = {"CLAUDE_CONFIG_DIR": str(claude_home),
-               "CODEX_HOME": str(codex_home), "RETRO_HOME": str(work)}
+               "CODEX_HOME": str(codex_home), "RETRO_HOME": str(work),
+               "RETRO_ANTIGRAVITY_HOME": str(work / "absent-agy")}
         with mock.patch.dict(os.environ, env):
             retro = load_retro()   # WORK_DIR reads RETRO_HOME at import
             args = mock.Mock(rebuild=False)

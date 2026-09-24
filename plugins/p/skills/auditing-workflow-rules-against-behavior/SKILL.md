@@ -16,12 +16,32 @@ After a while a CLAUDE.md is part live policy and part sediment, and there is no
 way to tell which is which by reading it — a rule that is never followed and a
 rule that is never needed look identical on the page.
 
-Sessions settle it. A skill that never fires, a rule whose violation appears in
-the record every week, a clause written for a tool that no longer exists: all of
-these are visible in measured history.
+Measured history can establish applicable opportunities or verified obsolete
+references. Attribution gaps and selected moments alone cannot settle whether
+a rule or skill is useful. Delete or sharpen only where evidence supports it.
 
-The point is deletion. A shorter instruction file that is entirely load-bearing
-beats a long one where the reader cannot tell.
+## Coverage before interpretation
+
+The `retro.py` commands below ingest Claude, Codex, and Antigravity history,
+regardless of the active harness. Claude uses `CLAUDE_CONFIG_DIR` (default
+`~/.claude`); Codex uses `CODEX_HOME` (default `~/.codex`). Antigravity uses
+`~/.gemini/antigravity-cli/brain/*/.system_generated/logs/`, preferring
+`transcript_full.jsonl` over `transcript.jsonl` for each conversation. Set
+`RETRO_ANTIGRAVITY_HOME` to override the Antigravity CLI data directory for
+this reader. Run `extract` before reporting; a previously generated pack does
+not acquire new sources automatically.
+
+Antigravity moments are candidate-sampled across sessions of unknown
+main/child population, not friction-ranked or included in main-session rates.
+Its exported steps provide no token accounting, reliable tool-error markers,
+interrupt markers, permission changes, queued prompts, or skill attribution.
+Those fields are unavailable, not measured zeros. The separate evaluation
+adapters in `<plugin-root>/EVALUATION.md` still cover only Claude and Codex.
+
+Report observed sources, main and child populations, exclusions, snapshot or
+window bounds, and unavailable signals before drawing conclusions. Preserve
+separate populations when inclusion rules differ. Use an isolated external
+`RETRO_HOME` for an audit; keep real evidence outside every repository.
 
 ## The procedure
 
@@ -36,31 +56,37 @@ beats a long one where the reader cannot tell.
 `extract` exits 1 when a transcript would not read. It still writes the ledger,
 and retries that file on the next run.
 
-`skills` splits installed skills into fired and never-fired. Names that fired but
+`skills` reports observed attribution against an inventory that includes cached
+installations, not an authoritative active catalogue. Names that fired but
 have no SKILL.md on disk are harness built-in commands or a skill since renamed —
 check before treating one as missing. On a mixed corpus its output carries
-per-harness fired columns and per-harness never-fired lists; a skill that only
+per-harness fired columns and lists without observed attribution; a skill that only
 Codex can trigger is named with its harness rather than folded into the shared
 count.
 
-**2. Triage the never-fired list.** For each, exactly one verdict:
+**2. Triage skills without observed attribution.** For each, choose a verdict
+only after checking activation, attribution coverage, and applicable cases:
 
 - **Wrong trigger** — the skill is right but its description does not match how
   the work actually gets described. Propose the new description text.
 - **Superseded** — something else covers it now. Propose retirement.
 - **Genuinely unused** — the situation has not come up. Leave it; note the date.
 
-Never-fired is evidence about the *description*, not about the skill's quality.
-Most dormant skills have a trigger problem, not a content problem.
+- **Unobservable or insufficient evidence** — activation, attribution, or
+  applicable opportunities cannot be established. Do not change the trigger
+  or retire the skill. Zero observed invocations alone establishes neither
+  disuse nor a bad description.
 
 **3. Test each standing rule against the record.** For every clause in the
 instruction files, ask which of these it is:
 
 - **Enforced** — something mechanical makes violation impossible (a hook, a gate).
-- **Followed** — no violations in the window's moments.
-- **Violated** — the pack's quoted corrections show it being ignored. This is the
-  interesting case: either the rule needs to be enforced mechanically, or it is
-  written in a way that does not survive contact with a real session.
+- **Followed in observed opportunities** — cite actual applicable cases, the
+  instruction version, and coverage limits. No observed opportunities means
+  Unmeasurable; absence from selected friction moments is not compliance.
+- **Violated in observed opportunities** — verified behavior contradicts an
+  applicable instruction known to be active then. Candidate correction labels
+  alone cannot establish this verdict or justify a change.
 - **Unmeasurable** — no signal either way. Say so plainly rather than guessing.
 - **Stale** — it references a tool, path, flag, or workflow that no longer
   exists. Verify by checking, then propose deletion.
@@ -100,9 +126,8 @@ violated and stale ones.
 ## Red flags
 
 - "This rule is probably obsolete" — probably is not a verdict, go check
-- "None of these skills seem useful" — firing data is about descriptions, not worth
+- "None of these skills seem useful" — missing attribution does not establish disuse
 - A finding that names no clause and no file
-- An audit that proposes zero deletions — instruction files do not shrink by accident
 
 All of these mean: name the clause, run the check that settles it, and write the
 replacement text.

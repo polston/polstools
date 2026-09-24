@@ -104,8 +104,8 @@ class Reporting(unittest.TestCase):
         ])
         text = self.run_cmd(retro, retro.cmd_skills, days=0)
         self.assertIn("| doctor | 1 | 1 |", text)
-        self.assertIn("## Never fired — claude", text)
-        self.assertIn("## Never fired — codex", text)
+        self.assertIn("## No observed attribution — claude", text)
+        self.assertIn("## No observed attribution — codex", text)
 
     def test_subagents_excludes_codex_from_failure_table_and_guards_empty(self):
         retro = self.load_with_ledger([

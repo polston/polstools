@@ -2,6 +2,7 @@
 
 import csv
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -42,9 +43,12 @@ class ReviewDashboardTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def git(self, *args):
+        env = dict(os.environ)
+        env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
         return subprocess.run(
             ["git", *args], cwd=self.repo, check=True,
-            capture_output=True, text=True)
+            capture_output=True, text=True, env=env)
 
     def packet(self, stem, *, rubric, version, split, rows):
         source = self.review_dir / (stem + ".csv")

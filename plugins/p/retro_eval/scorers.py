@@ -64,11 +64,15 @@ class ScorerRegistry:
             missing = [name for name in scorer.required_capabilities
                        if not _observable(capabilities.get(name))]
             if missing:
+                population_kind = getattr(scorer, "population_kind", None)
                 results.append(ScoreResult(
                     scorer_id=scorer.scorer_id, scorer_version=scorer.version,
                     scope=scorer.scope, value=None, label="not_observable",
                     abstained=True, reason="missing capabilities: %s" % ", ".join(missing),
-                    evidence_refs=(), population=len(records), eligible_population=0,
+                    evidence_refs=(), population=(
+                        sum(record.span_kind == population_kind for record in records)
+                        if population_kind is not None else len(records)),
+                    eligible_population=0,
                     latency_ms=0, estimated_cost=0.0,
                     limitations=("source capability unavailable",),
                 ))

@@ -21,6 +21,7 @@ class _RateScorer:
     version = 1
     scope = "trace_set"
     required_capabilities = ()
+    population_kind = SpanKind.TRACE.value
 
     def __init__(self, scorer_id, minimum_n, max_evidence_refs=None):
         if minimum_n < 1:
@@ -67,6 +68,7 @@ class _RateScorer:
 
 class RepeatedCallScorer(_RateScorer):
     required_capabilities = ("tool_trajectory",)
+    population_kind = SpanKind.TOOL.value
 
     def __init__(self, scorer_id, minimum_n, max_evidence_refs=None,
                  taxonomy=None):
@@ -158,19 +160,45 @@ class SkillLifecycleScorer(_RateScorer):
                 ), details)
 
 
-class VerifiedOutcomeScorer(_RateScorer):
-    required_capabilities = ("outcomes",)
+class SourceCompletionScorer(_RateScorer):
+    """Structural source status, never a task-quality verdict."""
+
+    required_capabilities = ("source_completion",)
 
     def counts(self, records):
         traces = [record for record in records if _kind(record) == SpanKind.TRACE.value]
         complete = [record for record in traces if record.status == "complete"]
         return len(complete), len(traces), len(traces), [item.span_id for item in complete], (
-            "source completion is not equivalent to subjective quality",
+            "source completion does not establish delivery or task quality",
         ), {"status_counts": dict(sorted(Counter(item.status for item in traces).items()))}
+
+
+class VerifiedOutcomeScorer(_RateScorer):
+    """Reserve verified outcomes until contract-bound verification is available.
+
+    Even an old extraction advertising outcomes cannot supply evidence that
+    its adapter never captured. Do not trust a status or an arbitrary attribute
+    as a substitute for a versioned, authoritative verification contract.
+    """
+
+    version = 2
+    required_capabilities = ("outcomes",)
+
+    def score(self, records):
+        population = sum(_kind(record) == SpanKind.TRACE.value for record in records)
+        return ScoreResult(
+            scorer_id=self.scorer_id, scorer_version=self.version, scope=self.scope,
+            value=None, label="not_observable", abstained=True,
+            reason="contract-bound outcome verification is not implemented",
+            evidence_refs=(), population=population, eligible_population=0,
+            latency_ms=0, estimated_cost=0.0,
+            limitations=("source completion is not verified task delivery",),
+        )
 
 
 class ToolFailureScorer(_RateScorer):
     required_capabilities = ("tool_result_status",)
+    population_kind = "retro.tool_result"
 
     def __init__(self, scorer_id, minimum_n, max_evidence_refs=None,
                  taxonomy=None):
@@ -204,10 +232,11 @@ class ToolFailureScorer(_RateScorer):
             "decision_support": False}
 
 
-class InputTokensPerOutcomeScorer:
+class InputTokensPerSourceCompletionScorer:
     version = 1
     scope = "trace_set"
-    required_capabilities = ("usage", "outcomes")
+    required_capabilities = ("usage", "source_completion")
+    population_kind = SpanKind.TRACE.value
 
     def __init__(self, scorer_id, minimum_n, interval_backend, confidence,
                  seed, max_evidence_refs=None):
@@ -263,13 +292,26 @@ class InputTokensPerOutcomeScorer:
         return ScoreResult(
             scorer_id=self.scorer_id, scorer_version=self.version,
             scope=self.scope, value=effect["effect"], label="measured",
-            abstained=False, reason="completed traces with observable usage",
+            abstained=False, reason="source-completed traces with observable usage",
             evidence_refs=tuple(evidence), population=len(traces),
             eligible_population=len(eligible),
             latency_ms=int((time.perf_counter() - started) * 1000),
             estimated_cost=0.0,
-            limitations=("task difficulty is not yet matched",),
+            limitations=("task difficulty is not yet matched",
+                         "source completion is not verified task delivery"),
             numerator=sum(values), interval_low=effect["interval"][0],
             interval_high=effect["interval"][1],
             uncertainty_method=effect["backend"],
         )
+
+
+class InputTokensPerOutcomeScorer(VerifiedOutcomeScorer):
+    """Keep historical scorer profiles readable while refusing their proxy."""
+
+    required_capabilities = ("usage", "outcomes")
+
+    def __init__(self, scorer_id, minimum_n, interval_backend=None,
+                 confidence=None, seed=None, max_evidence_refs=None):
+        # Historical backend options remain accepted but cannot supply the
+        # missing outcome contract, so no optional backend is instantiated.
+        super().__init__(scorer_id, minimum_n, max_evidence_refs)

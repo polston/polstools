@@ -92,7 +92,8 @@ interrupts, permission_mode_changes, queued_prompts, skill_runs
 is classified `main` / `subagent` / `automation` / `unknown`, and which
 counters a harness cannot observe — are defined in
 `docs/plans/2026-08-27-codex-measurement-ingestion-spec.md`; this document
-does not restate them.
+does not restate them. The Antigravity extension is documented in
+`docs/plans/2026-09-24-antigravity-history-ingestion.md`.
 
 Rows are keyed by `(harness, transcript)`, not session id. Subagent
 transcripts live under `<session>/subagents/` (Claude) or carry a

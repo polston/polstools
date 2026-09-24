@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """End-to-end check of the format plugin: parse hooks.json, run the exact
-hook commands with CLAUDE_PLUGIN_ROOT substituted, exercise the toggle, and
-verify the injected bytes are valid UTF-8.
+hook commands with CLAUDE_PLUGIN_ROOT substituted, exercise the session
+toggles and the durable defaults, and verify the injected bytes are valid
+UTF-8.
 
 Exit: 0 every check passed, 1 at least one check failed, 2 could not run.
 """
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,25 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SID = "format-e2e-test-session"
 results = []
+
+# Hermetic format state: every gate and toggle below runs against a scratch
+# flag directory and defaults file, never the operator's real ones.
+FMT_HOME = tempfile.mkdtemp(prefix="format-e2e-")
+FMT_BASE = {
+    "P_FORMAT_STATE_DIR": os.path.join(FMT_HOME, "state"),
+    "P_FORMAT_CONFIG_FILE": os.path.join(FMT_HOME, "format.json"),
+}
+FMT_REMOVE = (
+    "P_FORMAT_DEFAULT", "P_FORMAT_HARNESS", "P_FORMAT_STATE_DIR",
+    "P_FORMAT_CONFIG_FILE", "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID",
+    "CODEX_THREAD_ID",
+)
+
+
+def fmt_env(**more):
+    env = dict(FMT_BASE)
+    env.update(more)
+    return env
 
 
 def check(name, ok, detail=""):
@@ -73,6 +94,24 @@ if not all(command_ready):
                             ("  [%s]" % detail) if detail else ""))
     print("\naborted: unusable hook command; %d checks ran" % len(results))
     sys.exit(1)
+
+
+def gate(event, sid=SID, stdin_text=None, env=None, binary=False):
+    """Run one hook command under the hermetic format environment."""
+    return run(hook_cmd(commands[event]),
+               stdin_text=json.dumps({"session_id": sid})
+               if stdin_text is None else stdin_text,
+               env_extra=fmt_env(**(env or {})), env_remove=FMT_REMOVE,
+               binary=binary)
+
+
+ctl = [sys.executable, os.path.join(ROOT, "bin", "format-ctl")]
+
+
+def ctl_run(args, env=None):
+    return run(ctl + args, env_extra=fmt_env(**(env or {})),
+               env_remove=FMT_REMOVE)
+
 
 # 2. Catalogs in step (only checkable in the repo layout, not an install copy)
 mk_path = os.path.join(os.path.dirname(os.path.dirname(ROOT)),
@@ -138,10 +177,10 @@ with tempfile.TemporaryDirectory() as profile_home:
           r.returncode == 0 and allowed.returncode == 0,
           "toggle=%d gate=%d" % (r.returncode, allowed.returncode))
 
-# 4. Both gates print their payload byte-exactly, exit 0
+# 4. Both gates print their payload byte-exactly under an on default, exit 0
 for ev in ("SessionStart", "UserPromptSubmit"):
     want = open(payloads[ev], encoding="utf-8").read()
-    r = run(hook_cmd(commands[ev]), stdin_text=json.dumps({"session_id": SID}))
+    r = gate(ev, env={"P_FORMAT_DEFAULT": "on"})
     check("%s gate exit 0" % ev, r.returncode == 0,
           "rc=%d %s" % (r.returncode, r.stderr.strip()))
     check("%s gate prints full payload" % ev, r.stdout == want,
@@ -150,9 +189,8 @@ for ev in ("SessionStart", "UserPromptSubmit"):
 # 4a. Repository-owned hook lifecycle telemetry is content-free, external,
 # and complete. It records only invocations this exact wrapper executes.
 with tempfile.TemporaryDirectory() as telemetry_home:
-    r = run(hook_cmd(commands["UserPromptSubmit"]),
-            stdin_text=json.dumps({"session_id": SID}),
-            env_extra={"RETRO_HOME": telemetry_home})
+    r = gate("UserPromptSubmit",
+             env={"P_FORMAT_DEFAULT": "on", "RETRO_HOME": telemetry_home})
     telemetry_path = os.path.join(
         telemetry_home, "telemetry", "owned-hook-events.jsonl")
     check("owned hook telemetry file exists", os.path.isfile(telemetry_path),
@@ -179,70 +217,144 @@ with tempfile.TemporaryDirectory() as telemetry_home:
 
 # 5. Injected bytes are valid UTF-8 (piped stdout on Windows defaults to the
 #    ANSI code page without the reconfigure in format-ctl)
-r = run(hook_cmd(commands["UserPromptSubmit"]),
-        stdin_text=json.dumps({"session_id": SID}), binary=True)
+r = gate("UserPromptSubmit", env={"P_FORMAT_DEFAULT": "on"}, binary=True)
 try:
     r.stdout.decode("utf-8")
     check("gate output is valid UTF-8", True)
 except UnicodeDecodeError as e:
     check("gate output is valid UTF-8", False, str(e))
 
-# 6. Claude Code lifecycle: native skills toggle, status reports, hooks follow
-ctl = [sys.executable, os.path.join(ROOT, "bin", "format-ctl")]
-env_sid = {"CLAUDE_CODE_SESSION_ID": SID}
-r = run([sys.executable, skill_scripts["off"]], env_extra=env_sid)
-check("Claude fmt-off skill exit 0", r.returncode == 0, r.stderr.strip())
-r = run(hook_cmd(commands["SessionStart"]), stdin_text=json.dumps({"session_id": SID}))
-check("gate silent when session off", r.returncode == 0 and r.stdout == "",
+# 6. The format is off until configured on, and every default scope layers
+#    in order: P_FORMAT_DEFAULT, harness key, global key, built-in off.
+r = gate("SessionStart", sid="fresh-default")
+check("fresh session gate is silent by default",
+      r.returncode == 0 and r.stdout == "",
       "rc=%d, %d chars out" % (r.returncode, len(r.stdout)))
-r = run(ctl + ["status"], env_extra=env_sid)
-check("status reports OFF", "OFF" in r.stdout, r.stdout.strip())
-r = run([sys.executable, skill_scripts["on"]], env_extra=env_sid)
+r = ctl_run(["default", "on"])
+check("global default is settable without a session id", r.returncode == 0,
+      "rc=%d %s" % (r.returncode, r.stderr.strip()))
+want = open(payloads["SessionStart"], encoding="utf-8").read()
+r = gate("SessionStart", sid="fresh-default")
+check("gate prints under a global on default", r.stdout == want,
+      "%d chars out" % len(r.stdout))
+r = ctl_run(["default", "off", "--harness", "claude"])
+check("harness default is settable", r.returncode == 0, r.stderr.strip())
+r = gate("SessionStart", sid="fresh-default",
+         env={"CLAUDE_CODE_SESSION_ID": "fresh-default"})
+check("harness off default overrides the global on default", r.stdout == "",
+      "%d chars out" % len(r.stdout))
+r = gate("SessionStart", sid="fresh-default",
+         env={"CODEX_SESSION_ID": "fresh-default"})
+check("the other harness still follows the global default", r.stdout == want,
+      "%d chars out" % len(r.stdout))
+r = gate("SessionStart", sid="fresh-default",
+         env={"CODEX_SESSION_ID": "fresh-default", "P_FORMAT_HARNESS": "claude"})
+check("P_FORMAT_HARNESS overrides the session markers", r.stdout == "",
+      "%d chars out" % len(r.stdout))
+r = gate("SessionStart", sid="fresh-default", env={"P_FORMAT_DEFAULT": "off"})
+check("P_FORMAT_DEFAULT beats the defaults file", r.stdout == "",
+      "%d chars out" % len(r.stdout))
+r = ctl_run(["default"])
+check("default show names every scope",
+      "global default: on" in r.stdout and "claude default: off" in r.stdout
+      and "codex default: (unset)" in r.stdout, r.stdout.strip())
+r = ctl_run(["status"], env={"CLAUDE_CODE_SESSION_ID": "fresh-default"})
+check("status reports the harness default source",
+      "OFF" in r.stdout and "claude default" in r.stdout, r.stdout.strip())
+r = ctl_run(["default", "clear", "--harness", "claude"])
+cleared = r.returncode == 0
+r = ctl_run(["default", "clear"])
+check("default clear exits 0", cleared and r.returncode == 0,
+      "rc=%d" % r.returncode)
+r = gate("SessionStart", sid="fresh-default")
+check("gate is silent again after defaults are cleared", r.stdout == "",
+      "%d chars out" % len(r.stdout))
+
+# 7. Claude lifecycle: session toggles beat every default
+claude_env = {"CLAUDE_CODE_SESSION_ID": SID}
+r = run([sys.executable, skill_scripts["on"]],
+        env_extra=fmt_env(**claude_env), env_remove=FMT_REMOVE)
 check("Claude fmt-on skill exit 0", r.returncode == 0, r.stderr.strip())
-r = run(hook_cmd(commands["UserPromptSubmit"]), stdin_text=json.dumps({"session_id": SID}))
+want = open(payloads["UserPromptSubmit"], encoding="utf-8").read()
+r = gate("UserPromptSubmit", env={"P_FORMAT_DEFAULT": "off"})
+check("session on toggle beats an off default", r.stdout == want,
+      "%d chars out" % len(r.stdout))
+r = run([sys.executable, skill_scripts["off"]],
+        env_extra=fmt_env(**claude_env), env_remove=FMT_REMOVE)
+check("Claude fmt-off skill exit 0", r.returncode == 0, r.stderr.strip())
+r = gate("SessionStart", env={"P_FORMAT_DEFAULT": "on"})
+check("session off toggle beats an on default",
+      r.returncode == 0 and r.stdout == "",
+      "rc=%d, %d chars out" % (r.returncode, len(r.stdout)))
+r = ctl_run(["status"], env=claude_env)
+check("status reports OFF from the session toggle",
+      "OFF" in r.stdout and "session toggle" in r.stdout, r.stdout.strip())
+r = run([sys.executable, skill_scripts["on"]],
+        env_extra=fmt_env(**claude_env), env_remove=FMT_REMOVE)
+check("Claude fmt-on skill re-enables", r.returncode == 0, r.stderr.strip())
+r = gate("UserPromptSubmit")
 check("gate prints again after on", r.returncode == 0 and r.stdout != "")
 
-# 7. Codex lifecycle uses its native session id and the same skill scripts
-env_codex = {"CODEX_SESSION_ID": SID}
-remove_claude = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
-r = run([sys.executable, skill_scripts["off"]], env_extra=env_codex,
-        env_remove=remove_claude)
+# 8. Codex lifecycle uses its native session id and the same skill scripts
+codex_env = {"CODEX_SESSION_ID": SID}
+r = run([sys.executable, skill_scripts["off"]],
+        env_extra=fmt_env(**codex_env), env_remove=FMT_REMOVE)
 check("Codex fmt-off skill exit 0", r.returncode == 0, r.stderr.strip())
-r = run(hook_cmd(commands["UserPromptSubmit"]),
-        stdin_text=json.dumps({"session_id": SID}))
+r = gate("UserPromptSubmit")
 check("Codex-off gate is silent", r.returncode == 0 and r.stdout == "",
       "rc=%d, %d chars out" % (r.returncode, len(r.stdout)))
-r = run([sys.executable, skill_scripts["on"]], env_extra=env_codex,
-        env_remove=remove_claude)
+r = run([sys.executable, skill_scripts["on"]],
+        env_extra=fmt_env(**codex_env), env_remove=FMT_REMOVE)
 check("Codex fmt-on skill exit 0", r.returncode == 0, r.stderr.strip())
+r = gate("UserPromptSubmit")
+check("Codex-on gate prints", r.returncode == 0 and r.stdout != "")
 
-# 8. Missing payload exits 1 with empty stdout (exit 2 from a UserPromptSubmit
-#    hook would block processing and erase the user's prompt)
+# 9. The default scope reaches the defaults file through the skill scripts
+r = run([sys.executable, skill_scripts["on"], "default", "codex"],
+        env_extra=fmt_env(), env_remove=FMT_REMOVE)
+config = {}
+try:
+    with open(FMT_BASE["P_FORMAT_CONFIG_FILE"], encoding="utf-8") as handle:
+        config = json.load(handle)
+except (OSError, ValueError):
+    pass
+check("fmt-on skill writes a codex default",
+      r.returncode == 0 and config.get("codex") == "on", str(config))
+r = run([sys.executable, skill_scripts["off"], "default"],
+        env_extra=fmt_env(), env_remove=FMT_REMOVE)
+try:
+    with open(FMT_BASE["P_FORMAT_CONFIG_FILE"], encoding="utf-8") as handle:
+        config = json.load(handle)
+except (OSError, ValueError):
+    config = {}
+check("fmt-off skill writes the global default",
+      r.returncode == 0 and config.get("default") == "off", str(config))
+
+# 10. Missing payload exits 1 with empty stdout (exit 2 from a
+#     UserPromptSubmit hook would block processing and erase the prompt)
 r = run(ctl + ["gate", os.path.join(ROOT, "style", "no-such-file.md")],
-        stdin_text=json.dumps({"session_id": SID}))
+        stdin_text=json.dumps({"session_id": "fresh-default"}),
+        env_extra=fmt_env(P_FORMAT_DEFAULT="on"), env_remove=FMT_REMOVE)
 check("missing payload exits 1 with empty stdout",
       r.returncode == 1 and r.stdout == "", "rc=%d" % r.returncode)
 
-# 9. Malformed stdin fails open (still prints payload)
+# 11. Malformed stdin follows the configured default
 want = open(payloads["SessionStart"], encoding="utf-8").read()
-r = run(hook_cmd(commands["SessionStart"]), stdin_text="not json at all")
-check("malformed stdin fails open", r.returncode == 0 and r.stdout == want)
+r = gate("SessionStart", stdin_text="not json at all",
+         env={"P_FORMAT_DEFAULT": "on"})
+check("malformed stdin follows an on default",
+      r.returncode == 0 and r.stdout == want)
+r = gate("SessionStart", stdin_text="not json at all", sid="fresh-default")
+check("malformed stdin stays silent by default",
+      r.returncode == 0 and r.stdout == "",
+      "rc=%d, %d chars out" % (r.returncode, len(r.stdout)))
 
-# 10. Toggle without a session id exits 2
-env_nosid = dict(os.environ)
-for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
-    env_nosid.pop(name, None)
-r = subprocess.run(ctl + ["off"], capture_output=True, text=True,
-                   encoding="utf-8", env=env_nosid)
-check("toggle without session id exits 2", r.returncode == 2, "rc=%d" % r.returncode)
+# 12. Toggle without a session id exits 2
+r = ctl_run(["off"])
+check("toggle without session id exits 2", r.returncode == 2,
+      "rc=%d" % r.returncode)
 
-# cleanup: remove the test flag if any state remains
-flag_dir = os.path.join(
-    tempfile.gettempdir(), "p-format-toggle")
-flag_dir = os.environ.get("P_FORMAT_STATE_DIR") or flag_dir
-flag = os.path.join(flag_dir, SID + ".off")
-if os.path.exists(flag):
-    os.unlink(flag)
+shutil.rmtree(FMT_HOME, ignore_errors=True)
 
 failed = [x for x in results if not x[1]]
 for name, ok, detail in results:

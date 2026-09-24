@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "proposal_id": "",
+  "proposal_ref": "",
+  "owner": "",
+  "task_family": "",
+  "intended_benefit": "",
+  "quality_constraints": [],
+  "review_trigger": "",
+  "rollback": "",
+  "activation": null,
+  "baseline_ref": null,
+  "followup_ref": null,
+  "comparison": {"status": "unknown", "basis_ref": null, "limitations": ""},
+  "decision_signals": [],
+  "observations": {
+    "response_completion": {"baseline": {"value": null, "refs": []}, "followup": {"value": null, "refs": []}},
+    "verified_delivery": {"baseline": {"value": null, "refs": []}, "followup": {"value": null, "refs": []}},
+    "later_use": {"baseline": {"value": null, "refs": []}, "followup": {"value": null, "refs": []}},
+    "reopened_work": {"baseline": {"value": null, "refs": []}, "followup": {"value": null, "refs": []}},
+    "parent_rework": {"baseline": {"value": null, "refs": []}, "followup": {"value": null, "refs": []}},
+    "user_interventions": {"baseline": {"value": null, "refs": []}, "followup": {"value": null, "refs": []}}
+  },
+  "benefit": {"status": "unknown", "refs": []},
+  "quality": {"status": "unknown", "refs": []},
+  "evidence_rubric_ids": [],
+  "disposition": "insufficient_evidence",
+  "rationale": "",
+  "next_action": {"owner": "", "action": "", "prerequisites": "", "acceptance": ""}
+}

@@ -22,13 +22,25 @@ codex plugin marketplace add polston/polstools
 codex plugin add p@polstools
 ```
 
+### Antigravity (`agy`)
+
+From GitHub:
+```sh
+agy plugin install https://github.com/polston/polstools/tree/main/plugins/p
+```
+
+Or from a local checkout:
+```sh
+agy plugin install ./plugins/p
+```
+
 Start a new session after installing or changing the plugin. Skills may trigger
-from their descriptions; invoke one explicitly as `/p:<skill>` in Claude Code
-or `$p:<skill>` in Codex.
+from their descriptions; invoke one explicitly as `/p:<skill>` in Claude Code,
+`$p:<skill>` in Codex, or `/<skill>` in Antigravity.
 
 ## Diagnose
 
-Run `/p:doctor` in Claude Code or `$p:doctor` in Codex. From a development
+Run `/p:doctor` in Claude Code, `$p:doctor` in Codex, or `/doctor` in Antigravity. From a development
 checkout, compare the live installations with that checkout directly:
 
 ```sh
@@ -87,8 +99,10 @@ Start a new session, then run the doctor against `<repo-root>`.
 | Skill activation | `home`, `work`, `managing-skill-activation` | Switch session profiles and manage defaults or overrides |
 | Repository safety | `auditing-a-repo-for-private-data`, `checking-branch-base-before-a-pr`, `finding-what-a-change-made-false` | Catch private data, branch-base mistakes, and documentation drift |
 | Workflow evidence | `auditing-workflow-rules-against-behavior`, `counting-stopped-promises`, `deciding-the-prompt-cache-ttl`, `finding-friction-in-recent-sessions`, `scouting-tools-for-open-frictions` | Measure recurring friction before changing rules or tools |
+| Agent contracts | `auditing-agent-contracts` | Diagnose dispatch scope, missing inputs, unusable results, and parent rework before adding agent roles |
+| Improvement follow-up | `reviewing-improvement-effects` | Bind a reversible pilot to comparable evidence, quality constraints, and a keep/revise/revert or insufficient-evidence review |
 | Goals and decisions | `writing-goals`, `robust-over-simple` | Bound autonomous work and preserve expandable design seams |
-| Response format | `fmt-off`, `fmt-on`, `maintaining-the-format-plugin` | Toggle, test, and audit the structured response format |
+| Response format | `fmt-off`, `fmt-on`, `maintaining-the-format-plugin` | Toggle sessions, set global or per-harness defaults (off by default), and audit the structured response format |
 | Interface fixes | `aligning-statuslines`, `shift-enter-in-windows-terminal` | Align harness status information and repair multiline input |
 | Evaluation | `reviewing-evaluation-taxonomies` | Resume controlled local taxonomy review |
 | Review command | `adequacy-review` | Run portable blinded ensemble review from one versioned contract |
@@ -124,3 +138,18 @@ The optional local evaluation layer is documented in
 [`plugins/p/EVALUATION.md`](plugins/p/EVALUATION.md). Transcripts, labels,
 manifests, telemetry, and generated reports remain outside Git under an
 operator-selected `RETRO_HOME`.
+
+## Session history coverage
+
+`retro.py extract` reads Claude, Codex, and Antigravity CLI transcripts;
+`retro.py pack --days 7` includes redacted moments from each source. Set
+`RETRO_HOME` to a directory outside every repository before extracting.
+Antigravity's data directory defaults to `~/.gemini/antigravity-cli` and can be
+overridden for ingestion with `RETRO_ANTIGRAVITY_HOME`. Only one transcript
+export per conversation is measured, preferring `transcript_full.jsonl`.
+
+Antigravity session populations and token accounting are not observable in
+these exports. Its moments are explicitly candidate-sampled, not ranked or
+included in main-session rates. This support is in the Retro commands, not
+the separate evaluation adapters. Packs select sessions by their start date;
+an active session is a snapshot, not a completed outcome.

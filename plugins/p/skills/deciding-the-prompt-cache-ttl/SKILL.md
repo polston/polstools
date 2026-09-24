@@ -59,6 +59,12 @@ every pause stays under five minutes gets nothing from the one-hour TTL.
 The decision therefore lives in one narrow band: gaps between five minutes and
 one hour. Shorter and both policies hit; longer and both mostly miss.
 
+## Session corpus and retention
+
+Session corpora vary across harnesses:
+- **Claude Code**: Transcripts sit under `~/.claude/projects/<project-slug>/<session-id>.jsonl` (the target of `cache_ttl.py`).
+- **Antigravity (`agy`)**: Transcripts sit under `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` and session databases under `~/.gemini/antigravity-cli/conversations/`. Unlike systems with automated cache pruning, Antigravity retains all session logs locally indefinitely without automated TTL eviction.
+
 ## Reading the output
 
 - **Setting governs N% of read tokens.** Subagents run on the five-minute TTL

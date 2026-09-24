@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: Use when a p hook fails, Claude and Codex may load different plugin versions, obsolete polstools plugin IDs may remain, or the operator asks for a p installation health check.
+description: Use when a p hook fails, Claude, Codex, or Antigravity may load different plugin versions, obsolete polstools plugin IDs may remain, or the operator asks for a p installation health check.
 ---
 
 # Diagnose p

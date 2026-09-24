@@ -180,6 +180,35 @@ class HookProbeTests(unittest.TestCase):
             checks = self.doctor.probe_plugin_hooks("claude", plugin, runner=runner)
         self.assertEqual(["PASS", "PASS"], [check.status for check in checks])
 
+    def test_probe_forces_the_format_default_on(self):
+        captured = []
+
+        class Result:
+            returncode = 0
+            stderr = ""
+
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = self._plugin(Path(tmp))
+
+            def runner(argv, **kwargs):
+                captured.append(kwargs["env"])
+                payload = Path(argv[argv.index("gate") + 1]).read_text("utf-8")
+                return Result(payload)
+
+            checks = self.doctor.probe_plugin_hooks(
+                "codex", plugin, runner=runner
+            )
+        self.assertEqual(["PASS", "PASS"], [check.status for check in checks])
+        for env in captured:
+            self.assertEqual("on", env["P_FORMAT_DEFAULT"])
+            self.assertIn("P_FORMAT_STATE_DIR", env)
+            self.assertIn("P_FORMAT_CONFIG_FILE", env)
+            self.assertNotIn("CLAUDE_CODE_SESSION_ID", env)
+            self.assertEqual("p-doctor-check", env["CODEX_SESSION_ID"])
+
 
 class SchemaAndPackagingTests(unittest.TestCase):
     @classmethod
@@ -268,11 +297,16 @@ class SchemaAndPackagingTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        antigravity_manifest = json.loads(
+            (PLUGIN_ROOT / "plugin.json").read_text(encoding="utf-8")
+        )
         entry = next(item for item in marketplace["plugins"] if item["name"] == "p")
         self.assertEqual("1.10.0", entry["version"])
         self.assertEqual("1.10.0", manifest["version"])
         self.assertEqual("1.10.0", codex_manifest["version"])
+        self.assertEqual("1.10.0", antigravity_manifest["version"])
         self.assertEqual(manifest["description"], codex_manifest["description"])
+        self.assertEqual(manifest["description"], antigravity_manifest["description"])
 
 
 if __name__ == "__main__":

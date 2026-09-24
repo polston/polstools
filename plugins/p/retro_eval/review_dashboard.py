@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import difflib
 import json
+import os
 import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -193,9 +194,12 @@ def _version_mapping(manifest, key):
 
 
 def _git(repo_root, *args, check=True):
+    env = dict(os.environ)
+    env.setdefault("GIT_CONFIG_GLOBAL", "/dev/null")
+    env.setdefault("GIT_CONFIG_NOSYSTEM", "1")
     result = subprocess.run(
         ["git", *args], cwd=repo_root, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", check=False)
+        encoding="utf-8", errors="replace", check=False, env=env)
     if check and result.returncode:
         raise ValueError("repository changeset is unreadable")
     return result

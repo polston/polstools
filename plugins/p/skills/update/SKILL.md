@@ -1,6 +1,6 @@
 ---
 name: update
-description: Safely update p in Claude Code and Codex without deleting versioned cache snapshots still referenced by active sessions.
+description: Safely update p across installed harnesses (Claude Code, Codex, Antigravity) without deleting versioned cache snapshots still referenced by active sessions.
 ---
 
 # Update p safely
@@ -17,7 +17,7 @@ Run the plugin-owned updater exactly once:
 
 It updates every available installed harness, preserves prior Codex cache
 snapshots across the remove/add operation, and runs the newly installed doctor.
-Report every PASS line, the doctor result, and the exit code. Exit 0 means both
+Report every PASS line, the doctor result, and the exit code. Exit 0 means installed
 harnesses agree and existing sessions retain their original skill paths. Start
 new sessions to load the new version.
 

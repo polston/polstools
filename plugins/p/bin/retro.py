@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""retro — derive workflow-friction metrics from Claude Code and Codex session
+"""retro — derive workflow-friction metrics from Claude Code, Codex, and Antigravity session
 history.
 
 Seven subcommands:
@@ -54,8 +54,8 @@ from pathlib import Path
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
 
-# The two harnesses this tool ingests, Claude first (spec D1.3 dedup order).
-HARNESSES = ("claude", "codex")
+# Stable discovery precedence when transcript roots overlap.
+HARNESSES = ("claude", "codex", "antigravity")
 
 
 def claude_projects_dir():
@@ -77,7 +77,21 @@ def codex_sessions_dir():
     return codex_home_dir() / "sessions"
 
 
-_TRANSCRIPT_ROOT_DIRS = {"claude": claude_projects_dir, "codex": codex_sessions_dir}
+def antigravity_home_dir():
+    """RETRO_ANTIGRAVITY_HOME is an ingestion override, not a harness setting."""
+    value = os.environ.get("RETRO_ANTIGRAVITY_HOME")
+    return Path(value) if value else HOME / ".gemini" / "antigravity-cli"
+
+
+def antigravity_sessions_dir():
+    return antigravity_home_dir() / "brain"
+
+
+_TRANSCRIPT_ROOT_DIRS = {
+    "claude": claude_projects_dir,
+    "codex": codex_sessions_dir,
+    "antigravity": antigravity_sessions_dir,
+}
 
 
 def transcript_roots():
@@ -1277,12 +1291,108 @@ def measure_codex(path, root):
     return row
 
 
+# Antigravity transcripts expose conversation steps, not token accounting or
+# authoritative main/subagent metadata. Do not infer those from prose or paths.
+ANTIGRAVITY_INELIGIBLE = (
+    "tokens_in", "tokens_out", "cache_read", "tool_errors", "queued_prompts",
+    "permission_mode_changes", "skill_runs", "interrupts",
+)
+
+
+def _antigravity_step(rec):
+    if not isinstance(rec, dict):
+        return False
+    index = rec.get("step_index")
+    return (isinstance(index, int) and not isinstance(index, bool) and index >= 0
+            and isinstance(rec.get("type"), str) and bool(rec["type"])
+            and isinstance(rec.get("source"), str) and bool(rec["source"]))
+
+
+def antigravity_records(path):
+    """Keep the latest valid snapshot of each step, ordered by native index."""
+    steps = {}
+    for rec in read_records(path):
+        if _antigravity_step(rec):
+            steps[rec["step_index"]] = rec
+    yield from (steps[index] for index in sorted(steps))
+
+
+def measure_antigravity(path, root):
+    m = Counter()
+    prior = ""
+    first_ts = last_ts = None
+    seen = set()
+    tools = set()
+    saw_message = False
+    last_assistant = ""
+    for rec in antigravity_records(path):
+        ts = parse_ts(rec.get("created_at"))
+        if ts:
+            first_ts = min(first_ts, ts) if first_ts else ts
+            last_ts = max(last_ts, ts) if last_ts else ts
+        body = rec.get("content")
+        body = body if isinstance(body, str) else ""
+        if rec.get("type") == "PLANNER_RESPONSE" and rec.get("source") == "MODEL":
+            calls = rec.get("tool_calls")
+            calls = calls if isinstance(calls, list) else []
+            if body.strip() or calls:
+                m["turns"] += 1
+                saw_message = True
+                last_assistant = body
+            prior += body
+            for call in calls:
+                if not isinstance(call, dict) or not isinstance(call.get("name"), str):
+                    continue
+                m["tool_calls"] += 1
+                tools.add(call["name"])
+                args = call.get("args")
+                if args is not None:
+                    key = (call["name"], signature(args))
+                    if key in seen:
+                        m["repeat_calls"] += 1
+                    seen.add(key)
+        elif (rec.get("type") == "USER_INPUT"
+              and rec.get("source") == "USER_EXPLICIT" and body.strip()):
+            saw_message = True
+            m["user_prompts"] += 1
+            kind = classify_user_turn(body, len(prior))
+            if kind == "correction":
+                m["correction_candidates"] += 1
+            elif kind == "approval":
+                m["approval_turns"] += 1
+            prior = ""
+            last_assistant = ""
+    if not saw_message:
+        return None
+    rel = path.relative_to(root).as_posix()
+    row = {
+        "schema": SCHEMA_VERSION, "harness": "antigravity", "transcript": rel,
+        "population": "unknown", "population_source": "not_observable",
+        "parent_session_id": "", "session_id": Path(rel).parts[0],
+        "project": "", "project_key": "", "git_branch": "", "cc_version": "",
+        "date": first_ts.date().isoformat() if first_ts else "",
+        "duration_s": int((last_ts - first_ts).total_seconds())
+                      if first_ts and last_ts else 0,
+        "tokens_in": 0, "tokens_out": 0, "cache_read": 0,
+        "ineligible": list(ANTIGRAVITY_INELIGIBLE), "eligible": [],
+        "skills_used": [], "tools_used": sorted(tools), "compacted": False,
+        "ending": "text" if last_assistant.strip() else "silent",
+    }
+    row.update({key: m[key] for key in COUNTERS})
+    row.update({key: 0 for key in SUBAGENT_COUNTERS})
+    return row
+
+
 def measure_outcome(path, harness, root):
     """One file's outcome: (MEASURED, row), (NOT_TRANSCRIPT, None) or
     (UNREADABLE, None). Never raises for an unreadable file - the thread pool
     in cmd_extract abandons its whole result stream on the first exception."""
     try:
-        if is_rollout(path):
+        if harness == "antigravity":
+            # Discovery selects only native export files; the reducer validates
+            # their structured steps without imposing a leading-record limit.
+            row = measure_antigravity(path, root)
+        elif is_rollout(path):
             row = measure_codex(path, root)
         else:
             row = measure(path, harness, root)
@@ -1343,7 +1453,20 @@ def cmd_extract(args):
     candidates = {}
     duplicates = 0
     for harness, root in live:
-        for path in sorted(root.rglob("*.jsonl")):
+        if harness == "antigravity":
+            # Full and shortened exports describe the same steps. Prefer the
+            # full file when present; never ingest both or prompt-history files.
+            paths = []
+            for logs in root.glob("*/.system_generated/logs"):
+                full = logs / "transcript_full.jsonl"
+                short = logs / "transcript.jsonl"
+                if full.is_file():
+                    paths.append(full)
+                elif short.is_file():
+                    paths.append(short)
+        else:
+            paths = root.rglob("*.jsonl")
+        for path in sorted(paths):
             key = str(path.resolve())
             if key in candidates:
                 duplicates += 1
@@ -1364,7 +1487,9 @@ def cmd_extract(args):
             continue
         # A live session grows; re-measure when size or mtime moved.
         fingerprint = f"{stat.st_size}:{int(stat.st_mtime)}"
-        if state.get(str(path)) == fingerprint:
+        selected_row_exists = (harness != "antigravity" or
+                               (harness, path.relative_to(root).as_posix()) in rows)
+        if state.get(str(path)) == fingerprint and selected_row_exists:
             unchanged += 1
             continue
         stale.append((path, harness, root, fingerprint))
@@ -1388,6 +1513,11 @@ def cmd_extract(args):
                 unreadable += 1
                 continue
             if outcome == MEASURED:
+                if row_harness(row) == "antigravity":
+                    other = str(Path(row["transcript"]).with_name(
+                        "transcript.jsonl" if path.name == "transcript_full.jsonl"
+                        else "transcript_full.jsonl")).replace(os.sep, "/")
+                    rows.pop(("antigravity", other), None)
                 rows[(row_harness(row), row["transcript"])] = row
                 measured += 1
                 measured_by_harness[row.get("harness") or harness] += 1
@@ -1481,9 +1611,9 @@ def totals(rows):
             if key not in ineligible:
                 eligible_rows[key] += 1
         agg["tokens_out"] += int(row.get("tokens_out") or 0)
-        # tokens_out is observable on every harness; without this line a
-        # consumer dividing by its eligible count would drop the row.
-        eligible_rows["tokens_out"] += 1
+        # Token accounting is absent from Antigravity transcript exports.
+        if "tokens_out" not in ineligible:
+            eligible_rows["tokens_out"] += 1
     return agg, eligible_rows
 
 
@@ -1527,6 +1657,8 @@ def moments(row):
     try:
         if row_harness(row) == "codex":
             return _moments_codex(row)
+        if row_harness(row) == "antigravity":
+            return _moments_antigravity(row)
         return _moments(row)
     except TranscriptUnreadable:
         return []
@@ -1609,6 +1741,26 @@ def _moments_codex(row):
     return out
 
 
+def _moments_antigravity(row):
+    path = antigravity_sessions_dir() / row.get("transcript", "")
+    out, prior = [], ""
+    for rec in antigravity_records(path):
+        body = rec.get("content")
+        if not isinstance(body, str):
+            continue
+        if rec.get("type") == "PLANNER_RESPONSE" and rec.get("source") == "MODEL":
+            prior += body
+        elif (rec.get("type") == "USER_INPUT"
+              and rec.get("source") == "USER_EXPLICIT" and body.strip()):
+            moment = _moment_of({"timestamp": rec.get("created_at")}, body, prior)
+            if moment:
+                out.append(moment)
+            prior = ""
+        if len(out) >= MOMENTS_PER_SESSION:
+            break
+    return out
+
+
 def _candidate_signal(row):
     """The candidate-sampler's ranking signal for a row with no friction
     score: correction candidates, interrupts and approval turns, summed."""
@@ -1659,6 +1811,24 @@ def cmd_pack(args):
         "output only. They do not affect ranking and cannot justify a "
         "prompt, skill, rule, hook, agent, or process change.", ""]
     for harness in HARNESSES:
+        if harness == "antigravity":
+            current_unknown = [r for r in window if row_harness(r) == harness]
+            prior_unknown = [r for r in prior if row_harness(r) == harness]
+            if current_unknown or prior_unknown:
+                now_counts, _ = totals(current_unknown)
+                prev_counts, _ = totals(prior_unknown)
+                lines += ["### antigravity — unclassified sessions", "",
+                          "Observed step counts only; main/child population and "
+                          "token accounting are unavailable. No per-session rates.", "",
+                          "| signal | this window | prior |",
+                          "|---|---|---|",
+                          f"| sessions | {len(current_unknown)} | {len(prior_unknown)} |"]
+                for key in ("turns", "user_prompts", "tool_calls", "repeat_calls",
+                            "correction_candidates", "approval_turns"):
+                    label = key + " (candidate only)" if key == "correction_candidates" else key
+                    lines.append(f"| {label} | {now_counts[key]} | {prev_counts[key]} |")
+                lines.append("")
+            continue
         h_main = [r for r in main if row_harness(r) == harness]
         h_prior = [r for r in prior_main
                    if row_harness(r) == harness]
@@ -1711,7 +1881,7 @@ def cmd_pack(args):
         lines.append("")
     ranked = sorted(rankable, key=friction_score, reverse=True)[:args.sessions]
     if not ranked:
-        lines.append("_No sessions in window._")
+        lines.append("_No rankable Claude main sessions in window._")
     for row in ranked:
         score = friction_score(row)
         if score == 0:
@@ -1729,23 +1899,30 @@ def cmd_pack(args):
         _append_moment_lines(lines, moments(row))
         lines.append("")
 
-    codex_main = [r for r in main if r.get("harness") == "codex"]
-    sampled = sorted((r for r in codex_main if _candidate_signal(r)),
-                     key=_candidate_signal, reverse=True)[:args.sessions]
-    if sampled:
-        lines += ["## Codex moments — candidate-sampled, not ranked", "",
-                  "Selected by candidate signals (a use the legacy rubric "
-                  "allows); nothing here is a friction ranking.", ""]
-    for row in sampled:
-        evidence = moments(row)
-        if not evidence:
-            # A moved or unreadable rollout must not print a headed block
-            # with nothing under it (spec D4.3).
-            continue
-        lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
-                     f"branch `{row.get('git_branch') or '-'}`")
-        _append_moment_lines(lines, evidence)
-        lines.append("")
+    for harness in ("codex", "antigravity"):
+        candidates = [r for r in (main if harness == "codex" else window)
+                      if row_harness(r) == harness]
+        if harness == "antigravity" and candidates:
+            lines += ["Antigravity population is not observable: these sessions "
+                      "are excluded from main-session rates. Tokens, tool errors, "
+                      "interrupts, skill attribution, queued prompts and permission "
+                      "changes are unavailable, not measured zeros.", ""]
+        sampled = sorted((r for r in candidates if _candidate_signal(r)),
+                         key=_candidate_signal, reverse=True)[:args.sessions]
+        if sampled:
+            lines += [f"## {harness.capitalize()} moments — candidate-sampled, not ranked", "",
+                      "Selected by candidate signals (a use the legacy rubric "
+                      "allows); nothing here is a friction ranking.", ""]
+        for row in sampled:
+            evidence = moments(row)
+            if not evidence:
+                # A moved or unreadable rollout must not print a headed block
+                # with nothing under it (spec D4.3).
+                continue
+            lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
+                         f"branch `{row.get('git_branch') or '-'}`")
+            _append_moment_lines(lines, evidence)
+            lines.append("")
 
     out_path = WORK_DIR / f"pack-{now.isoformat()}-{args.days}d.md"
     # A pack quotes real conversation. It got this check late: `label` refused to
@@ -1777,7 +1954,7 @@ def installed_skills():
                 (codex_home / "plugins").rglob("skills/*/SKILL.md")}
              | {p.parent.name for p in
                 (HOME / ".agents" / "skills").glob("*/SKILL.md")})
-    return {"claude": claude, "codex": codex}
+    return {"claude": claude, "codex": codex, "antigravity": set()}
 
 
 def cmd_skills(args):
@@ -1785,7 +1962,7 @@ def cmd_skills(args):
     if args.days:
         start = (datetime.now(timezone.utc).date() - timedelta(days=args.days)).isoformat()
         rows = [r for r in rows if (r.get("date") or "") >= start]
-    used = {"claude": Counter(), "codex": Counter()}
+    used = {h: Counter() for h in HARNESSES}
     signal_files = Counter()
     any_codex = False
     for row in rows:
@@ -1800,6 +1977,8 @@ def cmd_skills(args):
     installed = installed_skills()
     window = f"last {args.days} days" if args.days else "all history"
     print(f"# Skill firing - {window}, {len(rows)} transcripts\n")
+    print("Inventory includes cached installations, not proof of active skills. "
+          "Absent attribution and missed opportunities are not observable.\n")
     print("## Fired\n")
     print("| skill | claude | codex | note |")
     print("|---|---|---|---|")
@@ -1818,10 +1997,12 @@ def cmd_skills(args):
               f"authoritative attribution (the source profile declares "
               f"none exists).")
     dormant_total = 0
-    for harness in HARNESSES:
+    if any(row_harness(r) == "antigravity" for r in rows):
+        print("\nAntigravity skill attribution and active inventory: not observable.")
+    for harness in ("claude", "codex"):
         dormant = sorted(installed[harness] - set(used[harness]))
         dormant_total += len(dormant)
-        print(f"\n## Never fired — {harness} "
+        print(f"\n## No observed attribution — {harness} "
               f"({len(dormant)} of {len(installed[harness])} installed)")
         for name in dormant:
             print(f"         {name}")
@@ -2529,6 +2710,8 @@ def cmd_effect(args):
     print(f"# Effect around {cut}{span}\n")
     print(f"population: harness={args.harness}, main sessions only; "
           f"subagent, automation and unknown rows are spend and excluded\n")
+    print("Task families and activation are not matched. Trends alone "
+          "do not establish an effect.\n")
     print(f"Before: {len(before)} sessions, {min((r['date'] for r in before), default='-')} "
           f"to {max((r['date'] for r in before), default='-')}")
     print(f"After:  {len(after)} sessions, {min((r['date'] for r in after), default='-')} "
@@ -2557,8 +2740,8 @@ def cmd_effect(args):
     # signal fell by half or more, INCLUDING turns and tokens, which is a change
     # in how the work was done rather than an effect of any edit. Per hundred
     # turns holds session length still, so a signal that moves there moved
-    # relative to the work. When the two disagree, the second answers the
-    # question and the first is telling you sessions changed shape.
+    # relative to turns. Neither normalization controls task mix, activation,
+    # quality, or follow-up; disagreement is a reason to inspect the cohorts.
     turns_b, turns_a = max(b["turns"], 1), max(a["turns"], 1)
     mixed = args.harness == "all"
     print("Main-session rows only, one population throughout.\n")
