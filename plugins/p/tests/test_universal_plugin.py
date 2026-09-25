@@ -68,7 +68,7 @@ class UniversalMetadataTests(unittest.TestCase):
             marketplace["plugins"],
         )
 
-    def test_release_metadata_is_synchronized_at_1_9_0(self):
+    def test_release_metadata_is_synchronized_at_1_10_0(self):
         claude_manifest = load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")
         codex_manifest = load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json")
         claude_marketplace = load_json(REPO_ROOT / ".claude-plugin" / "marketplace.json")

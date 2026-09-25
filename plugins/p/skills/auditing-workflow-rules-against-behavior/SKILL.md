@@ -22,11 +22,21 @@ a rule or skill is useful. Delete or sharpen only where evidence supports it.
 
 ## Coverage before interpretation
 
-The `retro.py` commands below read Claude history only. They do not switch to
-the active harness. For work spanning harnesses, use the existing extraction
-and coverage report described in `<plugin-root>/EVALUATION.md`; its registered
-adapters currently cover Claude and Codex. Antigravity is not measured by these
-commands. A source location alone does not establish parser support.
+The `retro.py` commands below ingest Claude, Codex, and Antigravity history,
+regardless of the active harness. Claude uses `CLAUDE_CONFIG_DIR` (default
+`~/.claude`); Codex uses `CODEX_HOME` (default `~/.codex`). Antigravity uses
+`~/.gemini/antigravity-cli/brain/*/.system_generated/logs/`, preferring
+`transcript_full.jsonl` over `transcript.jsonl` for each conversation. Set
+`RETRO_ANTIGRAVITY_HOME` to override the Antigravity CLI data directory for
+this reader. Run `extract` before reporting; a previously generated pack does
+not acquire new sources automatically.
+
+Antigravity moments are candidate-sampled across sessions of unknown
+main/child population, not friction-ranked or included in main-session rates.
+Its exported steps provide no token accounting, reliable tool-error markers,
+interrupt markers, permission changes, queued prompts, or skill attribution.
+Those fields are unavailable, not measured zeros. The separate evaluation
+adapters in `<plugin-root>/EVALUATION.md` still cover only Claude and Codex.
 
 Report observed sources, main and child populations, exclusions, snapshot or
 window bounds, and unavailable signals before drawing conclusions. Preserve
@@ -49,7 +59,10 @@ and retries that file on the next run.
 `skills` reports observed attribution against an inventory that includes cached
 installations, not an authoritative active catalogue. Names that fired but
 have no SKILL.md on disk are harness built-in commands or a skill since renamed —
-check before treating one as missing.
+check before treating one as missing. On a mixed corpus its output carries
+per-harness fired columns and lists without observed attribution; a skill that only
+Codex can trigger is named with its harness rather than folded into the shared
+count.
 
 **2. Triage skills without observed attribution.** For each, choose a verdict
 only after checking activation, attribution coverage, and applicable cases:

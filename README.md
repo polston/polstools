@@ -138,3 +138,18 @@ The optional local evaluation layer is documented in
 [`plugins/p/EVALUATION.md`](plugins/p/EVALUATION.md). Transcripts, labels,
 manifests, telemetry, and generated reports remain outside Git under an
 operator-selected `RETRO_HOME`.
+
+## Session history coverage
+
+`retro.py extract` reads Claude, Codex, and Antigravity CLI transcripts;
+`retro.py pack --days 7` includes redacted moments from each source. Set
+`RETRO_HOME` to a directory outside every repository before extracting.
+Antigravity's data directory defaults to `~/.gemini/antigravity-cli` and can be
+overridden for ingestion with `RETRO_ANTIGRAVITY_HOME`. Only one transcript
+export per conversation is measured, preferring `transcript_full.jsonl`.
+
+Antigravity session populations and token accounting are not observable in
+these exports. Its moments are explicitly candidate-sampled, not ranked or
+included in main-session rates. This support is in the Retro commands, not
+the separate evaluation adapters. Packs select sessions by their start date;
+an active session is a snapshot, not a completed outcome.

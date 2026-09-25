@@ -16,6 +16,9 @@ Exit codes match the sibling scripts in plugins/p/bin:
     0  ran clean, the TTL in force is the right one
     1  ran clean, the TTL should change
     2  could not run (no projects directory, no readable transcripts)
+
+Reads Claude transcript format only; Codex rollouts are a different format
+this reader does not parse.
 """
 
 EXIT_CLEAN, EXIT_FLAGGED, EXIT_CANNOT_RUN = 0, 1, 2

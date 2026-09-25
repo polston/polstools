@@ -17,11 +17,21 @@ not establish that a problem never occurred or that a rule was followed.
 
 ## Coverage before interpretation
 
-The `retro.py` commands below read Claude history only. They do not switch to
-the active harness. For work spanning harnesses, use the existing extraction
-and coverage report described in `<plugin-root>/EVALUATION.md`; its registered
-adapters currently cover Claude and Codex. Antigravity is not measured by these
-commands. A source location alone does not establish parser support.
+The `retro.py` commands below ingest Claude, Codex, and Antigravity history,
+regardless of the active harness. Claude uses `CLAUDE_CONFIG_DIR` (default
+`~/.claude`); Codex uses `CODEX_HOME` (default `~/.codex`). Antigravity uses
+`~/.gemini/antigravity-cli/brain/*/.system_generated/logs/`, preferring
+`transcript_full.jsonl` over `transcript.jsonl` for each conversation. Set
+`RETRO_ANTIGRAVITY_HOME` to override the Antigravity CLI data directory for
+this reader. Run `extract` before reporting; a previously generated pack does
+not acquire new sources automatically.
+
+Antigravity moments are candidate-sampled across sessions of unknown
+main/child population, not friction-ranked or included in main-session rates.
+Its exported steps provide no token accounting, reliable tool-error markers,
+interrupt markers, permission changes, queued prompts, or skill attribution.
+Those fields are unavailable, not measured zeros. The separate evaluation
+adapters in `<plugin-root>/EVALUATION.md` still cover only Claude and Codex.
 
 Report observed sources, main and child populations, exclusions, snapshot or
 window bounds, and unavailable signals before drawing conclusions. Preserve
@@ -45,8 +55,8 @@ and retries that file on the next run.
 previous window, then the highest-friction sessions with the actual moments
 quoted.
 
-**2. Read the pack. Only the pack.** Do not open transcripts. The corpus is most
-of a gigabyte, and the pack is already redacted — transcripts are not.
+**2. Read the pack. Only the pack.** Do not open transcripts. The pack is
+already redacted; raw transcripts are not.
 
 **3. Read trends as rates, not totals.** Compare each signal over its eligible
 population and check task mix and source coverage. The pack reports per-session
@@ -58,6 +68,14 @@ are sampling aids and cannot support decisions until their rubric is validated.
 Repeated calls are reported but do not affect ranking. Diagnose consequential
 cases with actual context; an expected error or a legitimate repeat is not
 necessarily a failure of the workflow.
+
+Moments quoted under a ranked session carry a `kind` of `interrupt`,
+`correction`, or `approval`. An approval is not friction — it is the
+operator's liked behaviour, captured by example — so treat it as evidence for
+keeping or strengthening a rule already in place, never as grounds to add a
+new one. The "Codex moments" and "Antigravity moments" sections further down the pack are
+candidate-sampled, not ranked: their ordering says nothing about which moment
+cost the most.
 
 **5. Write at most three proposals.** Each one has four parts:
 
@@ -97,7 +115,10 @@ Two of these carry a known measurement caveat. `skill_runs` counts contiguous
 stretches of the same skill being active, which is not the same as the number of
 times it was deliberately invoked, and the field it derives from is absent from
 transcripts written by older CLI versions. `tool_errors` counts records carrying
-a failure marker, which includes failures that were expected and handled.
+a failure marker, which includes failures that were expected and handled. On a
+mixed corpus, `tool_errors`, `queued_prompts`, and `permission_mode_changes` are
+not observable for Codex rows; the pack marks those lines with the observable
+share, and per-session rates divide by it.
 
 Every metric's precise definition, and the measurement that settled it, lives in
 `docs/plans/2026-08-12-retro-design.md`. Read it before arguing with a number.

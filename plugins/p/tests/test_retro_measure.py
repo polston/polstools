@@ -1,0 +1,83 @@
+"""Characterisation of measure() over a synthetic Claude transcript.
+
+Pins the counters, identity fields, and ending that the Codex ingestion
+change must not move. Written BEFORE that change, deliberately."""
+
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from fixtures import build_corpus, claude_assistant, claude_user
+from test_retro_extract import load_retro
+
+RETRO = load_retro()
+
+
+def write_session(root):
+    t0 = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    rows = [
+        claude_user("please do the thing", t0),
+        claude_assistant("x" * 400, t0 + timedelta(minutes=1),
+                         tools=[("Read", {"file_path": "/tmp/a"})]),
+        # Short reply after a long turn, corrective wording: a correction.
+        claude_user("no, wrong file", t0 + timedelta(minutes=2)),
+        # Long enough to clear CORRECTION_MIN_PRIOR_CHARS (200) — a short
+        # turn before "sure" classifies as nothing, not as an approval.
+        claude_assistant("z" * 400, t0 + timedelta(minutes=3)),
+        # Whole-reply affirmative after a long turn: an approval.
+        claude_user("sure", t0 + timedelta(minutes=4)),
+        claude_assistant("finished", t0 + timedelta(minutes=5)),
+    ]
+    build_corpus(root, [{"project": "projA", "session": "s1", "rows": rows}])
+    return root / "projA" / "s1.jsonl"
+
+
+class MeasureCharacterisation(unittest.TestCase):
+    def setUp(self):
+        self.retro = RETRO
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = write_session(Path(self.tmp.name))
+
+    def measure_row(self):
+        return self.retro.measure(self.path, "claude", Path(self.tmp.name))
+
+    def test_counters_pin(self):
+        row = self.measure_row()
+        self.assertEqual(3, row["turns"])
+        self.assertEqual(3, row["user_prompts"])
+        self.assertEqual(1, row["tool_calls"])
+        self.assertEqual(1, row["correction_candidates"])
+        self.assertEqual(1, row["approval_turns"])
+        self.assertEqual(0, row["repeat_calls"])
+        self.assertEqual(0, row["interrupts"])
+        self.assertEqual("text", row["ending"])
+
+    def test_identity_pin(self):
+        row = self.measure_row()
+        self.assertEqual("sess-claude-1", row["session_id"])
+        self.assertEqual("main", row["git_branch"])
+        self.assertEqual("2026-08-01", row["date"])
+        self.assertEqual(30, row["tokens_in"])
+        self.assertEqual(60, row["tokens_out"])
+        self.assertEqual(15, row["cache_read"])
+        self.assertEqual("main", row["population"])
+        self.assertEqual("projA", row["project_key"])
+
+    def test_subagent_layout_is_recognised_under_a_real_root(self):
+        sub_rows = [claude_user("go", datetime(2026, 8, 1, tzinfo=timezone.utc)),
+                    claude_assistant("ok", datetime(2026, 8, 1, tzinfo=timezone.utc))]
+        build_corpus(Path(self.tmp.name), [{
+            "project": "projA", "session": "s1",
+            "subagent": True, "rows": sub_rows}])
+        sub_path = (Path(self.tmp.name) / "projA" / "s1" / "subagents"
+                    / "agent-0.jsonl")
+        row = self.retro.measure(sub_path, "claude", Path(self.tmp.name))
+        self.assertEqual("subagent", row["population"])
+        self.assertEqual("claude", row["harness"])
+        self.assertEqual([], row["ineligible"])
+
+
+if __name__ == "__main__":
+    unittest.main()
