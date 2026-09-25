@@ -120,7 +120,7 @@ class AntigravityHistory(unittest.TestCase):
         rows = self.extract()
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(0, self.retro.cmd_pack(mock.Mock(days=7, sessions=8)))
-        pack = next(self.retro.WORK_DIR.glob("pack-*.md")).read_text()
+        pack = next(self.retro.WORK_DIR.glob("pack-*.md")).read_text(encoding="utf-8")
         self.assertIn("Antigravity moments — candidate-sampled, not ranked", pack)
         self.assertIn("population is not observable", pack)
         self.assertIn("unavailable, not measured zeros", pack)
