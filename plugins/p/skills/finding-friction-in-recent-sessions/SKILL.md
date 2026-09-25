@@ -45,7 +45,7 @@ re-read, so a routine run costs a fraction of a first build.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 7
+"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 7 --moments-per-session 3
 ```
 
 `extract` exits 1 when a transcript would not read. It still writes the ledger,
@@ -53,7 +53,12 @@ and retries that file on the next run.
 
 `pack` prints the path of one markdown file: trends for the window against the
 previous window, then the highest-friction sessions with the actual moments
-quoted.
+quoted. Each selected session samples candidates across the full transcript,
+including both ends when the limit is at least two. A limit of one selects the
+middle candidate. Report selected, available, and omitted counts; a capped
+sample cannot establish that later complaints are absent. Increase
+`--moments-per-session` when more context is needed; it accepts positive
+integers and does not change measured counters or session selection.
 
 **2. Read the pack. Only the pack.** Do not open transcripts. The pack is
 already redacted; raw transcripts are not.

@@ -1651,7 +1651,7 @@ def friction_score(row):
 MOMENTS_PER_SESSION = 3
 
 
-def moments(row):
+def _all_moments(row):
     """Redacted evidence for one session, or nothing at all if its
     transcript will not read or its harness has no reader."""
     try:
@@ -1662,6 +1662,30 @@ def moments(row):
         return _moments(row)
     except TranscriptUnreadable:
         return []
+
+
+def sample_moments(evidence, limit):
+    """Evenly spaced candidate positions, including both ends when possible."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("moments per session must be a positive integer")
+    if len(evidence) <= limit:
+        return evidence
+    if limit == 1:
+        return [evidence[len(evidence) // 2]]
+    return [evidence[i * (len(evidence) - 1) // (limit - 1)]
+            for i in range(limit)]
+
+
+def moments(row, limit=MOMENTS_PER_SESSION):
+    return sample_moments(_all_moments(row), limit)
+
+
+def _append_session_moments(lines, evidence, limit):
+    selected = sample_moments(evidence, limit)
+    omitted = len(evidence) - len(selected)
+    lines.append(f"Moments: {len(selected)} selected / {len(evidence)} available; "
+                 f"{omitted} omitted; capped: {'yes' if omitted else 'no'}.")
+    _append_moment_lines(lines, selected)
 
 
 def _moment_of(rec, body, prior):
@@ -1701,8 +1725,6 @@ def _moments(row):
             if moment:
                 out.append(moment)
             prior = ""
-        if len(out) >= MOMENTS_PER_SESSION:
-            break
     return out
 
 
@@ -1736,8 +1758,6 @@ def _moments_codex(row):
             if moment:
                 out.append(moment)
             prior = ""
-        if len(out) >= MOMENTS_PER_SESSION:
-            break
     return out
 
 
@@ -1756,8 +1776,6 @@ def _moments_antigravity(row):
             if moment:
                 out.append(moment)
             prior = ""
-        if len(out) >= MOMENTS_PER_SESSION:
-            break
     return out
 
 
@@ -1781,6 +1799,7 @@ def _append_moment_lines(lines, evidence):
 
 
 def cmd_pack(args):
+    limit = args.moments_per_session
     rows = load_rows()
     now = datetime.now(timezone.utc).date()
     start = now - timedelta(days=args.days)
@@ -1801,6 +1820,8 @@ def cmd_pack(args):
     lines = [f"# Evidence pack — last {args.days} days",
              f"Window: {start} to {now}. Main sessions: {len(main)} "
              f"(prior window: {len(prior_main)}).{compacted_note}", "",
+             f"Moment limit per session: {limit}. Samples span candidate order; "
+             "with a limit of one, the middle candidate is shown.", "",
              "## Trends", ""]
     lines += [
         "Per-harness blocks; token and turn columns are never summed or "
@@ -1896,7 +1917,7 @@ def cmd_pack(args):
                      f"repeat calls {row.get('repeat_calls')}, "
                      f"tool errors {row.get('tool_errors')}, "
                      f"queued prompts {row.get('queued_prompts')}")
-        _append_moment_lines(lines, moments(row))
+        _append_session_moments(lines, _all_moments(row), limit)
         lines.append("")
 
     for harness in ("codex", "antigravity"):
@@ -1914,14 +1935,14 @@ def cmd_pack(args):
                       "Selected by candidate signals (a use the legacy rubric "
                       "allows); nothing here is a friction ranking.", ""]
         for row in sampled:
-            evidence = moments(row)
+            evidence = _all_moments(row)
             if not evidence:
                 # A moved or unreadable rollout must not print a headed block
                 # with nothing under it (spec D4.3).
                 continue
             lines.append(f"### {row['date']} · {row.get('project') or '?'} · "
                          f"branch `{row.get('git_branch') or '-'}`")
-            _append_moment_lines(lines, evidence)
+            _append_session_moments(lines, evidence, limit)
             lines.append("")
 
     out_path = WORK_DIR / f"pack-{now.isoformat()}-{args.days}d.md"
@@ -2802,6 +2823,16 @@ def cmd_effect(args):
     return EXIT_FLAGGED if thin else EXIT_CLEAN
 
 
+def positive_int(value):
+    try:
+        result = int(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    if result < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(prog="retro", description=__doc__)
     sub = parser.add_subparsers(required=True)
@@ -2815,6 +2846,9 @@ def main():
     p_pack.add_argument("--days", type=int, default=7)
     p_pack.add_argument("--sessions", type=int, default=8,
                         help="how many top-friction sessions to quote")
+    p_pack.add_argument("--moments-per-session", type=positive_int,
+                        default=MOMENTS_PER_SESSION,
+                        help="maximum moments per session, spread across candidates (default: 3)")
     p_pack.set_defaults(func=cmd_pack)
 
     p_skills = sub.add_parser("skills", help="which installed skills actually fire")

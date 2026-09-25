@@ -66,7 +66,7 @@ class Reporting(unittest.TestCase):
                      ineligible=["tool_errors", "queued_prompts",
                                  "permission_mode_changes"]),
         ])
-        self.run_cmd(retro, retro.cmd_pack, days=7, sessions=8)
+        self.run_cmd(retro, retro.cmd_pack, days=7, sessions=8, moments_per_session=3)
         pack = next(self.work.glob("pack-*.md")).read_text(encoding="utf-8")
         self.assertIn("### claude", pack)
         self.assertIn("### codex", pack)
@@ -90,7 +90,7 @@ class Reporting(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         retro = self.load_with_ledger([base_row(tool_errors=1)])
-        self.run_cmd(retro, retro.cmd_pack, days=7, sessions=8)
+        self.run_cmd(retro, retro.cmd_pack, days=7, sessions=8, moments_per_session=3)
         pack = next(self.work.glob("pack-*.md")).read_text(encoding="utf-8")
         today = datetime.now(timezone.utc).date().isoformat()
         self.assertIn(f"### {today} ·", pack)
@@ -193,7 +193,7 @@ class Reporting(unittest.TestCase):
                                  "permission_mode_changes"]),
         ])
         with mock.patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
-            self.run_cmd(retro, retro.cmd_pack, days=3650, sessions=8)
+            self.run_cmd(retro, retro.cmd_pack, days=3650, sessions=8, moments_per_session=3)
         pack = max(self.work.glob("pack-*.md")).read_text(encoding="utf-8")
         self.assertIn("candidate-sampled", pack)
         self.assertIn("**approval**", pack)
