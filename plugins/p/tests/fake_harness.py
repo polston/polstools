@@ -56,6 +56,7 @@ class FakeHarness:
             "USERPROFILE": str(self.home),
             "CODEX_HOME": str(self.home / ".codex"),
             "P_CODEX_CONFIG_FILE": str(self.home / ".codex" / "config.toml"),
+            "P_UPDATE_STATE_DIR": str(self.home / ".codex" / "p-update"),
         }
         for name in ("claude", "codex", "agy"):
             key = prefix + name.upper()
