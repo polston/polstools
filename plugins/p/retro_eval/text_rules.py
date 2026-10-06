@@ -240,3 +240,68 @@ def _predict_at(sample, max_chars, min_prior):
                               sample["prior_chars"],
                               max_chars=max_chars,
                               min_prior=min_prior) or "none"
+
+
+def content_text(content, block_types, bare_strings=False, skipped=None):
+    """The text-bearing pieces of a `content` field, as an unjoined list of
+    strings -- callers decide how to filter and join, since the two shapes
+    that flatten through here disagree about both.
+
+    A bare string in a content list passes through only when `bare_strings`
+    is set (Claude content mixes plain strings and typed blocks; Codex
+    content never does). A `tool_result` block, when its type is in
+    `block_types`, contributes its own string `content` field instead of a
+    `text` key -- the one shape neither format's other block types use.
+
+    A text piece that is not a string is dropped, and tallied under `bad_text`
+    in `skipped` when the caller passes a Counter: one forward-incompatible
+    block must not cost the whole transcript.
+    """
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    parts = []
+    for block in content:
+        if bare_strings and isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") in block_types:
+            if block.get("type") == "tool_result":
+                inner = block.get("content")
+                if isinstance(inner, str):
+                    parts.append(inner)
+            else:
+                parts.append(block.get("text") or "")
+    good = [p for p in parts if isinstance(p, str)]
+    if skipped is not None and len(good) != len(parts):
+        skipped["bad_text"] += len(parts) - len(good)
+    return good
+
+
+def text_of(message, skipped=None):
+    """Flatten a message's content to plain text. Content is a string on some
+    records and a list of typed blocks on others."""
+    if not isinstance(message, dict):
+        return ""
+    parts = content_text(message.get("content"), ("text", "tool_result"),
+                         bare_strings=True, skipped=skipped)
+    return "\n".join(p for p in parts if p)
+
+
+def prose_of(message):
+    """A message's text blocks only.
+
+    Deliberately not text_of(), which also flattens tool_result bodies into the
+    string. That is right for quoting a turn and wrong for asking whether the
+    agent itself said anything: a transcript that merely read a file mentioning
+    the interrupt marker would otherwise read as interrupted.
+    """
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(block.get("text") or "" for block in content
+                     if isinstance(block, dict) and block.get("type") == "text")

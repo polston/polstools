@@ -9,21 +9,7 @@ from .base import (AdapterBase, AdapterResult, iter_jsonl, parse_timestamp,
                    prompt_evidence)
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
 from ..taxonomies import classify_failure_evidence
-
-
-def _message_text(message) -> str:
-    """Message text joined as bin/retro.py's text_of joins it, unstripped, so
-    character counts match the ledger's prior-turn lengths."""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts = [block if isinstance(block, str) else str(block.get("text") or "")
-             for block in content
-             if isinstance(block, str)
-             or isinstance(block, dict) and block.get("type") == "text"]
-    return "\n".join(part for part in parts if part)
+from ..text_rules import text_of
 
 
 def _direct_human(record, message, direct_prompt_sources) -> bool:
@@ -270,14 +256,14 @@ class ClaudeAdapter(AdapterBase):
             if not isinstance(message, dict):
                 continue
             if record.get("type") == "assistant":
-                text = _message_text(message)
+                text = text_of(message)
                 if text:
                     context.append(text)
             elif (_direct_human(record, message, self.direct_prompt_sources)
-                  and _message_text(message).strip()):
+                  and text_of(message).strip()):
                 span_id = self.ids.make(trace_id, sequence, SpanKind.PROMPT.value)
                 evidence[span_id] = prompt_evidence(
-                    redactor, _message_text(message), context)
+                    redactor, text_of(message), context)
                 context = []
         return evidence
 
