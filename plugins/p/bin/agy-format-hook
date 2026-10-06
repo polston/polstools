@@ -25,10 +25,18 @@
 here=${0%/*}
 [ "$here" = "$0" ] && here=.
 
-event=''
-while IFS= read -r line || [ -n "$line" ]; do
-  event=$event$line
-done
+if command -v cat >/dev/null 2>&1; then
+  # One read of all of stdin, linear in its size; the sentinel keeps
+  # trailing newlines.
+  event=$(cat; printf x)
+  event=${event%x}
+else
+  # No cat on PATH: shell builtins only, slower on very long input.
+  event=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    event=$event$line
+  done
+fi
 
 # Value of a top-level "key": cut to its leading [A-Za-z0-9._-] run.
 field() {

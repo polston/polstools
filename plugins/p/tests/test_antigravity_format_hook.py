@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -162,6 +163,17 @@ class AntigravityFormatHookTests(unittest.TestCase):
             ["sh", str(HOOK)], input=self.event(), text=True, encoding="utf-8",
             capture_output=True, env=dict(env, P_FORMAT_DEFAULT="on"), cwd=PLUGIN_ROOT)
         self.assertTrue(marker.exists())
+
+    def test_long_stdin_is_read_in_linear_time_on_the_off_path(self):
+        stdin = self.event() + "\n" + "\n".join(["x"] * 20000) + "\n"
+        started = time.monotonic()
+        completed = subprocess.run(
+            ["sh", str(HOOK)], input=stdin, text=True, encoding="utf-8",
+            capture_output=True, env=self.env, cwd=PLUGIN_ROOT)
+        elapsed = time.monotonic() - started
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual({}, json.loads(completed.stdout))
+        self.assertLess(elapsed, 1.0)
 
     def test_envelopes_match_the_markdown_payloads(self):
         completed = subprocess.run(
