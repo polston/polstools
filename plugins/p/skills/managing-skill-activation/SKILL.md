@@ -13,6 +13,10 @@ path two directories above this `SKILL.md`, whose directory is
 path, never from the working directory or an environment variable. `<python>`
 is `sh <plugin-root>/bin/python-launcher`.
 
+Activation is advisory on every harness. Each governed skill and command runs
+that check first and stops when it exits 1 or 2, but no harness blocks a skill
+that skips the step, and no hook enforces it.
+
 Use the same controller for the requested operation:
 
 - `status` or `status --json` reports the effective profile, source,
@@ -23,9 +27,9 @@ Use the same controller for the requested operation:
   guess the scope; use the scope the operator requested.
 - `reset --session|--global` removes that scope's selection and overrides.
 - `sync-native` optionally refreshes p-owned Codex catalog entries after a
-  plugin update. It affects future-session visibility and is not required for
-  enforcement. Do not run it unless the operator explicitly asks for catalog
-  hiding; a current session cannot reload a skill removed at startup. Claude
+  plugin update. It affects future-session visibility only. Do not run it unless
+  the operator explicitly asks for catalog hiding; a current session cannot
+  reload a skill removed at startup. Claude
   Code and Antigravity have no per-skill switch for plugin skills, so there a
   disabled skill stays listed and is stopped only by its own
   `skill-profile-ctl check` guard.

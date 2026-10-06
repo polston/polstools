@@ -5,6 +5,10 @@ description: Check supported Claude and Codex statusline alignment.
 
 # Check aligned status lines
 
+Claude Code and Codex only. An Antigravity plugin cannot register a status
+line; Antigravity changes its status line only through its own `/statusline`
+command, and the `aligning-statuslines` skill explains how to check it.
+
 Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check statusline-check`. If it
 exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute path

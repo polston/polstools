@@ -36,7 +36,7 @@ Its exported steps do not carry token usage on every step, so token usage is
 not measured; they provide no reliable tool-error markers, interrupt markers,
 permission changes, queued prompts, or skill attribution. Those fields are
 unavailable, not measured zeros. The separate evaluation
-adapters in `<plugin-root>/EVALUATION.md` still cover only Claude and Codex.
+adapters in `<plugin-root>/EVALUATION.md` cover Claude, Codex, and Antigravity.
 
 Report observed sources, main and child populations, exclusions, snapshot or
 window bounds, and unavailable signals before drawing conclusions. Preserve
