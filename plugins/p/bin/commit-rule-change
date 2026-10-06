@@ -52,10 +52,14 @@ fi
 # an error if the repository has never heard of it either. Found by using this
 # script: it refused to record a deleted memory file, which is exactly the kind
 # of change someone would later want a date for.
-DIR=$(dirname "$TARGET")
-BASE_NAME=$(basename "$TARGET")
+DIR=$(dirname -- "$TARGET")
+BASE_NAME=$(basename -- "$TARGET")
+if [ -z "$BASE_NAME" ]; then
+    echo "no file name in: $TARGET" >&2
+    exit 2
+fi
 DIR=$(CDPATH= cd -- "$DIR" 2>/dev/null && pwd) || {
-    echo "no such directory: $(dirname "$TARGET")" >&2
+    echo "no such directory: $(dirname -- "$TARGET")" >&2
     exit 2
 }
 TARGET="$DIR/$BASE_NAME"

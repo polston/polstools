@@ -59,6 +59,19 @@ class CommitRuleChangeTests(unittest.TestCase):
         hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         hook.chmod(0o755)
 
+    def test_a_relative_name_starting_with_a_dash_commits_only_that_file(self):
+        self.write("-x.md", "rule")
+        self.write("other.txt", "dirty")
+        self.git("add", "other.txt")
+        self.write("unrelated.txt", "untracked")
+        before = self.commits()
+
+        result = self.run_script("-x.md")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.commits(), before + 1)
+        self.assertEqual(self.last_commit_files(), ["-x.md"])
+
     def test_commits_only_the_given_file(self):
         self.write("rule.md", "v2")
         self.write("other.md", "unrelated")
