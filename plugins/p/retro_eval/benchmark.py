@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .cli import command
 from .pipeline import _inside_repository
 
 
@@ -225,6 +226,7 @@ def benchmark_storage(path: Path, backend: str, work_dir: Path, *, runs: int = 5
     return result
 
 
+@command
 def main(argv=None):
     registry = default_benchmark_registry()
     parser = argparse.ArgumentParser()

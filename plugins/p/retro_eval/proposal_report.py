@@ -9,6 +9,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from .cli import command
 from .catalog import ensure_rubric_use, load_rubric_catalogue
 from .proposals import Proposal, load_proposal_policy, proposal_review
 
@@ -238,6 +239,7 @@ def _inside_repository(path: Path):
     return any((parent / ".git").exists() for parent in (resolved, *resolved.parents))
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidates", type=Path, required=True)

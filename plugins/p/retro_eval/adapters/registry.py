@@ -19,6 +19,13 @@ class AdapterRegistration:
     class_name: str = ""
     options: dict[str, object] | None = None
 
+    def accepts_option(self, name: str) -> bool:
+        """Whether the profile-built adapter class takes this constructor option."""
+        if self.factory is not None or not self.module:
+            return False
+        adapter_class = getattr(importlib.import_module(self.module), self.class_name)
+        return name in inspect.signature(adapter_class.__init__).parameters
+
     def create(self, salt: bytes, runtime_options=None):
         options = dict(self.options or {})
         options.update(runtime_options or {})

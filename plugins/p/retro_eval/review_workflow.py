@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 
+from .cli import command
 from .annotation import _load_packet_manifest
 from .annotation_ui import AnnotationWorkspace, serve_annotation_ui
 from .review_dashboard import build_review_dashboard
@@ -64,7 +65,10 @@ def _packet_states(review_dir: Path, split: str):
                 rows = list(csv.DictReader(handle))
         except OSError as exc:
             raise ValueError("taxonomy review packet is unreadable") from exc
-        if not rows or "assessment" not in rows[0]:
+        if not rows:
+            raise ValueError("%s has no cases to review; resample from a "
+                             "larger extraction" % source.name)
+        if "assessment" not in rows[0]:
             raise ValueError("taxonomy review packet lacks assessments")
         assessments = [str(row.get("assessment") or "").strip() for row in rows]
         invalid = sorted(set(assessments) - _ASSESSMENTS)
@@ -130,6 +134,7 @@ def select_display_packet(status):
     return packets[-1] if packets else None
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)

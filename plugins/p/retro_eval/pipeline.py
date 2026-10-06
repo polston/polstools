@@ -10,6 +10,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from .cli import command
 from .adapters.registry import AdapterRegistry, default_registry
 from .instruction_manifest import load_instruction_manifest
 from .storage import JsonlTraceStore
@@ -112,15 +113,29 @@ class EvaluationPipeline:
     def extract(self, *, roots: dict[str, Path] | None = None,
                 claude_root: Path | None = None, codex_root: Path | None = None,
                 exclude_session_ids=(), adapter_options=None) -> ExtractionSummary:
-        salt = self.work.id_salt()
         roots = dict(roots or {})
         if claude_root is not None:
             roots["claude"] = claude_root
         if codex_root is not None:
             roots["codex"] = codex_root
-        adapter_options = dict(adapter_options or {})
+        registered = sorted(registration.name for registration in self.registry)
+        unknown = sorted(set(roots) - set(registered))
+        if not roots or unknown:
+            raise ValueError("unregistered source %s; registered sources: %s" % (
+                ", ".join(unknown) or "(none given)", ", ".join(registered)))
+        missing = sorted(name for name, path in roots.items()
+                         if not Path(path).is_dir())
+        if missing:
+            raise ValueError("source root is not a directory: %s" % ", ".join(missing))
+        salt = self.work.id_salt()
+        adapter_options = {name: dict(value)
+                           for name, value in (adapter_options or {}).items()}
         if exclude_session_ids:
-            adapter_options.setdefault("codex", {})["excluded_session_ids"] = exclude_session_ids
+            for registration in self.registry:
+                if registration.name in roots and registration.accepts_option(
+                        "excluded_session_ids"):
+                    adapter_options.setdefault(registration.name, {})[
+                        "excluded_session_ids"] = tuple(exclude_session_ids)
         all_records = []
         excluded = Counter()
         sources = {}
@@ -213,6 +228,7 @@ class EvaluationPipeline:
         return summary
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -223,10 +239,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     roots = {}
     for value in args.root:
-        try:
-            name, path = value.split("=", 1)
-        except ValueError as exc:
-            raise ValueError("roots must use name=path") from exc
+        name, separator, path = value.partition("=")
+        if not separator or not name or not path or name in roots:
+            raise ValueError("roots must be unique name=path values")
         roots[name] = Path(path)
     summary = EvaluationPipeline(
         args.work_dir,

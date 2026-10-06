@@ -41,8 +41,12 @@ class ClaudeAdapter(AdapterBase):
     source = "claude"
     adapter_version = 4
 
-    def __init__(self, id_salt: bytes, direct_prompt_sources=None, capabilities=None):
+    def __init__(self, id_salt: bytes, direct_prompt_sources=None, capabilities=None,
+                 excluded_session_ids=None):
         super().__init__(id_salt)
+        self.excluded_session_ids = {
+            str(value).lower() for value in (excluded_session_ids or ())
+        }
         if direct_prompt_sources is None or capabilities is None:
             from .registry import default_options_for
             defaults = default_options_for(self.source)
@@ -56,7 +60,16 @@ class ClaudeAdapter(AdapterBase):
 
     def read(self, path: Path, root: Path) -> AdapterResult:
         trace_id = self.trace_id(path, root)
-        is_subagent = "subagents" in {part.lower() for part in path.relative_to(root).parts}
+        relative = path.relative_to(root)
+        is_subagent = "subagents" in {part.lower() for part in relative.parts}
+        # A main transcript is <project>/<session>.jsonl; its subagents live
+        # under <project>/<session>/subagents/.
+        session = relative.parts[1] if len(relative.parts) > 2 else path.stem
+        if session.lower() in self.excluded_session_ids:
+            return AdapterResult(
+                source=self.source, included=False,
+                exclusion_reason="active_or_explicitly_excluded",
+                is_subagent=is_subagent, records=())
         mode = "subagent" if is_subagent else "main"
         records = []
         human_prompts = tool_calls = tool_results = 0

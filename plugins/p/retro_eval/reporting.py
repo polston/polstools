@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from datetime import timedelta
 from pathlib import Path
 
+from .cli import command, full_commit
 from .catalog import load_metric_catalogue, load_rubric_catalogue
 from .dataset import DatasetManifest, load_dataset_policy
 from .scorers import default_scorers
@@ -225,11 +226,12 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
     return report
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--created-commit", required=True)
+    parser.add_argument("--created-commit", required=True, type=full_commit)
     parser.add_argument("--dataset-id", default="cross-harness-v1")
     args = parser.parse_args(argv)
     if _inside_repository(args.output.parent):

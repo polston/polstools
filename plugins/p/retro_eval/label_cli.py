@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .cli import command, full_commit
 from .annotation import (import_annotations, predict_annotations,
                          render_annotation_guide, sample_annotations,
                          validate_prediction_artifact)
@@ -25,6 +26,7 @@ def _current_legacy_predictor():
         sample, CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS)
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -67,7 +69,7 @@ def main(argv=None):
     predictor.add_argument("--predictions", type=Path, required=True)
     predictor.add_argument("--manifest", type=Path, required=True)
     predictor.add_argument("--prediction-manifest", type=Path, required=True)
-    predictor.add_argument("--created-commit", required=True)
+    predictor.add_argument("--created-commit", required=True, type=full_commit)
     predictor.add_argument("--rubric-id", default="turn_friction_legacy")
     predictor.add_argument(
         "--rubrics", type=Path,
