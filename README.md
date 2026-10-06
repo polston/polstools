@@ -47,7 +47,9 @@ seven names are both a command and a skill there and the short form is
 ambiguous for them, so use `/p:<skill>`.
 
 Antigravity reads a plugin's hooks from `<plugin-root>/hooks.json`, so its
-response-format hook is declared there, separately from `hooks/hooks.json`.
+response-format hook is declared there, separately from `hooks/hooks.json`. On
+Windows, Antigravity runs hooks through `cmd /c`, so Git's `usr\bin` (which
+holds `sh.exe`) must be on the Windows `PATH`.
 
 ## Diagnose
 
