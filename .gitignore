@@ -436,7 +436,3 @@ FodyWeavers.xsd
 
 # Claude Code local state and worktrees — never commit
 .claude/
-
-# Stray artifacts from interactive terminals
-/I
-/ace438c.

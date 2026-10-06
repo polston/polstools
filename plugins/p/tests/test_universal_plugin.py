@@ -117,7 +117,7 @@ class ValidationEntrypointTests(unittest.TestCase):
         self.assertIn("python-launcher", launcher)
         self.assertIn("p_validate.py", launcher)
 
-    def test_validator_passes_source_and_both_installed_copy_smokes(self):
+    def test_validator_passes_source_and_relocated_copy(self):
         result = subprocess.run(
             ["sh", "plugins/p/bin/p-validate"],
             text=True,
@@ -127,8 +127,7 @@ class ValidationEntrypointTests(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertIn("PASS source package", result.stdout)
-        self.assertIn("PASS Claude installed copy", result.stdout)
-        self.assertIn("PASS Codex installed copy", result.stdout)
+        self.assertIn("PASS relocated copy", result.stdout)
 
     def test_validator_flags_a_copy_missing_its_universal_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
