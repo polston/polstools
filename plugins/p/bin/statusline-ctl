@@ -168,6 +168,7 @@ def paths():
         "codex": Path(os.environ.get("STATUSLINE_CODEX_CONFIG") or Path.home() / ".codex" / "config.toml"),
         "state": state_dir,
         "rollback": state_dir / ROLLBACK_NAME,
+        "install": install_dir,
         "renderer": install_dir / renderer_name,
         "renderer_py": install_dir / "claude-statusline.py",
         "renderer_ps1": install_dir / "claude-statusline.ps1",
@@ -471,8 +472,17 @@ def profile_bundle_changes(target, include_renderer=False):
             sources.append((target["renderer_py"], RENDERER_SOURCE_PY))
     for _, source in sources:
         if not source.is_file():
-            raise FileNotFoundError("status profile source is missing")
+            raise FileNotFoundError("status profile source is missing: " + source.name)
     return [(destination, source.read_bytes()) for destination, source in sources]
+
+
+def stale_bundle_files(target, include_renderer=False):
+    """Names of installed bundle files that are missing or differ from this plugin."""
+    stale = []
+    for destination, payload in profile_bundle_changes(target, include_renderer):
+        if not destination.is_file() or destination.read_bytes() != payload:
+            stale.append(destination.name)
+    return stale
 
 
 _SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
@@ -869,37 +879,41 @@ def apply_config():
     return 0
 
 
-def check_config():
+def ever_managed(target):
+    """Whether p has applied or synchronized a statusline on this machine."""
+    return target["rollback"].exists() or target["install"].exists()
+
+
+def check_config(unmanaged_ok=True):
     target = paths()
+    if unmanaged_ok and not ever_managed(target):
+        print("not managed: p has not applied a statusline here; statusline-ctl sync applies one")
+        return 0
     drift = []
+    repairable = False
     try:
         desired_c = desired_claude(target["renderer"])
         claude = load_claude(target["claude"])
         provider = claude_provider(claude.get("statusLine"), desired_c, owned_renderers(target))
-        if provider == "legacy":
+        if provider == "external":
+            drift.append("Claude setting (external renderer, left unmanaged)")
+        elif provider == "missing":
+            drift.append("Claude setting (no renderer)")
+            repairable = True
+        elif provider == "legacy":
             drift.append("Claude setting (renderer command from an earlier p release)")
-        elif provider not in {"bundled", "ccstatusline"}:
-            drift.append("Claude setting")
+            repairable = True
         codex_text = target["codex"].read_text(encoding="utf-8-sig") if target["codex"].exists() else ""
         if read_codex_status(codex_text) != CODEX_STATUS_LINE:
             drift.append("Codex setting")
-        if provider == "bundled" and (
-            not target["renderer"].is_file()
-            or target["renderer"].read_bytes() != RENDERER_SOURCE.read_bytes()
-        ):
-            drift.append("Claude renderer")
+            repairable = True
         if provider in {"bundled", "legacy", "ccstatusline"}:
-            for destination, source in (
-                (target["profile_label"], PROFILE_LABEL_SOURCE),
-                (target["profile_lib"], ACTIVATION_LIB_SOURCE),
-                (target["profile_policy"], ACTIVATION_PROFILE_SOURCE),
-            ):
-                if (
-                    not destination.is_file()
-                    or destination.read_bytes() != source.read_bytes()
-                ):
-                    drift.append("Claude profile indicator")
-                    break
+            stale = stale_bundle_files(
+                target, include_renderer=provider in {"bundled", "legacy"}
+            )
+            if stale:
+                drift.append("Claude status bundle (stale: " + ", ".join(stale) + ")")
+                repairable = True
         if provider == "ccstatusline":
             cc_path = ccstatusline_config_path(claude.get("statusLine"), target)
             cc_settings = load_ccstatusline(cc_path)
@@ -908,11 +922,16 @@ def check_config():
             )
             if cc_updated != cc_settings:
                 drift.append("Claude profile widget")
+                repairable = True
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print("cannot check: " + str(error), file=sys.stderr)
         return 2
     if drift:
-        print("drift: " + ", ".join(drift))
+        remedy = (
+            "; repair with: statusline-ctl sync"
+            if repairable and provider != "external" else ""
+        )
+        print("drift: " + "; ".join(drift) + remedy)
         return 1
     if provider == "ccstatusline":
         print(
@@ -925,7 +944,7 @@ def check_config():
 
 
 def sync_config():
-    checked = check_config()
+    checked = check_config(unmanaged_ok=False)
     if checked != 1:
         return checked
     applied = apply_config()

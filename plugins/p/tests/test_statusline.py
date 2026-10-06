@@ -691,6 +691,7 @@ class StatuslineCliTests(unittest.TestCase):
             checked = self.run_ctl("check", env)
             self.assertEqual(checked.returncode, 1, checked.stderr)
             self.assertIn("earlier p release", checked.stdout)
+            self.assertIn("repair with: statusline-ctl sync", checked.stdout)
 
             before = claude_path.read_bytes()
             refreshed = self.run_ctl("profile-sync", env)
@@ -729,6 +730,91 @@ class StatuslineCliTests(unittest.TestCase):
             restored = self.run_ctl("restore", env)
             self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
             self.assertNotIn("statusLine", json.loads(claude_path.read_text("utf-8")))
+
+    def test_check_names_stale_bundle_files_and_sync_repairs_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"}}), "utf-8"
+            )
+            Path(env["STATUSLINE_CCSTATUSLINE_CONFIG"]).write_text(
+                json.dumps({"version": 3, "lines": [[{"id": "model", "type": "model"}], []]}), "utf-8"
+            )
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            installed = Path(env["STATUSLINE_INSTALL_DIR"])
+            (installed / "skill_activation.py").write_text("# an older copy\n", "utf-8")
+            (installed / "skill-activation-v1.json").unlink()
+
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 1, checked.stderr)
+            self.assertIn("stale: skill_activation.py, skill-activation-v1.json", checked.stdout)
+            self.assertNotIn("skill-profile-label.py", checked.stdout)
+            self.assertIn("repair with: statusline-ctl sync", checked.stdout)
+
+            self.assertEqual(self.run_ctl("sync", env).returncode, 0)
+            self.assertEqual(self.run_ctl("check", env).returncode, 0)
+
+    def test_check_exits_zero_until_p_has_managed_a_statusline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            for settings in ({}, {"statusLine": {"type": "command", "command": "custom-renderer"}}):
+                with self.subTest(settings=settings):
+                    claude_path.write_text(json.dumps(settings), "utf-8")
+                    checked = self.run_ctl("check", env)
+                    self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                    self.assertIn("not managed", checked.stdout)
+            self.assertFalse((root / "state").exists())
+            self.assertFalse((root / "install").exists())
+
+            claude_path.write_text("{}\n", "utf-8")
+            synced = self.run_ctl("sync", env)
+            self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+            self.assertIn("applied:", synced.stdout)
+            self.assertEqual(self.run_ctl("check", env).returncode, 0)
+            (Path(env["STATUSLINE_INSTALL_DIR"]) / "skill_activation.py").write_text("# older\n", "utf-8")
+            drifted = self.run_ctl("check", env)
+            self.assertEqual(drifted.returncode, 1, drifted.stderr)
+            self.assertIn("stale: skill_activation.py", drifted.stdout)
+
+    def test_profile_sync_exit_codes_and_library_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            for settings in ({}, {"statusLine": {"type": "command", "command": "custom-renderer"}}):
+                with self.subTest(settings=settings):
+                    claude_path.write_text(json.dumps(settings), "utf-8")
+                    before = claude_path.read_bytes()
+                    result = self.run_ctl("profile-sync", env)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("no supported active renderer", result.stdout)
+                    self.assertEqual(claude_path.read_bytes(), before)
+                    self.assertFalse((root / "install").exists())
+
+            claude_path.write_text("{}\n", "utf-8")
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            installed = Path(env["STATUSLINE_INSTALL_DIR"]) / "skill_activation.py"
+            installed.write_text("# an older activation library\n", "utf-8")
+            synced = self.run_ctl("profile-sync", env)
+            self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+            self.assertEqual(installed.read_bytes(), (PLUGIN_ROOT / "lib" / "skill_activation.py").read_bytes())
+
+    def test_check_offers_no_repair_for_an_external_renderer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "custom-renderer"}}), "utf-8"
+            )
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 1, checked.stderr)
+            self.assertIn("external renderer, left unmanaged", checked.stdout)
+            self.assertNotIn("repair with", checked.stdout)
 
 
 class PackagingTests(unittest.TestCase):
