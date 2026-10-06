@@ -236,5 +236,50 @@ class ClaudeConfigDir(unittest.TestCase):
                       retro.HARNESS_SESSION_VARS)
 
 
+class FormatCtlTableMatchesLib(unittest.TestCase):
+    """format-ctl keeps its own copy of the harness session-variable table and
+    the agy alias; the lib owns the definition. Nothing else ties them."""
+
+    def format_ctl(self):
+        import ast
+        tree = ast.parse((BIN / "format-ctl").read_text("utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    getattr(t, "id", "") == "HARNESS_SESSION_VARS"
+                    for t in node.targets):
+                return ast.literal_eval(node.value)
+        self.fail("format-ctl no longer defines HARNESS_SESSION_VARS")
+
+    def test_session_variable_table_equals_the_lib_table(self):
+        sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
+        import skill_activation
+        self.assertEqual(skill_activation.HARNESS_SESSION_VARS,
+                         self.format_ctl())
+
+    def test_agy_alias_means_antigravity_in_both(self):
+        sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
+        import skill_activation
+        import ast
+        # format-ctl runs main() on import, so lift the one function out.
+        tree = ast.parse((BIN / "format-ctl").read_text("utf-8"))
+        func = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                    and n.name == "harness_override")
+        scope = {"os": os, "HARNESSES": tuple(h for h, _ in self.format_ctl())}
+        exec(compile(ast.Module([func], []), "format-ctl", "exec"), scope)
+        with mock.patch.dict(os.environ, {"P_FORMAT_HARNESS": "agy"}):
+            self.assertEqual("antigravity", scope["harness_override"]())
+        env = {"CLAUDE_CODE_SESSION_ID": "c1",
+               "ANTIGRAVITY_CONVERSATION_ID": "a1", "P_SKILL_HARNESS": "agy"}
+        self.assertEqual("a1", skill_activation.session_id_from_env(env))
+
+    def test_the_sh_gate_names_no_session_variables_of_its_own(self):
+        # format-gate decides from the toggle directory alone and hands any
+        # session lookup to format-ctl, so there is no list to keep in step.
+        gate = (BIN / "format-gate").read_text("utf-8")
+        for _, names in self.format_ctl():
+            for name in names:
+                self.assertNotIn(name, gate)
+
+
 if __name__ == "__main__":
     unittest.main()
