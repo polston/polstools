@@ -64,5 +64,93 @@ class GateInputTests(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
 
 
+class SessionStateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.state = self.root / "state"
+        self.payload = self.root / "payload.md"
+        self.payload.write_text("payload\n", encoding="utf-8")
+
+    def tearDown(self):
+        for path in (self.root / "ro", self.state):
+            if path.exists():
+                os.chmod(path, 0o700)
+        self.tmp.cleanup()
+
+    def gate(self, sid, **extra):
+        return run_ctl(["gate", str(self.payload)], hermetic_env(self.root, **extra),
+                       json.dumps({"session_id": sid}))
+
+    def toggle(self, state, sid, **extra):
+        return run_ctl([state], hermetic_env(
+            self.root, CLAUDE_CODE_SESSION_ID=sid, **extra))
+
+    def test_unsafe_session_ids_stay_inside_the_state_directory(self):
+        (self.root / "escape").mkdir()
+        for sid in ("a/b", "../escape/x", "..", "c:\\d", "line\nbreak"):
+            with self.subTest(sid=sid):
+                result = self.toggle("on", sid)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.gate(sid).stdout, "payload\n")
+        self.assertEqual(list((self.root / "escape").iterdir()), [])
+        for entry in self.state.iterdir():
+            self.assertTrue(entry.is_file())
+            self.assertNotIn("escape", entry.name)
+
+    def test_gate_does_not_probe_paths_outside_the_state_directory(self):
+        self.state.mkdir()
+        (self.root / "probe.on").write_text("", encoding="utf-8")
+        self.assertEqual(self.gate("../probe").stdout, "")
+
+    def test_unwritable_state_directory_exits_2_without_a_traceback(self):
+        parent = self.root / "ro"
+        parent.mkdir()
+        os.chmod(parent, 0o500)
+        if os.access(parent, os.W_OK):
+            self.skipTest("this account can write to read-only directories")
+        result = self.toggle("on", "s", P_FORMAT_STATE_DIR=str(parent / "state"))
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("format-ctl:", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_state_directory_and_flags_are_private(self):
+        self.state.mkdir(mode=0o755)
+        os.chmod(self.state, 0o755)
+        self.assertEqual(self.toggle("on", "s").returncode, 0)
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
+        for entry in self.state.iterdir():
+            self.assertEqual(entry.stat().st_mode & 0o777, 0o600)
+
+    def test_symlinked_state_directory_is_not_trusted(self):
+        real = self.root / "real"
+        real.mkdir()
+        try:
+            self.state.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are unavailable")
+        result = self.toggle("on", "s")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_a_session_that_keeps_reading_its_toggle_survives_pruning(self):
+        self.assertEqual(self.toggle("on", "long-lived").returncode, 0)
+        (flag,) = list(self.state.iterdir())
+        old = flag.stat().st_mtime - 15 * 24 * 3600
+        os.utime(flag, (old, old))
+        self.assertEqual(self.gate("long-lived").stdout, "payload\n")
+        self.assertEqual(self.toggle("off", "other").returncode, 0)
+        self.assertEqual(self.gate("long-lived").stdout, "payload\n")
+
+    def test_an_abandoned_toggle_is_pruned_by_the_next_toggle(self):
+        self.assertEqual(self.toggle("on", "abandoned").returncode, 0)
+        (flag,) = list(self.state.iterdir())
+        os.utime(flag, (1, 1))
+        self.assertEqual(self.toggle("off", "other").returncode, 0)
+        self.assertEqual(self.gate("abandoned").stdout, "")
+        self.assertEqual(len(list(self.state.iterdir())), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
