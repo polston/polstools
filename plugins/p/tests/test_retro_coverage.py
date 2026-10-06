@@ -39,8 +39,6 @@ class RetroRun(unittest.TestCase):
                 mock.patch("sys.argv", ["retro", *argv]), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             retro = load_retro()
-            # CLAUDE_DIR ignores CLAUDE_CONFIG_DIR; keep it inside the temp dir.
-            retro.CLAUDE_DIR = self.claude_home
             try:
                 retro.main()
                 code = 0
@@ -132,13 +130,12 @@ class AntigravityCoverage(RetroRun):
 class RuleSourceScope(RetroRun):
     def run_rules(self, *homes):
         env = {"CODEX_HOME": str(Path(self.tmp.name) / "cx"),
-               "RETRO_ANTIGRAVITY_HOME": str(Path(self.tmp.name) / "agy")}
+               "RETRO_ANTIGRAVITY_HOME": str(Path(self.tmp.name) / "agy"),
+               "CLAUDE_CONFIG_DIR": str(Path(self.tmp.name) / "no-config")}
         for name in homes:
             Path(env[name]).mkdir()
         with mock.patch.dict(os.environ, env):
             retro = load_retro()
-            retro.RULE_SOURCES = ()
-            retro.CLAUDE_DIR = Path(self.tmp.name) / "no-config"
             out = io.StringIO()
             with contextlib.redirect_stdout(out), \
                     contextlib.redirect_stderr(io.StringIO()):

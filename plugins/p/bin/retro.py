@@ -53,18 +53,29 @@ from functools import lru_cache
 from pathlib import Path
 
 HOME = Path.home()
-CLAUDE_DIR = HOME / ".claude"
 
 # Stable discovery precedence when transcript roots overlap.
 HARNESSES = ("claude", "codex", "antigravity")
 
 
+def claude_config_dir():
+    """The Claude configuration directory: CLAUDE_CONFIG_DIR, else ~/.claude.
+
+    Resolved at call time, and the one place in this file that decides it:
+    the transcript root, the rule sources `rules` and `effect` read, and the
+    skill inventory all go through here, so the override means the same thing
+    to every subcommand (spec D1.1). An import-time constant here once left
+    `rules` and `effect` inspecting the default while the walk honoured the
+    override.
+    """
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config) if config else HOME / ".claude"
+
+
 def claude_projects_dir():
     """The Claude transcript root, resolved at call time so tests can
-    inject it and so CLAUDE_CONFIG_DIR is honoured — retiring the
-    documented asymmetry with stopped-promises (spec D1.1)."""
-    config = os.environ.get("CLAUDE_CONFIG_DIR")
-    return (Path(config) if config else HOME / ".claude") / "projects"
+    inject it and so CLAUDE_CONFIG_DIR is honoured (spec D1.1)."""
+    return claude_config_dir() / "projects"
 
 
 def codex_home_dir():
@@ -2012,13 +2023,13 @@ def cmd_pack(args):
 
 def installed_skills():
     """Per-harness skill inventories, by directory name. glob on a missing
-    directory yields nothing, so no existence guards. The Claude half keeps
-    CLAUDE_DIR deliberately — the spec sanctions adding Codex roots, not
-    moving the Claude one."""
+    directory yields nothing, so no existence guards. The Claude half reads
+    the same configuration directory as every other Claude-side reader."""
     codex_home = codex_home_dir()
-    claude = ({p.parent.name for p in (CLAUDE_DIR / "skills").glob("*/SKILL.md")}
+    claude_dir = claude_config_dir()
+    claude = ({p.parent.name for p in (claude_dir / "skills").glob("*/SKILL.md")}
               | {p.parent.name for p in
-                 (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")})
+                 (claude_dir / "plugins" / "cache").rglob("skills/*/SKILL.md")})
     # rglob from the plugin store root, not a "cache" subdirectory: the
     # Codex store nests differently from Claude's, and rglob covers
     # whichever layout a version uses.
@@ -2619,11 +2630,15 @@ EFFECT_MIN_SESSIONS = 12
 # `effect` needs and what nobody remembers unaided.
 # Where the standing instructions live. Each is a thing whose edits should carry
 # a date, because `effect` can only compare either side of a date that exists.
-RULE_SOURCES = (
-    ("standing instructions", CLAUDE_DIR / "CLAUDE.md"),
-    ("memory store", CLAUDE_DIR / "memory"),
-    ("skills", CLAUDE_DIR / "skills"),
-)
+def rule_sources():
+    base = claude_config_dir()
+    return (
+        ("standing instructions", base / "CLAUDE.md"),
+        ("memory store", base / "memory"),
+        ("skills", base / "skills"),
+    )
+
+
 # Past this many days of uncommitted edits, the trail is broken badly enough to
 # say so: a fortnight of changes squashed into one commit is one date for many
 # different decisions, which is no better than none.
@@ -2672,7 +2687,7 @@ def cmd_rules(args):
     print("| source | in a repo | uncommitted | last change |")
     print("|---|---|---|---|")
     problems = []
-    for name, path in RULE_SOURCES:
+    for name, path in rule_sources():
         if not path.exists():
             print(f"| {name} | absent | - | - |")
             continue
@@ -2726,10 +2741,11 @@ Two ways to fix it, and the second is the one that lasts:
     return EXIT_FLAGGED
 
 
-# Derived from RULE_SOURCES so the two cannot disagree. They did: one carried
+# Derived from rule_sources() so the two cannot disagree. They did: one carried
 # the settings file and the other did not, so a settings change could hand
 # `effect` a date while `rules` never checked whether it was recorded at all.
-RULE_PATHS = tuple(path.name for _, path in RULE_SOURCES)
+def rule_paths():
+    return tuple(path.name for _, path in rule_sources())
 
 
 def rule_change_dates(limit=25):
@@ -2739,8 +2755,8 @@ def rule_change_dates(limit=25):
     [(date, count, [subjects])], newest first. Empty if it is not a repository,
     which is not an error -- it just means this shortcut is unavailable.
     """
-    out = _git(CLAUDE_DIR, "log", "--date=short", "--format=%ad\t%s", "--",
-               *RULE_PATHS)
+    out = _git(claude_config_dir(), "log", "--date=short", "--format=%ad\t%s", "--",
+               *rule_paths())
     if out is None:
         return []
     by_date = {}
@@ -2757,7 +2773,7 @@ def print_candidates():
     print("# Dates something was deliberately changed\n")
     print_rule_scope()
     if not dates:
-        print(f"No history found under {CLAUDE_DIR}. Either it is not a git "
+        print(f"No history found under {claude_config_dir()}. Either it is not a git "
               "repository, or the rule files have never been committed there.\n"
               "Pass a date yourself: retro effect --since YYYY-MM-DD")
         return EXIT_CANNOT_RUN
