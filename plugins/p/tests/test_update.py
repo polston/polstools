@@ -218,7 +218,8 @@ class SnapshotSafetyTests(unittest.TestCase):
             self.assertEqual({}, ledger)
 
     def test_failed_add_after_remove_says_codex_has_no_p(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, \
+                patched_env({"P_UPDATE_STATE_DIR": str(Path(tmp) / "state")}):
             cache = Path(tmp) / "cache"
             (cache / "1.8.0").mkdir(parents=True)
 
