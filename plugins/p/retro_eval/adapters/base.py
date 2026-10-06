@@ -49,6 +49,26 @@ def iter_jsonl(path: Path):
         raise SourceUnreadable(str(path)) from exc
 
 
+PROMPT_EVIDENCE_CHARS = 1200
+
+
+def prompt_evidence(redactor, text: str, context_parts) -> dict[str, object]:
+    """Redacted annotation evidence for one direct-human prompt.
+
+    ``context_parts`` is every assistant text since the previous direct-human
+    prompt; its summed length is the prior-turn size the legacy rule reads,
+    as bin/retro.py accumulates it. Excerpts are redacted and bounded.
+    External annotation use only.
+    """
+    context = "\n".join(context_parts)
+    return {
+        "user_turn": redactor(text)[:PROMPT_EVIDENCE_CHARS],
+        "user_turn_chars": len(text),
+        "context": redactor(context)[-PROMPT_EVIDENCE_CHARS:] if context else "",
+        "context_chars": sum(len(part) for part in context_parts),
+    }
+
+
 def parse_timestamp(value: Any) -> datetime | None:
     """Parse an ISO-8601 source timestamp; naive values have no known zone."""
     if not isinstance(value, str) or not value:

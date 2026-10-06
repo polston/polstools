@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .base import AdapterBase, AdapterResult, iter_jsonl, parse_timestamp
+from .base import (AdapterBase, AdapterResult, iter_jsonl, parse_timestamp,
+                   prompt_evidence)
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
 
 
@@ -170,6 +171,39 @@ class CodexAdapter(AdapterBase):
             tool_call_count=tool_calls,
             tool_result_count=tool_results,
         )
+
+    def private_prompt_evidence(self, path: Path, root: Path, redactor):
+        """Redacted direct-human prompts keyed by their PROMPT span id.
+
+        Applies read()'s population and wrapper rules, so every key matches a
+        normalized span. External annotation use only.
+        """
+        rows = list(iter_jsonl(path))
+        meta = next((record.get("payload") for _, record in rows
+                     if record.get("type") == "session_meta"
+                     and isinstance(record.get("payload"), dict)), {})
+        session_id = str(meta.get("session_id") or meta.get("id") or "")
+        if (meta.get("thread_source") != "user"
+                or session_id.lower() in self.excluded_session_ids):
+            return {}
+        trace_id = self.trace_id(path, root)
+        evidence = {}
+        context = []
+        for sequence, (_, record) in enumerate(rows):
+            payload = record.get("payload")
+            if record.get("type") != "response_item" or not isinstance(payload, dict) \
+                    or payload.get("type") != "message":
+                continue
+            body = _message_text(payload)
+            if payload.get("role") == "assistant":
+                if body:
+                    context.append(body)
+            elif payload.get("role") == "user" and body \
+                    and not body.startswith(self.machine_prompt_openers):
+                span_id = self.ids.make(trace_id, sequence, SpanKind.PROMPT.value)
+                evidence[span_id] = prompt_evidence(redactor, body, context)
+                context = []
+        return evidence
 
     def private_tool_evidence(self, path: Path, root: Path, redactor):
         """Return redacted call evidence for external annotation only."""

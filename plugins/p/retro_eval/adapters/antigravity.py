@@ -13,7 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .base import AdapterBase, AdapterResult, iter_jsonl, parse_timestamp
+from .base import (AdapterBase, AdapterResult, iter_jsonl, parse_timestamp,
+                   prompt_evidence)
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
 
 FULL_EXPORT = "transcript_full.jsonl"
@@ -138,6 +139,29 @@ class AntigravityAdapter(AdapterBase):
             human_prompt_count=human_prompts, tool_call_count=tool_calls,
             tool_result_count=0, skills=(), population_observable=False,
         )
+
+    def private_prompt_evidence(self, path: Path, root: Path, redactor):
+        """Redacted direct-human prompts keyed by their PROMPT span id.
+
+        Walks the same latest-snapshot steps as read(). External annotation
+        use only.
+        """
+        if self.session_id(path, root).lower() in self.excluded_session_ids:
+            return {}
+        trace_id = self.trace_id(path, root)
+        evidence = {}
+        context = []
+        for step in latest_steps(path):
+            kind, source = step["type"], step["source"]
+            if kind == "PLANNER_RESPONSE" and source == "MODEL" and _text(step):
+                context.append(_text(step))
+            elif kind == "USER_INPUT" and source == "USER_EXPLICIT" \
+                    and _text(step).strip():
+                span_id = self.ids.make(trace_id, step["step_index"],
+                                        SpanKind.PROMPT.value)
+                evidence[span_id] = prompt_evidence(redactor, _text(step), context)
+                context = []
+        return evidence
 
     def _span(self, trace_id, sequence, kind, step, actor, tool="", signature="",
               status="ok"):

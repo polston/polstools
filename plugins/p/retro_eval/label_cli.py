@@ -9,7 +9,7 @@ from pathlib import Path
 from .cli import command, full_commit
 from .annotation import (import_annotations, predict_annotations,
                          render_annotation_guide, sample_annotations,
-                         validate_prediction_artifact)
+                         sample_trace_annotations, validate_prediction_artifact)
 from .annotation_ui import AnnotationWorkspace, serve_annotation_ui
 from .catalog import (load_annotation_protocol_catalogue,
                       load_rubric_catalogue)
@@ -17,6 +17,7 @@ from .labels import (LabelStore, import_legacy_turn_labels,
                      multiclass_calibration_report,
                      strict_multiclass_comparison_report)
 from .predictors import load_predictor
+from .private_evidence import collect_private_prompt_evidence
 from .text_rules import (CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS,
                          _predict_at)
 
@@ -40,7 +41,14 @@ def main(argv=None):
     reporter.add_argument("--output", type=Path, required=True)
     reporter.add_argument("--split", action="append", choices=("calibration", "test"))
     sampler = commands.add_parser("sample")
-    sampler.add_argument("--extract", type=Path, action="append", required=True)
+    inputs = sampler.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--traces", type=Path,
+                        help="traces.jsonl written by retro-eval-extract")
+    inputs.add_argument("--extract", type=Path, action="append",
+                        help="externally produced annotation extract JSON")
+    sampler.add_argument("--source-root", action="append", default=[],
+                         metavar="SOURCE=PATH")
+    sampler.add_argument("--id-salt", type=Path)
     sampler.add_argument("--output", type=Path, required=True)
     sampler.add_argument("--manifest", type=Path, required=True)
     sampler.add_argument("--per-source", type=int, default=20)
@@ -138,11 +146,31 @@ def main(argv=None):
         if (protocol.rubric_id != rubric.id
                 or protocol.rubric_version != rubric.version):
             raise ValueError("annotation protocol does not match selected rubric")
-        result = sample_annotations(
-            args.extract, args.output, args.manifest, per_source=args.per_source,
-            dataset_id=args.dataset_id, rubric_id=rubric.id,
-            rubric_version=rubric.version, split=args.split,
-            annotation_protocol=protocol)
+        options = dict(per_source=args.per_source, dataset_id=args.dataset_id,
+                       rubric_id=rubric.id, rubric_version=rubric.version,
+                       split=args.split, annotation_protocol=protocol)
+        if args.traces is None:
+            if args.source_root or args.id_salt:
+                raise ValueError("--source-root and --id-salt apply only to --traces")
+            result = sample_annotations(args.extract, args.output, args.manifest,
+                                        **options)
+        else:
+            source_roots = {}
+            for value in args.source_root:
+                name, separator, path = value.partition("=")
+                if not separator or not name or not path or name in source_roots:
+                    raise ValueError("source roots must be unique SOURCE=PATH values")
+                source_roots[name] = Path(path)
+            if not source_roots or args.id_salt is None:
+                raise ValueError("--traces requires --source-root and --id-salt "
+                                 "from the same extraction")
+            try:
+                id_salt = args.id_salt.read_bytes()
+            except OSError as exc:
+                raise ValueError("id salt is unreadable") from exc
+            evidence = collect_private_prompt_evidence(source_roots, id_salt)
+            result = sample_trace_annotations(args.traces, evidence, args.output,
+                                              args.manifest, **options)
     elif args.command in {"import-annotations", "predict-annotations"}:
         catalogue = load_rubric_catalogue(args.rubrics)
         try:

@@ -5,9 +5,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .base import AdapterBase, AdapterResult, iter_jsonl, parse_timestamp
+from .base import (AdapterBase, AdapterResult, iter_jsonl, parse_timestamp,
+                   prompt_evidence)
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
 from ..taxonomies import classify_failure_evidence
+
+
+def _message_text(message) -> str:
+    """Message text joined as bin/retro.py's text_of joins it, unstripped, so
+    character counts match the ledger's prior-turn lengths."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = [block if isinstance(block, str) else str(block.get("text") or "")
+             for block in content
+             if isinstance(block, str)
+             or isinstance(block, dict) and block.get("type") == "text"]
+    return "\n".join(part for part in parts if part)
 
 
 def _direct_human(record, message, direct_prompt_sources) -> bool:
@@ -239,6 +255,31 @@ class ClaudeAdapter(AdapterBase):
             tool_result_count=tool_results,
             skills=tuple(skills),
         )
+
+    def private_prompt_evidence(self, path: Path, root: Path, redactor):
+        """Redacted direct-human prompts keyed by their PROMPT span id.
+
+        Uses the same record walk and direct-human predicate as read(), so
+        every key matches a normalized span. External annotation use only.
+        """
+        trace_id = self.trace_id(path, root)
+        evidence = {}
+        context = []
+        for sequence, (_, record) in enumerate(iter_jsonl(path)):
+            message = record.get("message")
+            if not isinstance(message, dict):
+                continue
+            if record.get("type") == "assistant":
+                text = _message_text(message)
+                if text:
+                    context.append(text)
+            elif (_direct_human(record, message, self.direct_prompt_sources)
+                  and _message_text(message).strip()):
+                span_id = self.ids.make(trace_id, sequence, SpanKind.PROMPT.value)
+                evidence[span_id] = prompt_evidence(
+                    redactor, _message_text(message), context)
+                context = []
+        return evidence
 
     def private_tool_evidence(self, path: Path, root: Path, redactor):
         """Return redacted tool evidence for external annotation only."""

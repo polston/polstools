@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 
 from .labels import LabelRecord, LabelStore
+from .schema import SpanKind
+from .storage import JsonlTraceStore
 
 
 FIELDS = ("case_id", "source", "split", "context_chars", "user_turn_chars",
@@ -104,16 +106,113 @@ def _load_packet_manifest(source: Path, manifest_path: Path, *, rubric_id,
     return manifest
 
 
-def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_source=20,
-                       dataset_id="turn-friction-heldout-v1",
-                       rubric_id="turn_friction_legacy", rubric_version=1,
-                       split="test", annotation_protocol=None):
+def _check_packet_request(output, manifest_path, per_source, split):
     _external(output)
     _external(manifest_path)
     if per_source < 1:
         raise ValueError("per_source must be positive")
     if split not in {"calibration", "test"}:
         raise ValueError("annotation split must be calibration or test")
+
+
+def _write_packet(pools, output: Path, manifest_path: Path, *, per_source,
+                  dataset_id, rubric_id, rubric_version, split,
+                  annotation_protocol, provenance):
+    """Select per source by keyed rank, then write the packet and manifest.
+
+    Refuses before writing anything when any requested source contributes no
+    annotatable case: an empty packet is a failed run, not a sample.
+    """
+    empty = sorted(source for source, candidates in pools.items() if not candidates)
+    if not pools or empty:
+        raise ValueError("no annotatable user turns for source: %s"
+                         % (", ".join(empty) or "(no inputs)"))
+    selected = []
+    source_counts = {}
+    for source, candidates in sorted(pools.items()):
+        rows = [row for _, row in sorted(candidates, key=lambda item: item[0])
+                [:per_source]]
+        selected.extend(rows)
+        source_counts[source] = len(rows)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(selected)
+    manifest = {
+        "schema_version": 1, "annotation_packet_version": 2,
+        "dataset_id": dataset_id,
+        "rubric_id": rubric_id, "rubric_version": rubric_version,
+        "split": split, "selection": "keyed deterministic rank by source",
+        "per_source": per_source, "source_counts": source_counts,
+        "sample_sha256": _packet_fingerprint(output),
+        **provenance,
+    }
+    if annotation_protocol is not None:
+        manifest.update({
+            "annotation_protocol_id": str(_protocol_value(annotation_protocol, "id")),
+            "annotation_protocol_version": int(_protocol_value(annotation_protocol, "version")),
+            "annotation_protocol_sha256": str(_protocol_value(annotation_protocol, "sha256")),
+        })
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                             encoding="utf-8")
+    return manifest
+
+
+def sample_trace_annotations(traces_path: Path, prompt_evidence, output: Path,
+                             manifest_path: Path, *, per_source=20,
+                             dataset_id="turn-friction-heldout-v1",
+                             rubric_id="turn_friction_legacy", rubric_version=1,
+                             split="test", annotation_protocol=None):
+    """Sample direct-human prompts from a retro-eval-extract trace snapshot.
+
+    ``prompt_evidence`` maps PROMPT span ids to redacted turns collected from
+    the same source roots and id salt that produced ``traces_path``. Every
+    source present in the snapshot must contribute at least one case.
+    """
+    _check_packet_request(output, manifest_path, per_source, split)
+    records = JsonlTraceStore(traces_path).read()
+    salt = _salt(output.parent)
+    pools = {record.source: [] for record in records}
+    for record in records:
+        if record.span_kind != SpanKind.PROMPT or record.actor_kind != "human":
+            continue
+        details = prompt_evidence.get(record.span_id)
+        if not details or not str(details.get("user_turn") or "").strip():
+            continue
+        case_id = hmac.new(salt, ("trace|" + record.span_id).encode(),
+                           hashlib.sha256).hexdigest()[:24]
+        rank = hmac.new(salt, ("rank|trace|" + record.span_id).encode(),
+                        hashlib.sha256).hexdigest()
+        pools[record.source].append((rank, {
+            "case_id": case_id, "source": record.source, "split": split,
+            "context_chars": int(details.get("context_chars") or 0),
+            "user_turn_chars": int(details.get("user_turn_chars") or 0),
+            "context": str(details.get("context") or ""),
+            "user_turn": str(details["user_turn"]),
+            "human_label": "", "notes": "",
+        }))
+    return _write_packet(
+        pools, output, manifest_path, per_source=per_source,
+        dataset_id=dataset_id, rubric_id=rubric_id, rubric_version=rubric_version,
+        split=split, annotation_protocol=annotation_protocol,
+        provenance={"input_kind": "normalized_traces",
+                    "trace_sha256": _digest(traces_path)})
+
+
+def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_source=20,
+                       dataset_id="turn-friction-heldout-v1",
+                       rubric_id="turn_friction_legacy", rubric_version=1,
+                       split="test", annotation_protocol=None):
+    """Sample from externally produced annotation extracts.
+
+    Each extract is one JSON object: ``source_system`` plus ``sessions`` whose
+    ``messages`` carry ``role``, redacted ``excerpt``, ``chars`` and ``line``.
+    Nothing in this plugin writes that format; packets drawn from
+    retro-eval-extract output use sample_trace_annotations instead.
+    """
+    _check_packet_request(output, manifest_path, per_source, split)
     salt = _salt(output.parent)
     pools = {}
     input_fingerprints = {}
@@ -121,11 +220,15 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
         try:
             payload = json.loads(extract_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("invalid working-review extract") from exc
+            raise ValueError("annotation extract is not one JSON object: %s"
+                             % extract_path.name) from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
+            raise ValueError("annotation extract lacks a sessions list: %s"
+                             % extract_path.name)
         source = str(payload.get("source_system") or extract_path.stem)
         input_fingerprints[source] = _digest(extract_path)
         candidates = pools.setdefault(source, [])
-        for session in payload.get("sessions") or ():
+        for session in payload["sessions"]:
             previous_assistant = ""
             previous_assistant_chars = 0
             for message in session.get("messages") or ():
@@ -146,36 +249,11 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
                         "context": previous_assistant, "user_turn": excerpt,
                         "human_label": "", "notes": "",
                     }))
-    selected = []
-    source_counts = {}
-    for source, candidates in sorted(pools.items()):
-        rows = [row for _, row in sorted(candidates)[:per_source]]
-        selected.extend(rows)
-        source_counts[source] = len(rows)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS)
-        writer.writeheader()
-        writer.writerows(selected)
-    manifest = {
-        "schema_version": 1, "annotation_packet_version": 2,
-        "dataset_id": dataset_id,
-        "rubric_id": rubric_id, "rubric_version": rubric_version,
-        "split": split, "selection": "keyed deterministic rank by source",
-        "per_source": per_source, "source_counts": source_counts,
-        "input_fingerprints": dict(sorted(input_fingerprints.items())),
-        "sample_sha256": _packet_fingerprint(output),
-    }
-    if annotation_protocol is not None:
-        manifest.update({
-            "annotation_protocol_id": str(_protocol_value(annotation_protocol, "id")),
-            "annotation_protocol_version": int(_protocol_value(annotation_protocol, "version")),
-            "annotation_protocol_sha256": str(_protocol_value(annotation_protocol, "sha256")),
-        })
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                             encoding="utf-8")
-    return manifest
+    return _write_packet(
+        pools, output, manifest_path, per_source=per_source,
+        dataset_id=dataset_id, rubric_id=rubric_id, rubric_version=rubric_version,
+        split=split, annotation_protocol=annotation_protocol,
+        provenance={"input_fingerprints": dict(sorted(input_fingerprints.items()))})
 
 
 def import_annotations(source: Path, target: Path, *, manifest_path: Path, rubric_id,
