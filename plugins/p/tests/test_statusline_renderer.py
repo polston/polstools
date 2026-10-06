@@ -586,6 +586,35 @@ class FutureAttemptMarkerTests(unittest.TestCase):
         self.check(run_powershell)
 
 
+class FutureCacheStampTests(unittest.TestCase):
+    """A cache stamped in the future (a clock change) is stale: refresh and hide its gauge."""
+
+    def check(self, runner):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeHome(tmp)
+            fake.write_cache(None, attempt_age_ms=3_600_000)
+            body = {"at": FakeHome.NOW + 3_600_000, "label": "futurelabel", "percent": 40}
+            (fake.cache / "usage-cache.json").write_text(json.dumps(body), encoding="utf-8")
+            result = runner(json.dumps(RATE_LIMITS), fake.env())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("60% left", result.stdout)
+            marker = fake.cache / "usage-attempt.txt"
+            self.assertEqual(marker.read_text(encoding="utf-8"), str(FakeHome.NOW))
+            time.sleep(0.5)  # let the stub-backed refresh child finish before cleanup
+
+    def setUp(self):
+        if os.name == "nt":
+            self.skipTest("POSIX file modes")
+
+    def test_python_renderer_refreshes_and_hides_the_gauge(self):
+        self.check(run_python)
+
+    def test_powershell_renderer_refreshes_and_hides_the_gauge(self):
+        if not powershell():
+            self.skipTest("PowerShell is unavailable on this machine")
+        self.check(run_powershell)
+
+
 class ControlCharacterTests(unittest.TestCase):
     ESC = chr(27)
     BEL = chr(7)

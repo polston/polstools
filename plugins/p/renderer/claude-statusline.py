@@ -334,8 +334,8 @@ def scoped_state(cache, now_ms):
     age = None if at is None else now_ms - at
     label = as_text(cache.get("label"))
     percent = as_number(cache.get("percent"))
-    refresh_due = age is None or age > FRESH_MS
-    if age is not None and age <= SHOW_MS:
+    refresh_due = age is None or age < 0 or age > FRESH_MS
+    if age is not None and 0 <= age <= SHOW_MS:
         if label and percent is not None:
             return ("gauge", label, percent), refresh_due
         if not label:

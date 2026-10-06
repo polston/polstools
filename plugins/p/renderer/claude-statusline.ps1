@@ -260,11 +260,11 @@ function Get-ScopedState($python) {
     $label = Get-Text (Get-Field $cache 'label')
     $percent = Get-Num (Get-Field $cache 'percent')
     $state = @('unavailable', $label)
-    if ($null -ne $at -and ($nowMs - $at) -le 900000) {
+    if ($null -ne $at -and ($nowMs - $at) -ge 0 -and ($nowMs - $at) -le 900000) {
         if ($label -and $null -ne $percent) { $state = @('gauge', $label, $percent) }
         elseif (-not $label) { $state = $null }
     }
-    if (-not $env:P_STATUSLINE_NO_REFRESH -and ($null -eq $at -or ($nowMs - $at) -gt 60000)) {
+    if (-not $env:P_STATUSLINE_NO_REFRESH -and ($null -eq $at -or ($nowMs - $at) -lt 0 -or ($nowMs - $at) -gt 60000)) {
         $attemptPath = Join-Path $dir 'usage-attempt.txt'
         if (Test-PlainFileOrAbsent $attemptPath) {
             $last = 0
