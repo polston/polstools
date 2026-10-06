@@ -481,6 +481,81 @@ class ActivationCliTests(unittest.TestCase):
             self.assertNotIn("CLAUDE_PLUGIN_ROOT", text)
 
 
+class ControllerExitContractTests(unittest.TestCase):
+    """Runs a copy of the controller in a scratch plugin layout so its
+    sibling statusline-ctl and its source tree can be substituted."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.plugin = self.root / "plugin"
+        for relative in ("bin/skill-profile-ctl", "lib/skill_activation.py",
+                         "profiles/skill-activation-v1.json"):
+            target = self.plugin / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((PLUGIN_ROOT / relative).read_bytes())
+        manifest = json.loads(MANIFEST_PATH.read_text("utf-8"))
+        for component, details in manifest["components"].items():
+            if details["source"] == "skill":
+                path = self.plugin / "skills" / component / "SKILL.md"
+            else:
+                path = self.plugin / "commands" / (component + ".md")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("x\n", encoding="utf-8")
+        self.env = {k: v for k, v in os.environ.items()
+                    if k not in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID",
+                                 "P_SKILL_PROFILE", "P_SKILL_SKIP_STATUS_SYNC")}
+        self.env.update({
+            "P_SKILL_CONFIG_FILE": str(self.root / "global.json"),
+            "P_SKILL_STATE_DIR": str(self.root / "sessions"),
+            "P_CODEX_CONFIG_FILE": str(self.root / "config.toml"),
+            "CODEX_THREAD_ID": "session-a",
+        })
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_ctl(self, *args, **extra):
+        return subprocess.run(
+            [sys.executable, str(self.plugin / "bin" / "skill-profile-ctl"), *args],
+            text=True, encoding="utf-8", capture_output=True,
+            env=dict(self.env, P_SKILL_SKIP_STATUS_SYNC="1", **extra))
+
+    def test_validate_flags_a_coverage_mismatch_with_exit_1(self):
+        self.assertEqual(self.run_ctl("validate").returncode, 0)
+        (self.plugin / "skills" / "unclassified-skill").mkdir()
+        (self.plugin / "skills" / "unclassified-skill" / "SKILL.md").write_text("x\n")
+        self.assertEqual(self.run_ctl("validate").returncode, 1)
+        (self.plugin / "profiles" / "skill-activation-v1.json").write_text("{broken")
+        self.assertEqual(self.run_ctl("validate").returncode, 2)
+
+    def test_lock_refuses_session_overrides_and_flags_global_writes(self):
+        locked = self.run_ctl("disable", "auditing-a-repo-for-private-data",
+                              "--session", P_SKILL_PROFILE="home")
+        self.assertEqual(locked.returncode, 2)
+        self.assertFalse((self.root / "sessions").exists())
+        for args in (("use", "work", "--global"),
+                     ("disable", "auditing-a-repo-for-private-data", "--global")):
+            with self.subTest(args=args):
+                result = self.run_ctl(*args, P_SKILL_PROFILE="home")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("P_SKILL_PROFILE", result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.root / "global.json").read_text("utf-8"))["profile"],
+                         "work")
+
+    def test_no_renderer_to_update_is_not_a_warning(self):
+        status = self.plugin / "bin" / "statusline-ctl"
+        for code, warned in ((0, False), (1, False), (2, True)):
+            with self.subTest(code=code):
+                status.write_text("import sys\nprint('detail')\nsys.exit(%d)\n" % code)
+                env = {k: v for k, v in self.env.items() if k != "P_SKILL_SKIP_STATUS_SYNC"}
+                result = subprocess.run(
+                    [sys.executable, str(self.plugin / "bin" / "skill-profile-ctl"), "home"],
+                    text=True, encoding="utf-8", capture_output=True, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(bool(result.stderr.strip()), warned, result.stderr)
+
+
 class ActivationInstrumentationTests(unittest.TestCase):
     def test_every_skill_and_command_declares_its_gate(self):
         manifest = json.loads(MANIFEST_PATH.read_text("utf-8"))

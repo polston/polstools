@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Manage and enforce the p plugin's home/work activation profiles."""
+"""Manage and enforce the p plugin's home/work activation profiles.
+
+Enforcement model: activation is a cooperative gate, not a sandbox. Every
+governed SKILL.md and command runs `skill-profile-ctl check <name>` before
+acting and stops when it exits 1 or 2; neither Claude Code nor Codex blocks a
+skill that skips that step, and no hook enforces it. In Codex, the optional
+`sync-native` adapter additionally hides disabled skills from the catalog of
+sessions started afterwards. Claude Code has no per-skill catalog control.
+
+Exit: 0 ran clean, 1 a check or validation flagged something, 2 could not run.
+"""
 
 from __future__ import annotations
 
@@ -41,7 +51,9 @@ def _sync_status():
         encoding="utf-8",
         capture_output=True,
     )
-    if result.returncode != 0:
+    # 1 means there was nothing to update (no supported renderer is active),
+    # which is not worth a warning on every toggle.
+    if result.returncode not in (0, 1):
         detail = (result.stdout or result.stderr).strip()
         print(
             "profile selected; status indicator not updated"
@@ -129,10 +141,20 @@ def _native_notice(policy):
         )
 
 
+def _lock_notice():
+    locked = os.environ.get("P_SKILL_PROFILE")
+    if locked is not None:
+        print(
+            "P_SKILL_PROFILE=%s still governs this process; the change applies "
+            "where it is unset" % locked
+        )
+
+
 def command_use(args):
     policy = manifest()
     activation.set_profile(policy, args.profile, "global")
     print("global skill profile set to %s" % args.profile)
+    _lock_notice()
     _native_notice(policy)
     return 0
 
@@ -140,12 +162,21 @@ def command_use(args):
 def command_override(args):
     policy = manifest()
     scope = _scope(args)
+    locked = os.environ.get("P_SKILL_PROFILE")
+    if scope == "session" and locked is not None:
+        print(
+            "cannot change %s for this session: P_SKILL_PROFILE locks this "
+            "process to %s and ignores overrides" % (args.component, locked),
+            file=sys.stderr,
+        )
+        return 2
     activation.set_override(policy, args.component, args.enabled, scope)
     print(
         "%s %s for %s scope"
         % (args.component, "enabled" if args.enabled else "disabled", scope)
     )
     if scope == "global":
+        _lock_notice()
         _native_notice(policy)
     return 0
 
@@ -217,7 +248,11 @@ def command_check_capability(args):
 
 def command_validate(_args):
     policy = manifest()
-    activation.validate_manifest(policy, PLUGIN_ROOT)
+    try:
+        activation.validate_manifest(policy, PLUGIN_ROOT)
+    except activation.PolicyError as error:
+        print("skill-profile-ctl: " + str(error), file=sys.stderr)
+        return 1
     print("skill activation policy valid")
     return 0
 
@@ -229,7 +264,9 @@ def command_sync_native(_args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
