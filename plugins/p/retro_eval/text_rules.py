@@ -81,17 +81,15 @@ def _redaction_patterns():
         (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
         (re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), "<mac>"),
         (re.compile(r"\b[A-Za-z0-9_-]{32,}\b"), "<long-token>"),
-        # Spend and plan state. Kept in step with repo-privacy-audit's
-        # money_amount and account_billing_field categories -- a measured
-        # spend figure is confidential and is shaped like nothing else here,
-        # so every identity pattern above is structurally blind to it.
+        # Spend and plan state: dollar amounts of four or more digits or with
+        # thousands separators. A measured spend figure is confidential and
+        # is shaped like nothing else here, so every identity pattern above
+        # is structurally blind to it.
         (re.compile(r"\$\d{1,3}(,\d{3})+(\.\d{2})?|\$\d{4,}(\.\d{2})?"), "<amount>"),
         # Literals split across adjacent string pieces so this file does not
         # match the pattern it defines; Python rejoins them at parse time.
-        # Kept in the subset of regex syntax both grep -E and Python re
-        # accept -- no \b (not POSIX-guaranteed) and an explicit character
-        # class rather than \w -- so this stays identical to
-        # repo-privacy-audit's account_billing_field pattern.
+        # Account billing and plan field names. The pattern avoids \b and \w,
+        # using explicit character classes instead.
         (re.compile(r"(hasExtra" r"Usage[A-Za-z0-9_]*|subscription" r"Type"
                     r"|billing" r"Type|organizationRateLimit" r"Tier"
                     r"|userRateLimit" r"Tier|seat" r"Tier)"),

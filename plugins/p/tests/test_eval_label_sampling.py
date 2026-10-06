@@ -275,5 +275,39 @@ class RequestedSourceTests(unittest.TestCase):
         self.assertTrue(all(count > 0 for count in manifest["source_counts"].values()))
 
 
+class ExtractInputRefusalTests(unittest.TestCase):
+    """The external-extract input obeys the same rule: refuse, write nothing."""
+
+    def test_extract_without_annotatable_turns_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            extract = base / "external.json"
+            extract.write_text(json.dumps({
+                "source_system": "external",
+                "sessions": [{"session_id": "one", "messages": [
+                    {"role": "assistant", "excerpt": "only an answer",
+                     "chars": 14, "line": 1}]}]}), encoding="utf-8")
+            out = base / "labels"
+            env = dict(os.environ, RETRO_HOME=str(base / "retro-state"))
+            completed = labels(env, "sample", "--extract", extract,
+                               "--output", out / "s.csv",
+                               "--manifest", out / "s-manifest.json")
+            self.assertEqual(2, completed.returncode, completed.stderr)
+            self.assertIn("external", completed.stderr)
+            self.assertNotIn("Traceback", completed.stderr)
+            self.assertFalse(out.exists())
+
+    def test_unreadable_extract_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            out = base / "labels"
+            env = dict(os.environ, RETRO_HOME=str(base / "retro-state"))
+            completed = labels(env, "sample", "--extract", base / "missing.json",
+                               "--output", out / "s.csv",
+                               "--manifest", out / "s-manifest.json")
+            self.assertEqual(2, completed.returncode, completed.stderr)
+            self.assertFalse(out.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

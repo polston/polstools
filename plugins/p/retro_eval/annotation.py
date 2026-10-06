@@ -56,17 +56,30 @@ def _external(path: Path):
         raise ValueError("annotation artifacts must remain outside repositories")
 
 
-def _salt(directory: Path):
+def _salt(directory: Path, *, persist=True):
+    """Read the directory's salt, or mint one.
+
+    With ``persist=False`` a new salt is returned without touching the disk;
+    the caller stores it with ``_store_salt`` once it knows the run proceeds.
+    """
     path = directory / ".annotation-salt"
     try:
         return path.read_bytes()
     except OSError:
         value = os.urandom(32)
-        directory.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(value)
+        if persist:
+            _store_salt(directory, value)
         return value
+
+
+def _store_salt(directory: Path, value: bytes):
+    path = directory / ".annotation-salt"
+    if path.exists():
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(value)
 
 
 def _digest(path: Path):
@@ -225,7 +238,7 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
     retro-eval-extract output use sample_trace_annotations instead.
     """
     _check_packet_request(output, manifest_path, per_source, split)
-    salt = _salt(output.parent)
+    salt = _salt(output.parent, persist=False)
     pools = {}
     input_fingerprints = {}
     for extract_path in extract_paths:
@@ -261,6 +274,9 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
                         "context": previous_assistant, "user_turn": excerpt,
                         "human_label": "", "notes": "",
                     }))
+    # Refuse before the salt file or any output directory is created.
+    _refuse_empty(pools)
+    _store_salt(output.parent, salt)
     return _write_packet(
         pools, output, manifest_path, per_source=per_source,
         dataset_id=dataset_id, rubric_id=rubric_id, rubric_version=rubric_version,
