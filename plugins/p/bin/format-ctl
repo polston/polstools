@@ -7,21 +7,22 @@ gate <payload>  hook entry: print <payload> when the resolved state is on
 off | on        toggle the current session (id from the active harness)
 status          print the current session's resolved state and its source
 default         show the configured defaults
-default on|off [--harness claude|codex]
+default on|off [--harness claude|codex|antigravity]
                 set the durable default globally or for one harness
-default clear [--harness claude|codex]
+                (agy is accepted for antigravity)
+default clear [--harness claude|codex|antigravity]
                 remove the global or one harness's configured default
 
 Resolution order: session toggle, P_FORMAT_DEFAULT, the harness key, then
 the global key in the defaults file, then off. The defaults file is
 polstools/format.json under the user configuration directory
 (P_FORMAT_CONFIG_FILE overrides the path). Harness identity comes from
-P_FORMAT_HARNESS, then the Claude or Codex session variables.
+P_FORMAT_HARNESS, then the Claude, Codex, or Antigravity session variables.
 
 Exit: 0 ran clean; toggle and default subcommands exit 2 when they cannot
-run. gate exits 1 on a bad payload instead — exit 2 from a UserPromptSubmit
-hook blocks processing and erases the user's prompt, which a broken payload
-must never do.
+run. gate never exits 2: it exits 1 on bad arguments or a missing payload,
+because exit 2 from a UserPromptSubmit hook blocks the user's prompt in both
+Claude Code and Codex.
 """
 import hashlib
 import json
@@ -215,6 +216,17 @@ def _emit_hook_event(base, event, **values):
         pass
 
 
+def hook_session_id():
+    """The hook input's session id, or None when the input does not carry a
+    usable one. Unusable input follows the configured default."""
+    try:
+        data = json.load(sys.stdin)
+    except (OSError, ValueError):
+        return None
+    sid = data.get("session_id") if isinstance(data, dict) else None
+    return sid if isinstance(sid, str) and sid else None
+
+
 def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
     started = time.perf_counter_ns()
     base = {
@@ -227,12 +239,7 @@ def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
     }
     _emit_hook_event(base, "opportunity")
     _emit_hook_event(base, "start")
-    sid = None
-    try:
-        sid = json.load(sys.stdin).get("session_id")
-    except (json.JSONDecodeError, OSError, ValueError):
-        pass
-    state, _ = resolve(sid)
+    state, _ = resolve(hook_session_id())
     if state == "off":
         _emit_hook_event(
             base, "end", status="disabled", latency_ms=max(
@@ -318,13 +325,11 @@ def default_command(args):
 def main():
     args = sys.argv[1:]
     if args and args[0] == "gate":
-        if len(args) not in {2, 8}:
-            print(__doc__, file=sys.stderr)
-            sys.exit(2)
         options = dict(zip(args[2::2], args[3::2]))
-        if set(options) - {"--hook-id", "--hook-version", "--trigger-kind"}:
+        if len(args) % 2 or set(options) - {
+                "--hook-id", "--hook-version", "--trigger-kind"}:
             print(__doc__, file=sys.stderr)
-            sys.exit(2)
+            sys.exit(1)
         sys.exit(gate(
             args[1], hook_id=options.get("--hook-id", ""),
             hook_version=options.get("--hook-version", ""),
