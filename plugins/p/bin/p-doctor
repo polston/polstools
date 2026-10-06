@@ -2,8 +2,10 @@
 """Read-only cross-harness health check for the p plugin.
 
 Checks package metadata, installed versions, enabled state, obsolete polstools
-plugin IDs, and the exact SessionStart and UserPromptSubmit commands. Output
-never includes installation paths or raw command stderr.
+plugin IDs in each harness's plugin list and Codex's config, installed file
+content, the skill-activation policy, and the exact hook commands of every
+harness with a p hook contract. Output never includes installation paths or
+raw command stderr.
 
 Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
 not complete an available harness check.
@@ -12,9 +14,11 @@ not complete an available harness check.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -29,8 +33,30 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+RUN = subprocess.run  # harness CLI runner; tests substitute a fake harness
 PLUGIN_ID = "p@polstools"
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit")
+HARNESS_LABELS = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity"}
+# The hook contract each harness loads from an installed p. A harness mapped to
+# None has no p hook yet; the doctor says so explicitly instead of staying
+# silent. Adding a harness's contract here is the only change the probe needs.
+HOOK_CONTRACTS = {
+    "claude": {
+        "catalog": ("hooks", "hooks.json"),
+        "events": HOOK_EVENTS,
+        "session_env": "CLAUDE_CODE_SESSION_ID",
+    },
+    "codex": {
+        "catalog": ("hooks", "hooks.json"),
+        "events": HOOK_EVENTS,
+        "session_env": "CODEX_SESSION_ID",
+    },
+    "agy": None,
+}
+CONTENT_IGNORED_PARTS = {"__pycache__", ".in_use", ".git", ".DS_Store"}
+CODEX_CONFIG_TABLE_RE = re.compile(
+    r"""^\s*\[\s*(plugins|hooks\s*\.\s*state)\s*\.\s*(?:"([^"]+)"|'([^']+)')\s*\]"""
+)
 
 
 class Check(NamedTuple):
@@ -94,7 +120,7 @@ def package_metadata_checks(plugin_root=PLUGIN_ROOT):
         return checks
     matches = all(
         universal.get(field) == claude.get(field)
-        for field in ("name", "version", "description")
+        for field in ("name", "version", "description", "keywords")
     )
     checks.append(Check(
         "package.universal_manifest",
@@ -102,7 +128,7 @@ def package_metadata_checks(plugin_root=PLUGIN_ROOT):
         (
             "universal metadata matches the Claude package"
             if matches
-            else "universal metadata version or description differs from Claude"
+            else "universal metadata version, description, or keywords differ from Claude"
         ),
     ))
     agy_path = root / "plugin.json"
@@ -111,7 +137,7 @@ def package_metadata_checks(plugin_root=PLUGIN_ROOT):
             agy = _read_plugin_manifest(agy_path)
             matches_agy = all(
                 agy.get(field) == claude.get(field)
-                for field in ("name", "version", "description")
+                for field in ("name", "version", "description", "keywords")
             )
             checks.append(Check(
                 "package.antigravity_manifest",
@@ -119,7 +145,7 @@ def package_metadata_checks(plugin_root=PLUGIN_ROOT):
                 (
                     "Antigravity metadata matches the Claude package"
                     if matches_agy
-                    else "Antigravity metadata version or description differs from Claude"
+                    else "Antigravity metadata version, description, or keywords differ from Claude"
                 ),
             ))
         except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
@@ -182,11 +208,20 @@ def normalize_codex_plugins(payload):
     return result
 
 
+def agy_config_root():
+    """Antigravity keeps imported plugins and its config under this directory."""
+    return Path.home() / ".gemini" / "config"
+
+
 def normalize_agy_plugins(payload):
+    """Normalize `agy plugin list`; version and root come from the imported copy.
+
+    The list itself carries only name, source, importedAt, and components.
+    """
     if not isinstance(payload, dict) or not isinstance(payload.get("imports"), list):
-        return []
+        raise ValueError("Antigravity plugin list JSON must contain imports[]")
     result = []
-    config_path = Path.home() / ".gemini" / "config" / "config.json"
+    config_path = agy_config_root() / "config.json"
     enabled_map = {}
     if config_path.is_file():
         try:
@@ -199,7 +234,7 @@ def normalize_agy_plugins(payload):
         if not isinstance(item, dict):
             continue
         name = item.get("name") or ""
-        root = Path.home() / ".gemini" / "config" / "plugins" / name
+        root = agy_config_root() / "plugins" / name
         version = ""
         manifest_path = root / "plugin.json"
         if manifest_path.is_file():
@@ -244,6 +279,7 @@ def _remove_fix(harness, plugin_ids, scope="user"):
 
 
 def evaluate_harness(harness, plugins, expected_version):
+    label = HARNESS_LABELS.get(harness, harness.capitalize())
     checks = []
     installed = [item for item in plugins if item.get("id") == PLUGIN_ID]
     obsolete = sorted({
@@ -257,24 +293,24 @@ def evaluate_harness(harness, plugins, expected_version):
     if not installed:
         checks.append(Check(
             harness + ".install", "SKIP",
-            "%s does not have p@polstools installed" % harness.capitalize(),
+            "%s does not have p@polstools installed" % label,
         ))
     elif len(installed) > 1:
         checks.append(Check(
             harness + ".install", "FAIL",
-            "%s reports duplicate p@polstools installations" % harness.capitalize(),
+            "%s reports duplicate p@polstools installations" % label,
             _version_fix(harness, default_scope),
         ))
     elif not installed[0].get("enabled"):
         checks.append(Check(
             harness + ".install", "FAIL",
-            "%s has p@polstools disabled" % harness.capitalize(),
+            "%s has p@polstools disabled" % label,
             "Enable p@polstools, then start a new session.",
         ))
     else:
         checks.append(Check(
             harness + ".install", "PASS",
-            "%s has one enabled p@polstools installation" % harness.capitalize(),
+            "%s has one enabled p@polstools installation" % label,
         ))
 
     if installed:
@@ -282,13 +318,13 @@ def evaluate_harness(harness, plugins, expected_version):
         if actual == expected_version:
             checks.append(Check(
                 harness + ".version", "PASS",
-                "%s p version %s matches expected" % (harness.capitalize(), actual),
+                "%s p version %s matches expected" % (label, actual),
             ))
         else:
             checks.append(Check(
                 harness + ".version", "FAIL",
                 "%s p version %s does not match expected %s"
-                % (harness.capitalize(), actual, expected_version),
+                % (label, actual, expected_version),
                 _version_fix(harness, default_scope),
             ))
 
@@ -296,13 +332,13 @@ def evaluate_harness(harness, plugins, expected_version):
         checks.append(Check(
             harness + ".obsolete", "FAIL",
             "%s still registers obsolete IDs: %s"
-            % (harness.capitalize(), ", ".join(obsolete)),
+            % (label, ", ".join(obsolete)),
             _remove_fix(harness, obsolete, default_scope),
         ))
     else:
         checks.append(Check(
             harness + ".obsolete", "PASS",
-            "%s has no obsolete polstools plugin IDs" % harness.capitalize(),
+            "%s has no obsolete polstools plugin IDs" % label,
         ))
     return checks
 
@@ -323,13 +359,21 @@ def _event_key(event):
     return "".join(result)
 
 
-def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run):
+def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=None):
+    contract = contract or HOOK_CONTRACTS.get(harness)
+    if contract is None:
+        return [Check(
+            harness + ".hooks", "SKIP",
+            "%s has no p hook contract; p's format hooks do not run there"
+            % HARNESS_LABELS.get(harness, harness.capitalize()),
+        )]
     plugin_root = Path(plugin_root)
+    events = tuple(contract["events"])
     try:
-        with (plugin_root / "hooks" / "hooks.json").open(encoding="utf-8") as handle:
+        with plugin_root.joinpath(*contract["catalog"]).open(encoding="utf-8") as handle:
             hooks = json.load(handle).get("hooks")
-        if not isinstance(hooks, dict) or set(hooks) != set(HOOK_EVENTS):
-            raise ValueError("hook catalog does not contain the two expected events")
+        if not isinstance(hooks, dict) or set(hooks) != set(events):
+            raise ValueError("hook catalog does not contain the expected events")
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return [Check(
             harness + ".hooks", "ERROR",
@@ -339,7 +383,7 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run):
 
     checks = []
     scratch = tempfile.mkdtemp(prefix="p-doctor-format-")
-    for event in HOOK_EVENTS:
+    for event in events:
         key = "%s.hook.%s" % (harness, _event_key(event))
         try:
             raw = hooks[event][0]["hooks"][0]["command"]
@@ -359,9 +403,7 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run):
                      "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID",
                      "CODEX_THREAD_ID"):
             env.pop(name, None)
-        env["CLAUDE_CODE_SESSION_ID" if harness == "claude" else "CODEX_SESSION_ID"] = (
-            "p-doctor-check"
-        )
+        env[contract["session_env"]] = "p-doctor-check"
         # The probe verifies wiring, not the operator's preference: force
         # the default on and isolate session flags so an off default or a
         # stale fmt-off toggle cannot make a healthy gate look broken.
@@ -437,7 +479,7 @@ def _find_executable(name):
 
 
 def _run_json(executable, args):
-    completed = subprocess.run(
+    completed = RUN(
         [executable, *args], text=True, encoding="utf-8",
         capture_output=True, check=False,
     )
@@ -470,6 +512,158 @@ def _local_expected_version(harness, marketplaces):
     return None
 
 
+def tree_digest(root):
+    """Map each file under root (POSIX relative path) to its SHA-256.
+
+    Harness bookkeeping (in-use markers, bytecode caches, VCS metadata) is not
+    plugin content and is ignored.
+    """
+    root = Path(root)
+    digest = {}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        if (
+            any(part in CONTENT_IGNORED_PARTS for part in relative.parts)
+            or path.suffix == ".pyc"
+            or not path.is_file()
+        ):
+            continue
+        digest[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return digest
+
+
+def _differing(left, right):
+    return sorted(key for key in set(left) | set(right) if left.get(key) != right.get(key))
+
+
+def _sample(paths, limit=3):
+    shown = ", ".join(paths[:limit])
+    return shown + (", ..." if len(paths) > limit else "")
+
+
+def content_checks(roots, repo_root=None):
+    """Compare installed file content, not just version strings.
+
+    roots maps harness -> (version, installed root). With repo_root each copy is
+    compared with that checkout's plugins/p; without it, copies that claim the
+    same version are compared with each other.
+    """
+    try:
+        digests = {harness: (version, tree_digest(root)) for harness, (version, root) in roots.items()}
+    except OSError:
+        return [Check("content", "ERROR", "installed plugin files could not be read")]
+    if repo_root:
+        try:
+            reference = tree_digest(Path(repo_root) / "plugins" / "p")
+        except OSError:
+            return [Check("content", "ERROR", "the --repo-root plugin files could not be read")]
+        checks = []
+        for harness, (_, digest) in sorted(digests.items()):
+            label = HARNESS_LABELS[harness]
+            diff = _differing(digest, reference)
+            checks.append(Check(
+                harness + ".content", "FAIL" if diff else "PASS",
+                (
+                    "%s installed files differ from the --repo-root checkout in %d files: %s"
+                    % (label, len(diff), _sample(diff))
+                    if diff else "%s installed files match the --repo-root checkout" % label
+                ),
+                "Bump the version in the checkout, then run p's `p-update` guard." if diff else "",
+            ))
+        return checks
+    checks = []
+    compared = set()
+    names = sorted(digests)
+    for index, first in enumerate(names):
+        for second in names[index + 1:]:
+            (v1, d1), (v2, d2) = digests[first], digests[second]
+            if v1 != v2:
+                continue
+            compared.update((first, second))
+            diff = _differing(d1, d2)
+            if diff:
+                checks.append(Check(
+                    "cross_harness.content", "FAIL",
+                    "%s and %s both report p %s but differ in %d files: %s"
+                    % (HARNESS_LABELS[first], HARNESS_LABELS[second], v1, len(diff), _sample(diff)),
+                    "Bump the plugin version for any content change, then run p's `p-update` guard.",
+                ))
+    if not compared:
+        return [Check(
+            "cross_harness.content", "SKIP",
+            "content comparison needs two installed copies at one version, or --repo-root",
+        )]
+    if not checks:
+        checks.append(Check(
+            "cross_harness.content", "PASS",
+            "installed copies that report the same version have identical files (%s)"
+            % ", ".join(HARNESS_LABELS[h] for h in sorted(compared)),
+        ))
+    return checks
+
+
+def codex_config_path():
+    home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    return Path(home) / "config.toml"
+
+
+def codex_config_ids(path):
+    """Plugin IDs Codex config.toml still holds plugin or hook-state tables for."""
+    ids = set()
+    with Path(path).open(encoding="utf-8-sig") as handle:
+        for line in handle:
+            match = CODEX_CONFIG_TABLE_RE.match(line)
+            if match:
+                key = match.group(2) or match.group(3)
+                ids.add(key.split(":", 1)[0] if "state" in match.group(1) else key)
+    return ids
+
+
+def codex_config_checks(path=None):
+    path = Path(path) if path else codex_config_path()
+    if not path.is_file():
+        return [Check("codex.config_state", "PASS", "Codex has no config file to hold stale p state")]
+    try:
+        ids = codex_config_ids(path)
+    except (OSError, UnicodeError):
+        return [Check("codex.config_state", "ERROR", "Codex config cannot be read")]
+    obsolete = sorted(
+        item for item in ids if item.endswith("@polstools") and item != PLUGIN_ID
+    )
+    if not obsolete:
+        return [Check(
+            "codex.config_state", "PASS",
+            "Codex config holds no plugin or hook state for obsolete polstools IDs",
+        )]
+    return [Check(
+        "codex.config_state", "FAIL",
+        "Codex config still holds plugin or hook-state tables for obsolete IDs: %s"
+        % ", ".join(obsolete),
+        "With Codex closed, delete the [plugins.\"<id>\"] and [hooks.state.\"<id>:...\"] "
+        "tables for those IDs from Codex config.toml.",
+    )]
+
+
+def _run_plugin_tool(argv, runner):
+    try:
+        completed = runner(argv, text=True, encoding="utf-8", capture_output=True, check=False)
+    except OSError:
+        return None
+    return int(getattr(completed, "returncode", 2))
+
+
+def activation_checks(plugin_root=PLUGIN_ROOT, runner=subprocess.run):
+    code = _run_plugin_tool(
+        [sys.executable, "-B", str(Path(plugin_root) / "bin" / "skill-profile-ctl"), "validate"], runner
+    )
+    if code == 0:
+        return [Check("activation.policy", "PASS", "the skill-activation policy is valid")]
+    return [Check(
+        "activation.policy", "FAIL", "the skill-activation policy failed validation",
+        "Run p's `p-update` guard to reinstall p, then rerun p doctor.",
+    )]
+
+
 def exit_code(checks):
     statuses = {check.status for check in checks}
     if "ERROR" in statuses:
@@ -495,6 +689,19 @@ def render(checks, expected_version):
     return "\n".join(lines) + "\n"
 
 
+def query_agy(executable, runner=None):
+    completed = (runner or RUN)(
+        [executable, "plugin", "list"],
+        text=True, encoding="utf-8", capture_output=True, check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("agy plugin list exited %d" % completed.returncode)
+    out = (completed.stdout or "").strip()
+    if out == "No imported plugins.":
+        return {"imports": []}
+    return json.loads(out)
+
+
 def collect(repo_root=None):
     self_version = _manifest_version()
     override_version = marketplace_version(repo_root) if repo_root else None
@@ -505,10 +712,11 @@ def collect(repo_root=None):
         )]
     checks = package_metadata_checks()
     installed_by_harness = {}
+    queried = []
 
     for harness in ("claude", "codex", "agy"):
         executable = _find_executable(harness)
-        harness_label = "AGY" if harness == "agy" else harness.capitalize()
+        harness_label = HARNESS_LABELS[harness]
         if not executable:
             checks.append(Check(
                 harness + ".cli", "SKIP",
@@ -518,16 +726,7 @@ def collect(repo_root=None):
             continue
         try:
             if harness == "agy":
-                completed = subprocess.run(
-                    [executable, "plugin", "list"],
-                    text=True, encoding="utf-8", capture_output=True, check=False,
-                )
-                out = completed.stdout.strip()
-                if not out or out == "No imported plugins.":
-                    plugin_payload = {"imports": []}
-                else:
-                    plugin_payload = json.loads(out)
-                plugins = normalize_agy_plugins(plugin_payload)
+                plugins = normalize_agy_plugins(query_agy(executable))
                 local_version = None
             else:
                 plugin_payload = _run_json(executable, ["plugin", "list", "--json"])
@@ -550,20 +749,38 @@ def collect(repo_root=None):
             installed_by_harness[harness] = []
             continue
 
+        queried.append(harness)
         expected = override_version or local_version or self_version
         checks.extend(evaluate_harness(harness, plugins, expected))
+        if harness == "codex":
+            checks.extend(codex_config_checks())
         installed = [item for item in plugins if item.get("id") == PLUGIN_ID]
         installed_by_harness[harness] = installed
-        if harness in ("claude", "codex") and len(installed) == 1 and installed[0].get("enabled"):
+        if len(installed) == 1 and installed[0].get("enabled"):
             root = installed[0].get("root")
-            if root:
+            if HOOK_CONTRACTS.get(harness) is None:
+                checks.extend(probe_plugin_hooks(harness, root or ""))
+            elif root:
                 checks.extend(probe_plugin_hooks(harness, root))
             else:
                 checks.append(Check(
                     harness + ".hooks", "ERROR",
-                    "%s did not report the installed plugin root" % harness.capitalize(),
+                    "%s did not report the installed plugin root" % harness_label,
                     _version_fix(harness, installed[0].get("scope", "user")),
                 ))
+
+    if queried and not any(installed_by_harness[h] for h in queried):
+        checks.append(Check(
+            "install.any", "FAIL",
+            "no available harness has p@polstools installed",
+            "Install p with the commands in the README, then start a new session.",
+        ))
+    elif not queried and not any(c.status == "ERROR" for c in checks):
+        checks.append(Check(
+            "install.any", "FAIL",
+            "no supported harness CLI is available, so no installation was checked",
+            "Put claude, codex, or agy on PATH, then rerun p doctor.",
+        ))
 
     versions = {
         items[0].get("version") for items in installed_by_harness.values()
@@ -580,6 +797,14 @@ def collect(repo_root=None):
             "cross_harness.version", "PASS",
             "installed harnesses agree on p version %s" % next(iter(versions)),
         ))
+    roots = {
+        harness: (items[0].get("version"), items[0].get("root"))
+        for harness, items in installed_by_harness.items()
+        if len(items) == 1 and items[0].get("root") and Path(items[0]["root"]).is_dir()
+    }
+    if roots:
+        checks.extend(content_checks(roots, repo_root))
+    checks.extend(activation_checks())
     return override_version or self_version, checks
 
 

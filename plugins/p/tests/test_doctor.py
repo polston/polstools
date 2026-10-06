@@ -2,8 +2,11 @@ import importlib.machinery
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
+
+from fake_harness import FakeHarness, patched_env, write_plugin
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -162,6 +165,27 @@ class HookProbeTests(unittest.TestCase):
         rendered = self.doctor.render(checks, expected_version="1.5.14")
         self.assertNotIn("private-path", rendered)
 
+    def test_format_gate_entry_with_missing_python_is_reported_as_such(self):
+        class Result:
+            returncode = 1
+            stdout = ""
+            stderr = "python-launcher: Python 3 not found at private-path"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = self._plugin(Path(tmp))
+            path = plugin / "hooks" / "hooks.json"
+            path.write_text(path.read_text("utf-8").replace(
+                '\\"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\\" '
+                '\\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\\" gate',
+                '\\"${CLAUDE_PLUGIN_ROOT}/bin/format-gate\\" gate',
+            ), encoding="utf-8")
+            self.assertIn("format-gate", path.read_text("utf-8"))
+            checks = self.doctor.probe_plugin_hooks(
+                "claude", plugin, runner=lambda *args, **kwargs: Result()
+            )
+        self.assertEqual(["FAIL", "FAIL"], [check.status for check in checks])
+        self.assertTrue(all("Python 3 is unavailable" in check.summary for check in checks))
+
     def test_success_requires_byte_exact_payload(self):
         class Result:
             returncode = 0
@@ -262,7 +286,6 @@ class SchemaAndPackagingTests(unittest.TestCase):
             )
             checks = self.doctor.package_metadata_checks(plugin)
             self.assertEqual("FAIL", checks[1].status)
-            self.assertIn("version or description differs", checks[1].summary)
 
     def test_error_dominates_fail_and_fail_dominates_skip(self):
         Check = self.doctor.Check
@@ -280,6 +303,192 @@ class SchemaAndPackagingTests(unittest.TestCase):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/python-launcher", skill)
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/p-doctor", skill)
         self.assertIn("exit code", skill)
+
+
+class FakeHarnessDoctorTests(unittest.TestCase):
+    """Run collect() against fake harness CLIs and a fake home."""
+
+    def setUp(self):
+        self.doctor = load_doctor()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.fake = FakeHarness(self._tmp.name)
+        self.doctor.RUN = self.fake
+        self.doctor.activation_checks = lambda *a, **k: []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _collect(self, names, repo_root=None):
+        with patched_env(self.fake.env("P_DOCTOR_", names)):
+            _, checks = self.doctor.collect(repo_root)
+        return {check.key: check for check in checks}, self.doctor.exit_code(checks)
+
+    def _agy_imports_p(self, version):
+        write_plugin(self.fake.home / ".gemini" / "config" / "plugins" / "p", version)
+        self.fake.on("agy", ["plugin", "list"], (0, {"imports": [{
+            "name": "p", "source": "antigravity",
+            "importedAt": "2026-01-01T00:00:00Z", "components": ["skills"],
+        }]}))
+
+    def test_failing_agy_list_is_unavailable_not_uninstalled(self):
+        self.fake.on("agy", ["plugin", "list"], (1, ""))
+        found, code = self._collect(["agy"])
+        self.assertEqual("ERROR", found["agy.query"].status)
+        self.assertNotIn("agy.install", found)
+        self.assertEqual(2, code)
+
+    def test_no_harness_with_p_is_flagged_not_healthy(self):
+        self.fake.on("agy", ["plugin", "list"], (0, "No imported plugins."))
+        found, code = self._collect(["agy"])
+        self.assertEqual("FAIL", found["install.any"].status)
+        self.assertEqual(1, code)
+
+    def test_no_harness_cli_at_all_is_flagged(self):
+        found, code = self._collect([])
+        self.assertEqual("FAIL", found["install.any"].status)
+        self.assertEqual(1, code)
+
+    def test_antigravity_reports_installed_version_and_an_explicit_hook_line(self):
+        version = self.doctor._manifest_version()
+        self._agy_imports_p(version)
+        found, code = self._collect(["agy"])
+        self.assertEqual("PASS", found["agy.version"].status)
+        self.assertEqual("SKIP", found["agy.hooks"].status)
+        self.assertEqual(0, code)
+
+    def test_antigravity_copy_without_a_manifest_is_not_a_version_match(self):
+        self._agy_imports_p(self.doctor._manifest_version())
+        (self.fake.home / ".gemini" / "config" / "plugins" / "p" / "plugin.json").unlink()
+        found, code = self._collect(["agy"])
+        self.assertEqual("FAIL", found["agy.version"].status)
+        self.assertEqual(1, code)
+
+    def test_same_version_with_different_files_is_flagged_against_a_checkout(self):
+        version = self.doctor._manifest_version()
+        self._agy_imports_p(version)
+        repo = Path(self._tmp.name) / "checkout"
+        (repo / ".claude-plugin").mkdir(parents=True)
+        (repo / ".claude-plugin" / "marketplace.json").write_text(
+            json.dumps({"plugins": [{"name": "p", "version": version}]}), encoding="utf-8"
+        )
+        installed = self.fake.home / ".gemini" / "config" / "plugins" / "p"
+        shutil.copytree(installed, repo / "plugins" / "p")
+        found, code = self._collect(["agy"], repo_root=repo)
+        self.assertEqual("PASS", found["agy.content"].status)
+        (repo / "plugins" / "p" / "bin").mkdir()
+        (repo / "plugins" / "p" / "bin" / "tool").write_text("changed", encoding="utf-8")
+        found, code = self._collect(["agy"], repo_root=repo)
+        self.assertEqual("PASS", found["agy.version"].status)
+        self.assertEqual("FAIL", found["agy.content"].status)
+        self.assertEqual(1, code)
+
+
+class ContentAndConfigTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.doctor = load_doctor()
+
+    def test_copies_claiming_one_version_must_have_identical_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = write_plugin(Path(tmp) / "first", "2.0.0", {"bin/tool": "a"})
+            second = write_plugin(Path(tmp) / "second", "2.0.0", {"bin/tool": "a"})
+            (second / ".in_use").mkdir()
+            (second / ".in_use" / "4242").write_text("", encoding="utf-8")
+            roots = {"claude": ("2.0.0", first), "codex": ("2.0.0", second)}
+            checks = self.doctor.content_checks(roots)
+            self.assertEqual(["PASS"], [check.status for check in checks])
+            (second / "bin" / "tool").write_text("b", encoding="utf-8")
+            checks = self.doctor.content_checks(roots)
+            self.assertEqual(["FAIL"], [check.status for check in checks])
+            self.assertIn("bin/tool", checks[0].summary)
+
+    def test_a_single_copy_without_a_checkout_is_not_claimed_identical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            only = write_plugin(Path(tmp) / "only", "2.0.0")
+            checks = self.doctor.content_checks({"claude": ("2.0.0", only)})
+        self.assertEqual(["SKIP"], [check.status for check in checks])
+
+    def test_codex_config_single_quoted_table_keys_are_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.toml"
+            config.write_text(
+                "[hooks.state.'statusline@polstools:hooks/hooks.json:stop:0:0']\n"
+                "enabled = true\n",
+                encoding="utf-8",
+            )
+            self.assertEqual({"statusline@polstools"}, self.doctor.codex_config_ids(config))
+
+    def test_codex_config_state_for_an_obsolete_plugin_id_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.toml"
+            config.write_text(
+                '[plugins."p@polstools"]\nenabled = true\n\n'
+                '[hooks.state."p@polstools:hooks/hooks.json:session_start:0:0"]\n'
+                'enabled = true\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                ["PASS"], [c.status for c in self.doctor.codex_config_checks(config)]
+            )
+            with config.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    '\n[hooks.state."statusline@polstools:hooks/hooks.json:session_start:0:0"]\n'
+                    'enabled = true\n'
+                )
+            checks = self.doctor.codex_config_checks(config)
+        self.assertEqual(["FAIL"], [check.status for check in checks])
+        self.assertIn("statusline@polstools", checks[0].summary)
+
+    def test_activation_policy_runs_validate_from_the_plugin_root(self):
+        seen = []
+
+        class Result:
+            def __init__(self, code):
+                self.returncode = code
+
+        for code, status in ((0, "PASS"), (2, "FAIL")):
+            with self.subTest(code=code):
+                checks = self.doctor.activation_checks(
+                    Path("fixture-root"),
+                    runner=lambda argv, **k: seen.append(argv) or Result(code),
+                )
+                self.assertEqual([status], [check.status for check in checks])
+        self.assertEqual("validate", seen[0][-1])
+        self.assertEqual(Path("fixture-root") / "bin" / "skill-profile-ctl", Path(seen[0][-2]))
+
+    def test_a_third_harness_hook_contract_plugs_into_the_probe(self):
+        captured = []
+
+        class Result:
+            returncode = 0
+            stderr = ""
+
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = Path(tmp)
+            (plugin / "style").mkdir()
+            (plugin / "style" / "stop.md").write_text("stop payload\n", "utf-8")
+            (plugin / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{
+                "type": "command",
+                "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\" "
+                "\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate "
+                "\"${CLAUDE_PLUGIN_ROOT}/style/stop.md\"",
+            }]}]}}), encoding="utf-8")
+
+            def runner(argv, **kwargs):
+                captured.append(kwargs["env"])
+                return Result(Path(argv[argv.index("gate") + 1]).read_text("utf-8"))
+
+            checks = self.doctor.probe_plugin_hooks(
+                "agy", plugin, runner=runner,
+                contract={"catalog": ("hooks.json",), "events": ("Stop",),
+                          "session_env": "FIXTURE_SESSION_ID"},
+            )
+        self.assertEqual(["agy.hook.stop"], [check.key for check in checks])
+        self.assertEqual(["PASS"], [check.status for check in checks])
+        self.assertEqual("p-doctor-check", captured[0]["FIXTURE_SESSION_ID"])
 
 
 if __name__ == "__main__":
