@@ -2852,6 +2852,18 @@ def positive_int(value):
     return result
 
 
+def nonnegative_int(value):
+    """A window length where 0 means all history. A negative window would end
+    before it starts and report on nothing while looking like a result."""
+    try:
+        result = int(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError("must be 0 (all history) or a positive integer")
+    if result < 0:
+        raise argparse.ArgumentTypeError("must be 0 (all history) or a positive integer")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(prog="retro", description=__doc__)
     sub = parser.add_subparsers(required=True)
@@ -2862,7 +2874,9 @@ def main():
     p_extract.set_defaults(func=cmd_extract)
 
     p_pack = sub.add_parser("pack", help="build an evidence pack for a window")
-    p_pack.add_argument("--days", type=int, default=7)
+    # The pack compares its window with the one before it, so it has no
+    # all-history form: 0 would be a today-only window labelled "last 0 days".
+    p_pack.add_argument("--days", type=positive_int, default=7)
     p_pack.add_argument("--sessions", type=int, default=8,
                         help="how many top-friction sessions to quote")
     p_pack.add_argument("--moments-per-session", type=positive_int,
@@ -2871,13 +2885,13 @@ def main():
     p_pack.set_defaults(func=cmd_pack)
 
     p_skills = sub.add_parser("skills", help="which installed skills actually fire")
-    p_skills.add_argument("--days", type=int, default=0,
+    p_skills.add_argument("--days", type=nonnegative_int, default=0,
                           help="restrict to a window; 0 means all history")
     p_skills.set_defaults(func=cmd_skills)
 
     p_sub = sub.add_parser("subagents",
                            help="mechanical failures in subagent transcripts")
-    p_sub.add_argument("--days", type=int, default=30,
+    p_sub.add_argument("--days", type=nonnegative_int, default=30,
                        help="restrict to a window; 0 means all history")
     p_sub.add_argument("--exclude-session", action="append", default=[],
                        metavar="ID",
@@ -2898,7 +2912,7 @@ def main():
     p_effect.add_argument("--since", metavar="YYYY-MM-DD",
                           help="the date the change was made; omit to list the "
                                "dates the machine's own rule files changed")
-    p_effect.add_argument("--days", type=int, default=0,
+    p_effect.add_argument("--days", type=nonnegative_int, default=0,
                           help="limit to this many days either side; 0 means all")
     p_effect.add_argument("--harness", choices=HARNESSES + ("all",),
                           default="claude",
