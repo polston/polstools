@@ -72,7 +72,7 @@ the command name.
    every write and restores all earlier targets if any replacement fails. It
    refuses unknown external renderers and is idempotent.
 5. `profile-sync` refreshes only the stable profile-label bundle and its owned
-   Claude integration. The `$p:home` and `$p:work` skills call it after a
+   Claude integration. The `home` and `work` skills call it after a
    successful session switch; indicator failure does not undo the profile.
 6. `restore` restores only values changed by `apply`. If a managed value changed
    afterwards, it leaves that value untouched and exits 1.

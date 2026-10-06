@@ -148,6 +148,19 @@ class RepositoryDocumentTests(unittest.TestCase):
     def test_licence_file_is_present(self):
         text = LICENSE_PATH.read_text(encoding="utf-8")
         self.assertGreater(len(text.strip()), 200)
+        self.assertEqual(
+            "DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE", text.splitlines()[0].strip()
+        )
+
+    def test_skills_name_other_skills_without_one_harness_sigil(self):
+        for name, sigils in (
+            ("aligning-statuslines", ("$p:home", "$p:work")),
+            ("maintaining-the-format-plugin", ("/p:fmt-on",)),
+        ):
+            text = (PLUGIN_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+            for sigil in sigils:
+                with self.subTest(skill=name, sigil=sigil):
+                    self.assertNotIn(sigil, text)
 
     def test_changelog_has_an_entry_for_the_released_version(self):
         manifest = json.loads(

@@ -79,7 +79,7 @@ says otherwise.
 | Claude Code and Codex hooks invoke `sh bin/format-gate`, not `format-ctl` directly | When the shell can prove the format is off the gate exits 0 without starting Python, and it never exits 2, so a missing or broken Python cannot block a prompt; otherwise it reaches `format-ctl` through `bin/python-launcher`, which resolves installed Python locations before falling back to `uv` (Git Bash on Windows may have no `python3` on PATH) |
 | `gate` exits 1 on a bad payload while the toggles exit 2 | Exit 2 from a UserPromptSubmit hook blocks processing and erases the user's prompt |
 | Flag dir sits under the OS temp directory | Both harness sandboxes permit temp writes; config paths may be blocked or may themselves be repositories |
-| A fresh session gets no injection | The format ships off by default; enable it per session with `/p:fmt-on`, or durably with `format-ctl default on`, optionally `--harness claude`, `--harness codex`, or `--harness antigravity` |
+| A fresh session gets no injection | The format ships off by default; enable it per session with the `fmt-on` skill, or durably with `format-ctl default on`, optionally `--harness claude`, `--harness codex`, or `--harness antigravity` |
 | stdin/stdout reconfigured to UTF-8 at the top of `format-ctl` | Piped stdout on Windows defaults to the ANSI code page and mangles non-ASCII payload bytes |
 | Spec text duplicated in miniature in `turn-reminder.md` | Per-turn reinjection is the measured drift antidote; the repetition is the feature |
 | Interim tool progress has no triage headers | The full contract is reserved for turn-ending replies; the final reply repeats every actionable item |
