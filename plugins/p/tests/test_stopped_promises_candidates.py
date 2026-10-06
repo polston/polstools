@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
 import tempfile
@@ -76,6 +77,35 @@ class CandidatesFile(unittest.TestCase):
         self.assertEqual([], list(self.system_temp.iterdir()))
         self.assertIsNone(re.search(r"^candidates written to", err, re.M))
 
+
+class UnmeasuredCorpora(unittest.TestCase):
+    def run_with_homes(self, codex=False, antigravity=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env = {"CODEX_HOME": str(base / "cx"),
+                   "RETRO_ANTIGRAVITY_HOME": str(base / "agy"),
+                   "RETRO_HOME": str(base / "work")}
+            if codex:
+                (base / "cx" / "sessions").mkdir(parents=True)
+            if antigravity:
+                (base / "agy" / "brain").mkdir(parents=True)
+            stopped.write_fixture(base / "corpus", "s.jsonl", supported())
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, env), \
+                    contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                status = stopped.main(["--root", str(base / "corpus"), "--json"])
+            return status, json.loads(out.getvalue())
+
+    def test_a_claude_run_names_other_harness_corpora_it_did_not_measure(self):
+        status, payload = self.run_with_homes(codex=True, antigravity=True)
+        self.assertEqual(["codex", "antigravity"],
+                         payload["coverage"]["unmeasured_harness_corpora"])
+        self.assertEqual("supported", payload["coverage"]["status"])
+
+    def test_nothing_is_named_when_no_other_corpus_exists(self):
+        _, payload = self.run_with_homes()
+        self.assertEqual([], payload["coverage"]["unmeasured_harness_corpora"])
 
 
 if __name__ == "__main__":

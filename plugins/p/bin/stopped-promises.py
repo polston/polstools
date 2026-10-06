@@ -95,6 +95,24 @@ def usable_roots(roots):
     return good, complaints
 
 
+def other_harness_corpora():
+    """Codex and Antigravity session directories present on this machine.
+
+    Their formats are not read here (docs/plans/2026-09-07-workflow-
+    improvement-goals.md, Goal 1: honest coverage does not require a new
+    adapter). Naming the ones that exist keeps a Claude-only run from reading
+    as the machine's whole history. Resolved as the sibling resolves them.
+    """
+    codex = (os.environ.get("CODEX_HOME") or "").strip()
+    agy = (os.environ.get("RETRO_ANTIGRAVITY_HOME") or "").strip()
+    dirs = (("codex", (Path(codex).expanduser() if codex
+                       else Path.home() / ".codex") / "sessions"),
+            ("antigravity", (Path(agy).expanduser() if agy
+                             else Path.home() / ".gemini" / "antigravity-cli")
+             / "brain"))
+    return [name for name, directory in dirs if directory.is_dir()]
+
+
 def walk_transcripts(roots):
     """(root, path) for every transcript under every root. Recursive: transcripts
     sit at least one directory below a root, so a flat listing finds nothing."""
@@ -871,7 +889,8 @@ def main(argv=None):
                "census": report["census"], "counts": report["counts"],
                "candidates": len(candidates),
                "coverage": {"supported_format": "claude",
-                            "unsupported_formats": "excluded; not measured as zero"}}
+                            "unsupported_formats": "excluded; not measured as zero",
+                            "unmeasured_harness_corpora": other_harness_corpora()}}
 
     status = EXIT_FLAGGED if candidates else EXIT_CLEAN
     if args.verdicts:
@@ -915,6 +934,10 @@ def main(argv=None):
     else:
         print(f"classifier {_classifier_version()}   window {window}")
         print(f"  source: Claude; coverage: {payload['coverage']['status']}")
+        unmeasured = payload["coverage"]["unmeasured_harness_corpora"]
+        if unmeasured:
+            print(f"  not measured: {', '.join(unmeasured)} history is present "
+                  f"on this machine in a format this tool does not read")
         print("  -- census (structural, quotable) --")
         for key, value in report["census"].items():
             print(f"    {key:22s} {value}")

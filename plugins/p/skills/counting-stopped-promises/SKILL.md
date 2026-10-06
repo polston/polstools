@@ -96,7 +96,9 @@ The parser measures Claude-format transcripts. Extra roots are supported only
 when their record schema is compatible. Codex and Antigravity directories do
 not become supported by passing `--root`: unknown formats are counted as
 unsupported. A mixed corpus reports partial coverage; no supported transcripts
-in the window is a cannot-run result, never a clean zero.
+in the window is a cannot-run result, never a clean zero. Every run also names
+the Codex and Antigravity history present on the machine that it did not
+measure (`coverage.unmeasured_harness_corpora` in `--json`).
 
 With `--since`, a file last modified more than a day before that date is not
 opened: it cannot hold a record inside the window. The census counts it under
