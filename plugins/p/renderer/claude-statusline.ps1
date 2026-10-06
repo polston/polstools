@@ -14,6 +14,7 @@ $Reset = "$esc[0m"; $Dim = "$esc[2m"; $Cyan = "$esc[2;36m"; $Yellow = "$esc[2;33
 $Magenta = "$esc[35m"; $Red = "$esc[31m"; $Amber = "$esc[33m"; $Green = "$esc[32m"
 $Block = [string][char]0x2588; $Shade = [string][char]0x2591
 $Invariant = [System.Globalization.CultureInfo]::InvariantCulture
+$IsWin = ($PSVersionTable.PSEdition -eq 'Desktop') -or [bool]$IsWindows
 
 function Get-Field($obj, [string]$name) {
     if ($obj -is [System.Management.Automation.PSCustomObject]) {
@@ -27,7 +28,9 @@ function Get-Field($obj, [string]$name) {
     return $null
 }
 
-function Get-Text($value) { if ($value -is [string]) { return $value.Trim() } return '' }
+# C0 controls, DEL and C1 controls never reach the terminal from outside input.
+function Remove-Controls([string]$text) { return [regex]::Replace($text, '[\u0000-\u001F\u007F-\u009F]', '') }
+function Get-Text($value) { if ($value -is [string]) { return (Remove-Controls $value).Trim() } return '' }
 
 function Get-Num($value) {
     if ($null -eq $value -or $value -is [bool]) { return $null }
@@ -116,17 +119,88 @@ function Get-ProfileLabel($python, [string]$inputJson) {
     return 'p:?'
 }
 
+function Get-UserId {
+    try {
+        $uid = (& id -u 2>$null | Out-String).Trim()
+        if ($uid -match '^[0-9]+$') { return $uid }
+    } catch {}
+    return $null
+}
+
+# Same location rule as claude-statusline.py. On POSIX the shared temp
+# directory gets a per-user name; on Windows the temp location is per user.
 function Get-CacheDir {
     if ($env:LOCALAPPDATA) { return Join-Path $env:LOCALAPPDATA 'claude-statusline' }
     if ($env:XDG_CACHE_HOME) { return Join-Path $env:XDG_CACHE_HOME 'claude-statusline' }
-    return Join-Path ([System.IO.Path]::GetTempPath()) 'claude-statusline'
+    $name = 'claude-statusline'
+    if (-not $IsWin) {
+        $uid = Get-UserId
+        if (-not $uid) { return $null }
+        $name = $name + '-' + $uid
+    }
+    return Join-Path ([System.IO.Path]::GetTempPath()) $name
+}
+
+function Get-LinkItem([string]$path) {
+    return Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+}
+
+function Test-Reparse($item) {
+    return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+# POSIX only: a directory owned by this user with no group or world access.
+# ls reports a symbolic link with a leading l, so a link never passes.
+function Test-PrivateDirectory([string]$dir) {
+    $uid = Get-UserId
+    if (-not $uid) { return $false }
+    try {
+        $env:LC_ALL = 'C'
+        $fields = (& ls -ldn -- $dir 2>$null | Out-String).Trim() -split '\s+'
+    } catch { return $false }
+    if ($fields.Count -lt 3 -or $fields[0].Length -lt 10) { return $false }
+    if ($fields[0][0] -ne 'd' -or $fields[0].Substring(4, 6) -ne '------') { return $false }
+    return ($fields[2] -ceq $uid)
+}
+
+# The cache directory, or $null when it cannot be trusted. It must be a real
+# directory, not a link. On POSIX it must also be owned by this user and
+# closed to group and world; one that fails is left untouched.
+function Get-TrustedCacheDir([bool]$create) {
+    $dir = Get-CacheDir
+    if (-not $dir) { return $null }
+    try {
+        if ($create -and -not (Get-LinkItem $dir)) {
+            if ($IsWin) {
+                New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            } else {
+                [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($dir)) | Out-Null
+                & mkdir -m 700 -- $dir 2>$null
+            }
+        }
+        $item = Get-LinkItem $dir
+        if (-not $item -or -not $item.PSIsContainer -or (Test-Reparse $item)) { return $null }
+        if (-not $IsWin -and -not (Test-PrivateDirectory $dir)) { return $null }
+        return $dir
+    } catch { return $null }
+}
+
+# True when path is absent or a plain file; a link or directory is refused.
+function Test-PlainFileOrAbsent([string]$path) {
+    $item = Get-LinkItem $path
+    if (-not $item) { return $true }
+    return (-not $item.PSIsContainer) -and (-not (Test-Reparse $item))
 }
 
 function Get-ScopedState($python) {
-    $dir = Get-CacheDir
+    $dir = Get-TrustedCacheDir $true
+    if (-not $dir) { return $null }
     $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $cache = $null
-    try { $cache = Get-Content -LiteralPath (Join-Path $dir 'usage-cache.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+    $cachePath = Join-Path $dir 'usage-cache.json'
+    if (Test-PlainFileOrAbsent $cachePath) {
+        try { $cache = Get-Content -LiteralPath $cachePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+    }
     $at = Get-Num (Get-Field $cache 'at')
     $label = Get-Text (Get-Field $cache 'label')
     $percent = Get-Num (Get-Field $cache 'percent')
@@ -137,14 +211,15 @@ function Get-ScopedState($python) {
     }
     if ($null -eq $at -or ($nowMs - $at) -gt 60000) {
         $attemptPath = Join-Path $dir 'usage-attempt.txt'
-        $last = 0
-        try { $last = [long]((Get-Content -LiteralPath $attemptPath -Raw).Trim()) } catch {}
-        if (($nowMs - $last) -gt 30000) {
-            try {
-                if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-                [System.IO.File]::WriteAllText($attemptPath, [string]$nowMs)
-                Start-Refresh $python
-            } catch {}
+        if (Test-PlainFileOrAbsent $attemptPath) {
+            $last = 0
+            try { $last = [long]((Get-Content -LiteralPath $attemptPath -Raw).Trim()) } catch {}
+            if (($nowMs - $last) -gt 30000) {
+                try {
+                    [System.IO.File]::WriteAllText($attemptPath, [string]$nowMs)
+                    Start-Refresh $python
+                } catch {}
+            }
         }
     }
     return ,$state
@@ -154,7 +229,7 @@ function Get-GitBranch([string]$cwd) {
     try {
         if (-not $cwd -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { return '' }
         $branch = & git -C $cwd --no-optional-locks rev-parse --abbrev-ref HEAD 2>$null
-        if ($LASTEXITCODE -eq 0 -and $branch) { return ([string]$branch).Trim() }
+        if ($LASTEXITCODE -eq 0 -and $branch) { return (Remove-Controls ([string]$branch)).Trim() }
     } catch {}
     return ''
 }
@@ -165,9 +240,9 @@ function Get-Lines([string]$inputJson) {
     $python = Find-Python
     $workspace = Get-Field $data 'workspace'
     $context = Get-Field $data 'context_window'
-    $windows = ($PSVersionTable.PSEdition -eq 'Desktop') -or [bool]$IsWindows
-    $homeDir = $env:HOME
-    if (-not $homeDir) { $homeDir = $env:USERPROFILE }
+    $windows = $IsWin
+    $homeDir = Remove-Controls ([string]$env:HOME)
+    if (-not $homeDir) { $homeDir = Remove-Controls ([string]$env:USERPROFILE) }
 
     $line1 = New-Object System.Collections.ArrayList
     $model = Get-Text (Get-Field (Get-Field $data 'model') 'display_name')

@@ -465,6 +465,61 @@ class CacheDirectoryTrustTests(unittest.TestCase):
             self.assertFalse((fake.cache / "usage-cache.json").is_symlink())
 
 
+class PowerShellCacheDirectoryTrustTests(CacheDirectoryTrustTests):
+    """The same non-Windows rule, driven through the PowerShell renderer."""
+
+    def setUp(self):
+        super().setUp()
+        if not powershell():
+            self.skipTest("PowerShell is unavailable on this machine")
+
+    def render(self, fake):
+        result = run_powershell(json.dumps(RATE_LIMITS), fake.env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plain = ANSI.sub("", result.stdout)
+        self.assertTrue(plain.strip(), "a line must still be printed")
+        self.assertNotIn("model-week", plain, "the foreign cache must not be read")
+        return plain
+
+    def test_refresh_does_not_write_through_a_planted_temporary_link(self):
+        self.skipTest("the refresh child is the Python renderer, covered by the base class")
+
+
+class PerUserCacheNameTests(unittest.TestCase):
+    def setUp(self):
+        if os.name == "nt":
+            self.skipTest("the user id is part of the POSIX cache name only")
+
+    def scratch_env(self, tmp):
+        fake = FakeHome(tmp)
+        env = fake.env()
+        for name in ("LOCALAPPDATA", "XDG_CACHE_HOME"):
+            env.pop(name)
+        scratch = Path(tmp) / "tmpdir"
+        scratch.mkdir()
+        env["TMPDIR"] = str(scratch)
+        return fake, env, scratch
+
+    def test_python_cache_directory_ends_with_the_user_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, env, scratch = self.scratch_env(tmp)
+            result = run_python(json.dumps(RATE_LIMITS), env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            created = sorted(path.name for path in scratch.iterdir() if path.name.startswith("claude-statusline"))
+            self.assertEqual(created, ["claude-statusline-" + str(os.getuid())])
+
+    def test_powershell_resolves_the_same_directory(self):
+        if not powershell():
+            self.skipTest("PowerShell is unavailable on this machine")
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, env, scratch = self.scratch_env(tmp)
+            result = run_powershell(json.dumps(RATE_LIMITS), env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            created = sorted(path.name for path in scratch.iterdir() if path.name.startswith("claude-statusline"))
+            self.assertEqual(created, ["claude-statusline-" + str(os.getuid())])
+            self.assertEqual(os.stat(scratch / created[0]).st_mode & 0o777, 0o700)
+
+
 class ControlCharacterTests(unittest.TestCase):
     ESC = chr(27)
     BEL = chr(7)

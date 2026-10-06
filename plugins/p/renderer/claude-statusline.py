@@ -195,7 +195,10 @@ def cache_dir():
     for name in ("LOCALAPPDATA", "XDG_CACHE_HOME"):
         if os.environ.get(name):
             return Path(os.environ[name]) / "claude-statusline"
-    return Path(tempfile.gettempdir()) / "claude-statusline"
+    # The shared temp directory gets a per-user name on POSIX, as the format
+    # toggle directory does; the PowerShell renderer resolves the same path.
+    suffix = "-" + str(os.getuid()) if hasattr(os, "getuid") else ""
+    return Path(tempfile.gettempdir()) / ("claude-statusline" + suffix)
 
 
 def private_cache_dir(create=False):
