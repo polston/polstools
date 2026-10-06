@@ -137,10 +137,20 @@ def _rows(path, main, skipped):
                 creation = usage.get("cache_creation")
                 if not isinstance(creation, dict):
                     creation = {}
-                read = usage.get("cache_read_input_tokens") or 0
-                w1 = creation.get("ephemeral_1h_input_tokens") or 0
-                w5 = creation.get("ephemeral_5m_input_tokens") or 0
-                out = usage.get("output_tokens") or 0
+                counts = [usage.get("cache_read_input_tokens"),
+                          creation.get("ephemeral_1h_input_tokens"),
+                          creation.get("ephemeral_5m_input_tokens"),
+                          usage.get("output_tokens")]
+                counts = [0 if c is None else c for c in counts]
+                # A count that is not a non-negative int would either abort
+                # the run (a string) or silently shrink a total (a negative),
+                # so the whole row is set aside and tallied.
+                if not isinstance(rid, str) or not all(
+                        isinstance(c, int) and not isinstance(c, bool)
+                        and c >= 0 for c in counts):
+                    skipped["bad_usage"] += 1
+                    continue
+                read, w1, w5, out = counts
                 model = message.get("model")
                 if not isinstance(model, str):
                     # A non-string model makes sorted() on the unpriced

@@ -305,13 +305,27 @@ class TestCostModel(unittest.TestCase):
     READ_MULTIPLIER = {"claude-fable-5-1": 0.025, "claude-opus-5-5": 0.05}
     STANDARD_READ_MULTIPLIER = 0.1
 
+    # Published base input price, dollars per million tokens, same reading.
+    BASE_INPUT = {
+        "claude-fable-5-1": 10.0, "claude-fable-5": 10.0,
+        "claude-opus-5-5": 4.0, "claude-opus-5": 5.0, "claude-opus-4-8": 5.0,
+        "claude-opus-4-7": 5.0, "claude-opus-4-6": 5.0,
+        "claude-sonnet-5-5": 2.0, "claude-sonnet-5": 2.0,
+        "claude-sonnet-4-6": 3.0, "claude-sonnet-4-5-20250929": 3.0,
+        "claude-haiku-4-5-20251001": 1.0,
+    }
+
+    def test_every_price_row_has_a_published_base(self):
+        self.assertEqual(set(cache_ttl.PRICES), set(self.BASE_INPUT))
+
     def test_price_rows_hold_the_exact_published_multipliers(self):
-        """Every row is base x1.25 (5m write), x2.0 (1h write) and the read
-        multiplier the page publishes for that model. Base is derived from the
-        row itself (5m write / 1.25), so no base column is needed. An
-        ordering-only assertion would let a tenfold typo through."""
+        """Every row is the published base x1.25 (5m write), x2.0 (1h write)
+        and the read multiplier the page publishes for that model. The base
+        comes from the table above, not from the row, so a row scaled
+        uniformly away from the published price fails too."""
         for model, (w5, w1, read) in cache_ttl.PRICES.items():
-            base = w5 / 1.25
+            base = self.BASE_INPUT[model] * 1e-6
+            self.assertAlmostEqual(w5, base * 1.25, places=12, msg=model)
             mult = self.READ_MULTIPLIER.get(model, self.STANDARD_READ_MULTIPLIER)
             self.assertAlmostEqual(w1, base * 2.0, places=12, msg=model)
             self.assertAlmostEqual(read, base * mult, places=12, msg=model)

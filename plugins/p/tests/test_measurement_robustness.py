@@ -155,6 +155,42 @@ class ControlCharacters(Sandbox):
             self.assertIn("\n", out)
 
 
+class MalformedUsageRows(Sandbox):
+    MODEL = "claude-sonnet-5-5"
+
+    def good_rows(self):
+        return [usage_row("ok%d" % i, self.MODEL, 100000, 0, 5000, 10,
+                          NOW + timedelta(minutes=i)) for i in range(5)]
+
+    def report(self, bad):
+        self.write_session(self.good_rows() + [bad])
+        done = self.run_tool("cache_ttl.py", "report", "--json")
+        self.assertIn(done.returncode, (0, 1), done.stdout + done.stderr)
+        return json.loads(done.stdout)
+
+    def assert_skipped(self, bad):
+        data = self.report(bad)
+        self.assertEqual(1, data["skipped"].get("bad_usage"), data["skipped"])
+        return data
+
+    def test_string_token_count_is_skipped(self):
+        bad = usage_row("bad", self.MODEL, "7", 0, 5000, 10, NOW)
+        self.assert_skipped(bad)
+
+    def test_unhashable_request_id_is_skipped(self):
+        bad = usage_row({"a": 1}, self.MODEL, 100000, 0, 5000, 10, NOW)
+        self.assert_skipped(bad)
+
+    def test_negative_token_count_is_skipped_not_an_empty_window(self):
+        bad = usage_row("neg", self.MODEL, -1000000000, 0, 5000, 10, NOW)
+        data = self.assert_skipped(bad)
+        self.assertNotIn("nothing to decide", json.dumps(data))
+
+    def test_boolean_token_count_is_skipped(self):
+        bad = usage_row("flag", self.MODEL, True, 0, 5000, 10, NOW)
+        self.assert_skipped(bad)
+
+
 class SelftestHomeName(Sandbox):
     def test_selftest_passes_with_a_one_letter_home_directory(self):
         short = Path(self.tmp.name) / "h"
