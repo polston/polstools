@@ -171,8 +171,6 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
         documented = readme_validation_commands(README.read_text(encoding="utf-8"))
         self.assertGreaterEqual(len(documented), 5)
         for command in documented:
-            if command.startswith("git diff --check"):
-                continue  # CI checks the committed tree; see the next test
             with self.subTest(command=command):
                 self.assertIn(command, ran)
         self.assertIn(
@@ -209,6 +207,15 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
                     if "pip install" in line:
                         self.assertIn("--only-binary :all:", line)
 
+    def test_version_bump_is_checked_against_the_pull_request_base(self):
+        steps = [s for s in self.jobs["plugin"]["steps"] if "--base" in s.get("run", "")]
+        self.assertEqual(1, len(steps))
+        self.assertIn("pull_request", steps[0].get("if", ""))
+        self.assertEqual(
+            "${{ github.event.pull_request.base.sha }}", steps[0]["env"].get("BASE_SHA")
+        )
+        self.assertEqual('sh plugins/p/bin/p-validate --base "$BASE_SHA"', steps[0]["run"])
+
 
 class OptionalAnalyticsJobTests(unittest.TestCase):
     @classmethod
@@ -228,15 +235,6 @@ class OptionalAnalyticsJobTests(unittest.TestCase):
         self.assertEqual(1, len(tests))
         self.assertEqual("1", tests[0]["env"].get("RETRO_EVAL_REQUIRE_OPTIONAL"))
         self.assertIn('-p "test_eval_*.py"', tests[0]["run"])
-
-    def test_version_bump_is_checked_against_the_pull_request_base(self):
-        steps = [s for s in self.jobs["plugin"]["steps"] if "--base" in s.get("run", "")]
-        self.assertEqual(1, len(steps))
-        self.assertIn("pull_request", steps[0].get("if", ""))
-        self.assertEqual(
-            "${{ github.event.pull_request.base.sha }}", steps[0]["env"].get("BASE_SHA")
-        )
-        self.assertEqual('sh plugins/p/bin/p-validate --base "$BASE_SHA"', steps[0]["run"])
 
 
 class PythonFloorTests(unittest.TestCase):

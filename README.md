@@ -163,7 +163,7 @@ sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t p
 sh plugins/p/bin/python-launcher -B plugins/p/bin/format-e2e
 sh plugins/p/bin/p-validate
 sh plugins/p/bin/repo-privacy-audit -C .
-git diff --check
+git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
 ```
 
 `p-validate` checks the three harness manifests and both marketplace entries,
