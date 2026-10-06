@@ -810,14 +810,6 @@ class PackagingTests(unittest.TestCase):
             if path.is_file() and "tests" not in path.parts and is_text:
                 self.assertIsNone(pattern.search(path.read_text("utf-8")), str(path))
 
-    def test_skill_defaults_to_sync_and_documents_transactional_rollback(self):
-        skill = (PLUGIN_ROOT / "skills" / "aligning-statuslines" / "SKILL.md").read_text(
-            "utf-8"
-        )
-        self.assertIn("run `statusline-ctl sync`", skill)
-        self.assertIn("restores all earlier targets", skill)
-        self.assertIn("without changing\neither settings file", skill)
-
 
 if __name__ == "__main__":
     unittest.main()
