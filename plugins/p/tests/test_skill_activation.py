@@ -475,15 +475,63 @@ class MultiUserStateIsolationTests(unittest.TestCase):
             Path("/run/user/1000/p-skill-activation"),
         )
 
-    def test_state_dir_namespaces_by_uid_or_username(self):
-        env = {}
-        path = self.activation._state_dir(env)
-        expected_suffix = str(os.getuid()) if hasattr(os, "getuid") else "default"
-        self.assertEqual(
-            path,
-            Path(tempfile.gettempdir()) / ("p-skill-activation-" + expected_suffix),
-        )
+    def test_state_dir_is_distinct_per_user(self):
+        def directory_for(user):
+            if hasattr(os, "getuid"):
+                with mock.patch.object(self.activation.os, "getuid", return_value=user):
+                    return self.activation._state_dir({})
+            return self.activation._state_dir({"USERNAME": "user%d" % user})
 
+        first, second = directory_for(1001), directory_for(1002)
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, directory_for(1001))
+        self.assertEqual(first.parent, second.parent)
+
+    def env(self, root, session="session-a"):
+        return {
+            "P_SKILL_CONFIG_FILE": str(root / "global.json"),
+            "P_SKILL_STATE_DIR": str(root / "sessions"),
+            "CODEX_THREAD_ID": session,
+        }
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_session_writes_make_the_state_directory_private(self):
+        manifest = self.activation.load_manifest(MANIFEST_PATH)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "sessions").mkdir(mode=0o755)
+            os.chmod(root / "sessions", 0o755)
+            self.activation.set_profile(manifest, "work", "session", env=self.env(root))
+            self.assertEqual((root / "sessions").stat().st_mode & 0o777, 0o700)
+
+    def test_symlinked_state_directory_fails_closed(self):
+        manifest = self.activation.load_manifest(MANIFEST_PATH)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "elsewhere").mkdir()
+            try:
+                (root / "sessions").symlink_to(root / "elsewhere", target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks are unavailable")
+            env = self.env(root)
+            with self.assertRaises(self.activation.PolicyError):
+                self.activation.set_profile(manifest, "work", "session", env=env)
+            with self.assertRaises(self.activation.PolicyError):
+                self.activation.resolve(manifest, env=env)
+            self.assertEqual(list((root / "elsewhere").iterdir()), [])
+
+    def test_a_session_that_keeps_resolving_survives_pruning(self):
+        manifest = self.activation.load_manifest(MANIFEST_PATH)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env(root, "long-lived")
+            self.activation.set_profile(manifest, "work", "session", env=env)
+            (state,) = list((root / "sessions").iterdir())
+            old = time.time() - 15 * 24 * 3600
+            os.utime(state, (old, old))
+            self.assertEqual(self.activation.resolve(manifest, env=env)["profile"], "work")
+            self.activation.set_profile(manifest, "home", "session", env=self.env(root, "other"))
+            self.assertEqual(self.activation.resolve(manifest, env=env)["profile"], "work")
 
 if __name__ == "__main__":
     unittest.main()
