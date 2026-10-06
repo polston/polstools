@@ -142,6 +142,41 @@ class ClaudeSkillRunParity(_Corpus):
                 self.assertEqual((expected, expected), self.counts(records))
 
 
+class ClaudeAnsweredParity(_Corpus):
+    """Whether the lone assistant message said anything: the adapter's status
+    and the ledger's ending flatten the same mixed content shape."""
+
+    def outcome(self, content):
+        record = claude_assistant("x", T0)
+        record["message"]["content"] = content
+        path = self.write("proj/session.jsonl", [claude_user("start", T0), record])
+        ending = retro.measure(path, "claude", self.root)["ending"]
+        trace = ClaudeAdapter(SALT).read(path, self.root).records[0]
+        return ending == "text", trace.status == "complete"
+
+    def test_mixed_content_shapes_agree(self):
+        result = {"type": "tool_result", "tool_use_id": "t1"}
+        cases = {
+            "bare_and_blocks": (["  ", {"type": "text", "text": "hi"}], True),
+            "bare_string_alone": (["hello"], False),
+            "whitespace_text_block": ([{"type": "text", "text": "  "}], False),
+            "non_string_tool_result_body": (
+                [dict(result, content=[{"type": "text", "text": "r"}])], False),
+            "string_tool_result_body": (
+                [dict(result, content="r"), {"type": "text", "text": " "}], False),
+            "non_string_text_piece": (
+                [{"type": "text", "text": 5}, {"type": "text", "text": "ok"}], True),
+            "plain_string_content": ("said it", True),
+        }
+        for name, (content, _) in cases.items():
+            with self.subTest(name):
+                ledger, adapter = self.outcome(content)
+                self.assertEqual(ledger, adapter)
+        self.assertEqual((True, True), self.outcome(cases["bare_and_blocks"][0]))
+        self.assertEqual((False, False),
+                         self.outcome(cases["non_string_tool_result_body"][0]))
+
+
 class CodexHumanPromptParity(_Corpus):
     def test_profile_openers_equal_ledger_openers(self):
         self.assertEqual(retro.MACHINE_PROMPT_OPENERS,

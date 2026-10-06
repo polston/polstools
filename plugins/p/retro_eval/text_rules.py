@@ -302,14 +302,5 @@ def prose_of(message, skipped=None):
     """
     if not isinstance(message, dict):
         return ""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts = [block.get("text") or "" for block in content
-             if isinstance(block, dict) and block.get("type") == "text"]
-    good = [p for p in parts if isinstance(p, str)]
-    if skipped is not None and len(good) != len(parts):
-        skipped["bad_text"] += len(parts) - len(good)
-    return "\n".join(good)
+    return "\n".join(content_text(message.get("content"), ("text",),
+                                   skipped=skipped))

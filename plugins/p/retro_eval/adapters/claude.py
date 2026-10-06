@@ -9,7 +9,7 @@ from .base import (AdapterBase, AdapterResult, iter_jsonl, parse_timestamp,
                    prompt_evidence)
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
 from ..taxonomies import classify_failure_evidence
-from ..text_rules import text_of
+from ..text_rules import content_text, prose_of, text_of
 
 
 def _direct_human(record, message, direct_prompt_sources) -> bool:
@@ -155,12 +155,7 @@ class ClaudeAdapter(AdapterBase):
                     cached_tokens += int(usage.get("cache_read_input_tokens") or 0)
                     output_tokens += int(usage.get("output_tokens") or 0)
                 content = message.get("content")
-                answered = answered or bool(
-                    isinstance(content, str) and content.strip()
-                    or isinstance(content, list) and any(
-                        isinstance(block, dict) and block.get("type") == "text"
-                        and str(block.get("text") or "").strip()
-                        for block in content))
+                answered = answered or bool(prose_of(message).strip())
                 records.append(self._span(trace_id, sequence, SpanKind.LLM,
                                           record, source_version, mode, "agent"))
                 if isinstance(content, list):
@@ -281,10 +276,8 @@ class ClaudeAdapter(AdapterBase):
             if not isinstance(content, list):
                 continue
             message_context = "\n".join(
-                str(block.get("text") or "").strip()
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-                and str(block.get("text") or "").strip())
+                piece.strip() for piece in content_text(content, ("text",))
+                if piece.strip())
             shown_context = (redactor(message_context)[-1200:]
                              if message_context else last_assistant_context)
             for index, block in enumerate(content):
