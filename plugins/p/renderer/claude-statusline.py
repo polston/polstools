@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 
 for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -138,8 +139,23 @@ def _gauge(key, label, left, tokens, color, label_paint):
     }
 
 
+def _cells(ch):
+    """Terminal cells one character takes: East Asian Wide and Fullwidth take two."""
+    return 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+
+
 def _width(text):
-    return len(text)
+    return sum(_cells(ch) for ch in text)
+
+
+def _truncate(text, cells):
+    """The longest prefix of text that fits in the given number of terminal cells."""
+    used = 0
+    for index, ch in enumerate(text):
+        used += _cells(ch)
+        if used > cells:
+            return text[:index]
+    return text
 
 
 def _separator(color):
@@ -202,7 +218,7 @@ def fit_line(segments, steps, columns, color):
             segments, _ = _apply_step(segments, step, color)
         plain = " | ".join(_join(segments, "plain"))
         if _width(plain) > columns:
-            return plain[: max(columns - 1, 0)] + "…" if columns > 1 else plain[:columns]
+            return _truncate(plain, columns - 1) + "…" if columns > 1 else _truncate(plain, columns)
     return _separator(color).join(_join(segments, "painted"))
 
 
