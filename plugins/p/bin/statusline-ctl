@@ -40,34 +40,48 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 PROFILE_PATH = PLUGIN_ROOT / "profiles" / "aligned-v1.json"
-RENDERER_SOURCE_PS1 = PLUGIN_ROOT / "renderer" / "claude-statusline.ps1"
-RENDERER_SOURCE_PY = PLUGIN_ROOT / "renderer" / "claude-statusline.py"
-RENDERER_SOURCE = RENDERER_SOURCE_PS1 if os.name == "nt" else RENDERER_SOURCE_PY
 PROFILE_LABEL_SOURCE = PLUGIN_ROOT / "renderer" / "skill-profile-label.py"
 ACTIVATION_LIB_SOURCE = PLUGIN_ROOT / "lib" / "skill_activation.py"
 ACTIVATION_PROFILE_SOURCE = PLUGIN_ROOT / "profiles" / "skill-activation-v1.json"
 ROLLBACK_NAME = "rollback-v1.json"
 PROFILE_OWNER = "skill-activation-v1"
 PROFILE_WIDGET_ID = "p-skill-profile"
+IS_WINDOWS = os.name == "nt"
 RENDERER_INTERPRETERS = {
     "pwsh", "pwsh.exe", "powershell", "powershell.exe",
     "python", "python.exe", "python3", "python3.exe", "py", "py.exe",
 }
 
 
-def load_profile():
-    with PROFILE_PATH.open(encoding="utf-8") as handle:
+def _renderer_path(profile, key):
+    value = profile.get(key)
+    if not isinstance(value, str) or not value.startswith("renderer/") or ".." in value.split("/"):
+        raise ValueError("profile " + key + " must name a file under renderer/")
+    return PLUGIN_ROOT / value
+
+
+def load_profile(path=PROFILE_PATH):
+    with Path(path).open(encoding="utf-8") as handle:
         profile = json.load(handle)
-    if profile.get("version") != 1:
+    if not isinstance(profile, dict) or profile.get("version") != 1:
         raise ValueError("unsupported profile version")
     items = profile.get("codexStatusLine")
     if not isinstance(items, list) or not all(isinstance(x, str) and x for x in items):
         raise ValueError("profile codexStatusLine must be a string array")
+    _renderer_path(profile, "claudeRenderer")
+    _renderer_path(profile, "claudeRendererWindows")
     return profile
 
 
 PROFILE = load_profile()
 CODEX_STATUS_LINE = tuple(PROFILE["codexStatusLine"])
+RENDERER_SOURCE_PY = _renderer_path(PROFILE, "claudeRenderer")
+RENDERER_SOURCE_PS1 = _renderer_path(PROFILE, "claudeRendererWindows")
+
+
+def renderer_source():
+    """The renderer this platform's Claude command runs."""
+    return RENDERER_SOURCE_PS1 if IS_WINDOWS else RENDERER_SOURCE_PY
 
 
 def percent_left(used):
@@ -162,16 +176,15 @@ def _default_state_dir():
 def paths():
     state_dir = _default_state_dir()
     install_dir = Path(os.environ.get("STATUSLINE_INSTALL_DIR") or state_dir / "installed-v1")
-    renderer_name = "claude-statusline.ps1" if os.name == "nt" else "claude-statusline.py"
     return {
         "claude": Path(os.environ.get("STATUSLINE_CLAUDE_SETTINGS") or Path.home() / ".claude" / "settings.json"),
         "codex": Path(os.environ.get("STATUSLINE_CODEX_CONFIG") or Path.home() / ".codex" / "config.toml"),
         "state": state_dir,
         "rollback": state_dir / ROLLBACK_NAME,
         "install": install_dir,
-        "renderer": install_dir / renderer_name,
-        "renderer_py": install_dir / "claude-statusline.py",
-        "renderer_ps1": install_dir / "claude-statusline.ps1",
+        "renderer": install_dir / renderer_source().name,
+        "renderer_py": install_dir / RENDERER_SOURCE_PY.name,
+        "renderer_ps1": install_dir / RENDERER_SOURCE_PS1.name,
         "profile_label": install_dir / "skill-profile-label.py",
         "profile_lib": install_dir / "skill_activation.py",
         "profile_policy": install_dir / "skill-activation-v1.json",
@@ -289,7 +302,7 @@ def load_claude(path):
 
 def renderer_command(renderer_path):
     normalized = renderer_path.resolve().as_posix()
-    if os.name == "nt":
+    if IS_WINDOWS:
         return 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + normalized + '"'
     return 'python3 "' + normalized + '"'
 
@@ -323,7 +336,7 @@ def claude_provider(current, desired, owned_renderers=()):
     if not isinstance(command, str) or not command.strip():
         return "external"
     try:
-        argv = [arg.strip('"') for arg in shlex.split(command, posix=os.name != "nt")]
+        argv = [arg.strip('"') for arg in shlex.split(command, posix=not IS_WINDOWS)]
     except ValueError:
         return "external"
     executable = Path(argv[0]).name.lower() if argv else ""
@@ -465,7 +478,7 @@ def profile_bundle_changes(target, include_renderer=False):
         (target["profile_policy"], ACTIVATION_PROFILE_SOURCE),
     ]
     if include_renderer:
-        sources.insert(0, (target["renderer"], RENDERER_SOURCE))
+        sources.insert(0, (target["renderer"], renderer_source()))
         if RENDERER_SOURCE_PS1.is_file() and target.get("renderer_ps1") != target["renderer"]:
             sources.append((target["renderer_ps1"], RENDERER_SOURCE_PS1))
         if RENDERER_SOURCE_PY.is_file() and target.get("renderer_py") != target["renderer"]:
@@ -794,7 +807,7 @@ def apply_config():
         print("not applied: Claude statusLine is externally managed; no settings changed")
         return 1
     manage_claude = provider != "ccstatusline"
-    if manage_claude and not RENDERER_SOURCE.is_file():
+    if manage_claude and not renderer_source().is_file():
         raise FileNotFoundError("bundled Claude renderer is missing")
     previous_rollback = load_rollback(target["rollback"])
 

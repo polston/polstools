@@ -108,6 +108,21 @@ class StatuslineUnitTests(unittest.TestCase):
                         expected,
                     )
 
+    def test_profile_rejects_renderer_paths_outside_the_renderer_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = json.loads((PLUGIN_ROOT / "profiles" / "aligned-v1.json").read_text("utf-8"))
+            for key, value in (
+                ("claudeRenderer", "../bin/statusline-ctl"),
+                ("claudeRendererWindows", None),
+                ("claudeRenderer", "renderer/../../outside.py"),
+            ):
+                with self.subTest(key=key, value=value):
+                    broken = dict(profile, **{key: value})
+                    path = Path(tmp) / "profile.json"
+                    path.write_text(json.dumps(broken), "utf-8")
+                    with self.assertRaises(ValueError):
+                        self.ctl.load_profile(path)
+
     def test_claude_provider_recognizes_only_direct_ccstatusline(self):
         desired = {"type": "command", "command": "bundled"}
         self.assertEqual(self.ctl.claude_provider(desired, desired), "bundled")
@@ -378,6 +393,7 @@ class StatuslineCliTests(unittest.TestCase):
                 self.assertEqual(codex_path.read_bytes(), codex_original)
                 self.assertFalse((root / "state" / "rollback-v1.json").exists())
                 self.assertFalse((root / "install" / "claude-statusline.ps1").exists())
+                self.assertFalse((root / "install" / "claude-statusline.py").exists())
                 self.assertFalse(list(root.rglob("*.tmp")))
 
     def test_sync_repairs_safe_drift_then_becomes_a_no_op(self):
@@ -815,6 +831,58 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertEqual(checked.returncode, 1, checked.stderr)
             self.assertIn("external renderer, left unmanaged", checked.stdout)
             self.assertNotIn("repair with", checked.stdout)
+
+    def copy_plugin(self, root):
+        copy = root / "plugin"
+        for part in ("bin", "lib", "profiles", "renderer"):
+            shutil.copytree(PLUGIN_ROOT / part, copy / part)
+        return copy
+
+    def test_apply_installs_the_renderer_the_profile_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            copy = self.copy_plugin(root)
+            (copy / "renderer" / "claude-statusline.py").rename(copy / "renderer" / "status-v2.py")
+            profile_path = copy / "profiles" / "aligned-v1.json"
+            profile = json.loads(profile_path.read_text("utf-8"))
+            profile["claudeRenderer"] = "renderer/status-v2.py"
+            profile_path.write_text(json.dumps(profile), "utf-8")
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+            result = subprocess.run(
+                [sys.executable, str(copy / "bin" / "statusline-ctl"), "apply"],
+                text=True, encoding="utf-8", capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            installed = Path(env["STATUSLINE_INSTALL_DIR"])
+            self.assertTrue((installed / "status-v2.py").is_file())
+            command = json.loads(Path(env["STATUSLINE_CLAUDE_SETTINGS"]).read_text("utf-8"))["statusLine"]["command"]
+            if os.name != "nt":
+                self.assertIn((installed / "status-v2.py").resolve().as_posix(), command)
+
+    def test_windows_target_installs_powershell_command_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            claude_path.write_text(json.dumps({"theme": "dark"}, indent=2) + "\n", "utf-8")
+            original = claude_path.read_bytes()
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, env), mock.patch.object(
+                self.ctl, "IS_WINDOWS", True
+            ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                self.assertEqual(self.ctl.main(["apply"]), 0)
+                command = json.loads(claude_path.read_text("utf-8"))["statusLine"]["command"]
+                installed = Path(env["STATUSLINE_INSTALL_DIR"])
+                self.assertEqual(
+                    command,
+                    'powershell -NoProfile -ExecutionPolicy Bypass -File "'
+                    + (installed / "claude-statusline.ps1").resolve().as_posix() + '"',
+                )
+                self.assertTrue((installed / "claude-statusline.py").is_file())
+                self.assertEqual(self.ctl.main(["check"]), 0)
+                self.assertEqual(self.ctl.main(["restore"]), 0)
+            self.assertEqual(claude_path.read_bytes(), original)
 
 
 class PackagingTests(unittest.TestCase):
