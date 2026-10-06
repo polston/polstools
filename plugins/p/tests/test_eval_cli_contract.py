@@ -176,6 +176,18 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(1, len(completed.stderr.strip().splitlines()))
         self.assertTrue(completed.stderr.startswith("error:"), completed.stderr)
 
+    def test_every_entry_point_can_be_imported_without_running(self):
+        import importlib.machinery
+        import importlib.util
+        for path in sorted((PLUGIN_ROOT / "bin").glob("retro-eval-*")):
+            with self.subTest(entry=path.name):
+                loader = importlib.machinery.SourceFileLoader(
+                    "entry_" + path.name.replace("-", "_"), str(path))
+                spec = importlib.util.spec_from_loader(loader.name, loader)
+                module = importlib.util.module_from_spec(spec)
+                loader.exec_module(module)
+                self.assertTrue(callable(module.main))
+
     def test_proposals_with_invalid_candidates_cannot_run(self):
         candidates = self.base / "candidates.json"
         candidates.write_text("{not json", encoding="utf-8")
