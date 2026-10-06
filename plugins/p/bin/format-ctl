@@ -22,7 +22,10 @@ Resolution order: session toggle, P_FORMAT_DEFAULT, the harness key, then
 the global key in the defaults file, then off. The defaults file is
 polstools/format.json under the user configuration directory
 (P_FORMAT_CONFIG_FILE overrides the path). Harness identity comes from
-P_FORMAT_HARNESS, then the Claude, Codex, or Antigravity session variables.
+P_FORMAT_HARNESS (agy is accepted for antigravity), then the Claude, Codex, or
+Antigravity session variables.
+
+--help | -h    print this text and exit 0
 
 Exit: 0 ran clean; toggle and default subcommands exit 2 when they cannot
 run. gate never exits 2: it exits 1 on bad arguments or a missing payload,
@@ -126,10 +129,19 @@ def prune():
         pass
 
 
+def harness_override():
+    """P_FORMAT_HARNESS, with agy accepted for antigravity; "" when unset or
+    not a harness name."""
+    override = os.environ.get("P_FORMAT_HARNESS")
+    if override == "agy":
+        override = "antigravity"
+    return override if override in HARNESSES else ""
+
+
 def session_from_env():
     visible = visible_sessions()
-    override = os.environ.get("P_FORMAT_HARNESS")
-    if override in HARNESSES:
+    override = harness_override()
+    if override:
         visible = [entry for entry in visible if entry[0] == override]
     if len(visible) == 1:
         return visible[0][1]
@@ -231,8 +243,8 @@ def visible_sessions():
 
 
 def harness_name():
-    override = os.environ.get("P_FORMAT_HARNESS")
-    if override in HARNESSES:
+    override = harness_override()
+    if override:
         return override
     visible = visible_sessions()
     return visible[0][0] if len(visible) == 1 else ""
@@ -320,7 +332,7 @@ def hook_session_id():
     usable one. Unusable input follows the configured default."""
     try:
         data = json.load(sys.stdin)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     sid = data.get("session_id") if isinstance(data, dict) else None
     return sid if isinstance(sid, str) and sid else None
@@ -449,6 +461,9 @@ def probe_paths(create):
 
 def main():
     args = sys.argv[1:]
+    if args in (["--help"], ["-h"]):
+        print(__doc__)
+        return
     if args in (["probe-paths"], ["probe-paths", "--create"]):
         probe_paths(create=len(args) == 2)
         return

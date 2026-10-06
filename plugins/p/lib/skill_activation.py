@@ -149,6 +149,8 @@ def session_id_from_env(env=None, required=False):
                 visible.append((harness, env[name]))
                 break
     named = env.get("P_SKILL_HARNESS")
+    if named == "agy":
+        named = "antigravity"
     if named in dict(HARNESS_SESSION_VARS):
         visible = [entry for entry in visible if entry[0] == named]
     if len(visible) > 1:

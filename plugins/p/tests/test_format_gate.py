@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -66,6 +67,20 @@ class GateInputTests(unittest.TestCase):
                 result = run_ctl(args, env, "{}")
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertEqual(result.stdout, "")
+
+    def test_hook_input_nested_too_deeply_follows_the_default(self):
+        env = hermetic_env(self.root, P_FORMAT_DEFAULT="on")
+        result = run_ctl(["gate", str(self.payload)], env, "[" * 200000)
+        self.assertEqual((result.returncode, result.stdout), (0, "payload\n"), result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_help_exits_0_and_prints_the_usage(self):
+        env = hermetic_env(self.root)
+        for flag in ("--help", "-h"):
+            with self.subTest(flag=flag):
+                result = run_ctl([flag], env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("gate <payload>", result.stdout)
 
 
 class SessionStateTests(unittest.TestCase):
@@ -232,6 +247,16 @@ class NestedHarnessTests(unittest.TestCase):
         result = run_ctl(["on"], hermetic_env(self.root, **self.nested))
         self.assertEqual(result.returncode, 2)
         self.assertFalse((self.root / "state").exists())
+
+    def test_the_harness_override_accepts_agy_for_antigravity(self):
+        nested = {"CLAUDE_CODE_SESSION_ID": "outer-claude",
+                  "ANTIGRAVITY_CONVERSATION_ID": "inner-agy"}
+        self.assertEqual(run_ctl(["on"], hermetic_env(self.root, **nested)).returncode, 2)
+        for name in ("agy", "antigravity"):
+            with self.subTest(name=name):
+                result = run_ctl(["on"], hermetic_env(
+                    self.root, P_FORMAT_HARNESS=name, **nested))
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_named_harness_toggles_its_own_session_only(self):
         result = run_ctl(["on"], hermetic_env(
@@ -409,6 +434,25 @@ class HookEntryTests(unittest.TestCase):
         env = hermetic_env(self.root, P_FORMAT_DEFAULT="on")
         result = run_hook(env, "{}", self.payload, "--hook-id")
         self.assertEqual(result.returncode, 1)
+
+    def test_a_long_multiline_hook_input_is_read_in_linear_time(self):
+        lines = ["line %05d some filler text to widen the line" % i for i in range(20000)]
+        stdin = json.dumps({"session_id": "s", "prompt": lines}, indent=1)
+        env = dict(hermetic_env(self.root), P_FORMAT_DEFAULT="on")
+        started = time.monotonic()
+        result = run_hook(env, stdin, self.payload)
+        elapsed = time.monotonic() - started
+        self.assertEqual((result.returncode, result.stdout), (0, "payload\n"), result.stderr)
+        self.assertLess(elapsed, 20, "20,000 lines took %.1fs" % elapsed)
+
+    def test_help_exits_0_through_the_hook_entry_too(self):
+        env = hermetic_env(self.root)
+        for flag in ("--help", "-h"):
+            with self.subTest(flag=flag):
+                result = subprocess.run([SH, str(FORMAT_GATE), flag], input="",
+                                        text=True, capture_output=True, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("gate <payload>", result.stdout)
 
 
 class FormatE2eHermeticTests(unittest.TestCase):
