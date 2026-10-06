@@ -29,7 +29,7 @@ function Get-Field($obj, [string]$name) {
 }
 
 # C0 controls, DEL, C1 controls and bidirectional format controls never reach the terminal from outside input.
-function Remove-Controls([string]$text) { return [regex]::Replace($text, '[\u0000-\u001F\u007F-\u009F‎‏‪-‮⁦-⁩]', '') }
+function Remove-Controls([string]$text) { return [regex]::Replace($text, '[\u0000-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069]', '') }
 function Get-Text($value) { if ($value -is [string]) { return (Remove-Controls $value).Trim() } return '' }
 
 function Get-Num($value) {

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unicodedata
 from unittest import mock
 
 
@@ -415,8 +416,8 @@ class CacheDirectoryTrustTests(unittest.TestCase):
         if os.name == "nt":
             self.skipTest("POSIX ownership and mode semantics")
 
-    def render(self, fake):
-        result = run_python(json.dumps(RATE_LIMITS), fake.env())
+    def render(self, fake, no_refresh=False):
+        result = run_python(json.dumps(RATE_LIMITS), fake.env(no_refresh=no_refresh))
         self.assertEqual(result.returncode, 0, result.stderr)
         plain = ANSI.sub("", result.stdout)
         self.assertTrue(plain.strip(), "a line must still be printed")
@@ -431,7 +432,7 @@ class CacheDirectoryTrustTests(unittest.TestCase):
     def test_cache_directory_is_created_private(self):
         with tempfile.TemporaryDirectory() as tmp:
             fake = FakeHome(tmp)
-            self.render(fake)
+            self.render(fake, no_refresh=True)
             self.assertEqual(os.stat(fake.cache).st_mode & 0o777, 0o700)
 
     def test_world_writable_cache_directory_is_not_used(self):
@@ -512,8 +513,8 @@ class PowerShellCacheDirectoryTrustTests(CacheDirectoryTrustTests):
         if not powershell():
             self.skipTest("PowerShell is unavailable on this machine")
 
-    def render(self, fake):
-        result = run_powershell(json.dumps(RATE_LIMITS), fake.env())
+    def render(self, fake, no_refresh=False):
+        result = run_powershell(json.dumps(RATE_LIMITS), fake.env(no_refresh=no_refresh))
         self.assertEqual(result.returncode, 0, result.stderr)
         plain = ANSI.sub("", result.stdout)
         self.assertTrue(plain.strip(), "a line must still be printed")
@@ -613,6 +614,55 @@ class FutureCacheStampTests(unittest.TestCase):
         if not powershell():
             self.skipTest("PowerShell is unavailable on this machine")
         self.check(run_powershell)
+
+
+class WideCharacterFittingTests(unittest.TestCase):
+    """CJK ideographs take two terminal cells; no fitted line may exceed COLUMNS."""
+
+    WIDTHS = (12, 14, 18, 25, 40)
+    PAYLOAD = {
+        "model": {"display_name": "\u6a21\u578b\u6a21\u578b\u6a21\u578b"},
+        "effort": {"level": "high"},
+        "workspace": {"current_dir": "/work/\u9879\u76ee\u9879\u76ee\u9879\u76ee", "git_branch": "main"},
+        **RATE_LIMITS,
+    }
+
+    @staticmethod
+    def cells(text):
+        return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+    def run_all(self, runner):
+        outputs = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeHome(tmp)
+            for columns in self.WIDTHS:
+                with self.subTest(columns=columns):
+                    result = runner(json.dumps(self.PAYLOAD), fake.env(columns, no_refresh=True))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    lines = ANSI.sub("", result.stdout).splitlines()
+                    self.assertTrue(lines)
+                    for line in lines:
+                        self.assertLessEqual(self.cells(line), columns, repr(line))
+                    outputs[columns] = result.stdout
+        return outputs
+
+    def test_python_renderer_fits_wide_characters(self):
+        self.run_all(run_python)
+
+    def test_powershell_renderer_fits_wide_characters_and_agrees(self):
+        if not powershell():
+            self.skipTest("PowerShell is unavailable on this machine")
+        expected = self.run_all(run_python)
+        actual = self.run_all(run_powershell)
+        self.assertEqual(actual, expected)
+
+
+class PowerShellEncodingTests(unittest.TestCase):
+    def test_powershell_renderer_is_ascii_only(self):
+        # Windows PowerShell 5.1 reads a file without a byte order mark as ANSI.
+        data = (RENDERER_DIR / "claude-statusline.ps1").read_bytes()
+        offenders = [index for index, byte in enumerate(data) if byte > 127]
+        self.assertEqual(offenders, [], "non-ASCII bytes at offsets %s" % offenders[:5])
 
 
 class ControlCharacterTests(unittest.TestCase):
