@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 from .adapters.registry import default_registry
+from .text_rules import redact
 
 
 def _default_redactor():
-    path = Path(__file__).resolve().parents[1] / "bin" / "retro.py"
-    spec = importlib.util.spec_from_file_location("retro_eval_redaction_bridge", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.redact
+    return redact
 
 
 def collect_private_tool_evidence(source_roots, id_salt: bytes, *, redactor=None,

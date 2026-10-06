@@ -120,6 +120,10 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from retro_eval.catalog import ensure_rubric_use, load_rubric_catalogue
+from retro_eval.text_rules import (  # noqa: E402,F401 -- re-exported
+    CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS, _INTERRUPT,
+    _predict_at, _redaction_patterns, classify_user_turn, is_approval,
+    redact)
 
 RUBRICS_FILE = PLUGIN_ROOT / "rubrics" / "rubrics.json"
 LEGACY_TURN_RUBRIC = "turn_friction_legacy"
@@ -140,53 +144,6 @@ def legacy_turn_labels_allow(use):
         return False
     return True
 
-# --- Tuning constants ------------------------------------------------------
-# These define what counts as friction. They are the knobs worth arguing about;
-# everything else in this file is bookkeeping.
-
-# A user prompt shorter than this, arriving right after a long assistant turn,
-# reads as a correction ("no", "stop", "I said X") rather than a new request.
-CORRECTION_MAX_CHARS = 200
-# ...and the assistant turn it follows has to have been substantial, or every
-# short back-and-forth in a fast exchange scores as a correction.
-CORRECTION_MIN_PRIOR_CHARS = 200
-
-# A short reply that only agrees is the process working, not friction. The whole
-# reply has to be one of these, ignoring case and trailing punctuation: "yes" is
-# an approval, "yes, but drop the cache" is a correction.
-#
-# A seed list of unambiguous whole-reply affirmatives, deliberately short. The
-# `label` subcommand exists to settle this list from marked turns rather than
-# from a guess - add a phrase when the marks show it is being missed.
-APPROVAL_PHRASES = (
-    "yes", "yep", "yeah", "yup", "ok", "okay", "k", "kk", "sure", "correct",
-    "agreed", "go ahead", "go for it", "go", "do it", "sounds good",
-    "looks good", "lgtm", "seems right", "seems ok", "seems okay", "seems good",
-    "lets go", "let's go", "perfect", "exactly", "approved", "please do",
-    "ship it", "fine", "yes please",
-)
-# A negation anywhere means the reply is doing more than agreeing, so the
-# leading-affirmative rule below must not claim it: "sure, but that is wrong" is
-# a correction wearing an approval's first word.
-_NEGATION = re.compile(
-    r"(no|not|n't|never|stop|wrong|instead|revert|undo|but|however|except)", re.I)
-# A reply may open with a list marker and still be nothing but agreement --
-# "1. sure" is an answer to a numbered question, not a new instruction.
-_LIST_PREFIX = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
-# Wording that marks a reply as pushing back, wherever it sits in the reply.
-# Assembled from 300 hand-marked turns, not from imagination: every entry here
-# appeared in a turn a human marked as a correction.
-_CORRECTIVE = re.compile(
-    r"\b(no|nope|not|isn'?t|aren'?t|doesn'?t|don'?t|didn'?t|can'?t|won'?t|never"
-    r"|wrong|stop|instead|revert|undo|disregard|ignore"
-    r"|broken|broke|fail(?:s|ed|ing)?|terrible|worse|awful|missing|still|again"
-    r"|reword|rewrite|redo|shorter|concise(?:ly)?|simplif"
-    r"|why (?:are|did|would|is)|you'?re|are you|do you really)\b", re.I)
-# A reply longer than this is a fresh request, not a reaction to the turn before.
-CANDIDATE_MAX_CHARS = 600
-_APPROVAL_TAIL = re.compile(r"[\s.!,]+$")
-_APPROVAL = re.compile(
-    r"^(?:%s)$" % "|".join(re.escape(p) for p in APPROVAL_PHRASES), re.I)
 
 # Row schema. Every counter here is a column. Bump SCHEMA_VERSION whenever this
 # list changes OR a counter's definition changes, because a ledger holding two
@@ -265,67 +222,6 @@ SWEEP_MAX_CHARS = (60, 90, 120, 160, 200, 300)
 SWEEP_MIN_PRIOR = (0, 200, 400, 800, 1600)
 
 
-# --- Redaction -------------------------------------------------------------
-
-@lru_cache(maxsize=1)
-def _redaction_patterns():
-    """Compile once.
-
-    THREE lists now hold redaction categories and none is a superset:
-      - this one,
-      - plugins/p/bin/repo-privacy-audit (generic home-path forms this lacks,
-        private-range addresses only),
-      - plugins/p/bin/stopped-promises.py (adds absolute paths belonging to
-        anywhere else, which neither of the other two catch).
-    Keep them in step deliberately rather than assuming they agree; the previous
-    wording said "the two lists" and was already stale.
-    """
-    home = str(HOME)
-    user = HOME.name
-    pats = [
-        (re.compile(re.escape(home), re.I), "~"),
-        (re.compile(re.escape(home.replace("\\", "/")), re.I), "~"),
-        (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b"), "<email>"),
-        (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
-        (re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), "<mac>"),
-        (re.compile(r"\b[A-Za-z0-9_-]{32,}\b"), "<long-token>"),
-        # Spend and plan state. Kept in step with repo-privacy-audit's
-        # money_amount and account_billing_field categories -- a measured
-        # spend figure is confidential and is shaped like nothing else here,
-        # so every identity pattern above is structurally blind to it.
-        (re.compile(r"\$\d{1,3}(,\d{3})+(\.\d{2})?|\$\d{4,}(\.\d{2})?"), "<amount>"),
-        # Literals split across adjacent string pieces so this file does not
-        # match the pattern it defines; Python rejoins them at parse time.
-        # Kept in the subset of regex syntax both grep -E and Python re
-        # accept -- no \b (not POSIX-guaranteed) and an explicit character
-        # class rather than \w -- so this stays identical to
-        # repo-privacy-audit's account_billing_field pattern.
-        (re.compile(r"(hasExtra" r"Usage[A-Za-z0-9_]*|subscription" r"Type"
-                    r"|billing" r"Type|organizationRateLimit" r"Tier"
-                    r"|userRateLimit" r"Tier|seat" r"Tier)"),
-         "<billing-field>"),
-    ]
-    # The account-name rule goes LAST, and the position is load-bearing. Running
-    # it first rewrote the name inside the home path, after which neither
-    # home-path pattern could ever match: a path came back as drive + Users +
-    # placeholder + every directory below it, instead of collapsing to "~".
-    # Identity was removed, the directory structure was not.
-    if len(user) > 2:
-        pats.append((re.compile(r"\b" + re.escape(user) + r"\b", re.I), "<user>"))
-    return pats
-
-
-def redact(text):
-    """Strip machine-identifying and credential-shaped values from text.
-
-    Runs before anything is written to a pack. A pack file on disk must already
-    be safe to read aloud — redacting at read time would be too late.
-    """
-    if not text:
-        return ""
-    for pattern, replacement in _redaction_patterns():
-        text = pattern.sub(replacement, text)
-    return text
 
 
 # --- Transcript parsing ----------------------------------------------------
@@ -388,7 +284,6 @@ def tool_calls_of(message):
                    signature(block.get("input")))
 
 
-_INTERRUPT = re.compile(r"\[request interrupted", re.I)
 
 def signature(tool_input):
     """An exact digest of a tool call's input.
@@ -570,89 +465,6 @@ def eligible_signals(tools_used, isolated):
     return sorted(out)
 
 
-def is_approval(reply):
-    """Is this whole reply nothing but agreement? `reply` is already stripped.
-
-    Shared with the label report's threshold sweep, so the sweep cannot drift
-    from the rule the ledger was built with.
-    """
-    stripped = _APPROVAL_TAIL.sub("", _LIST_PREFIX.sub("", reply)).strip()
-    if _APPROVAL.match(stripped):
-        return True
-    # Widened from evidence: 300 turns read and marked by hand showed the
-    # whole-reply rule catching 24% of real approvals. The misses were an
-    # affirmative followed by a qualifier -- agreeing and adding a preference.
-    # Requiring no negation is what keeps "sure, but not that way" out.
-    head = re.split(r"[,;.!]", stripped, maxsplit=1)[0].strip()
-    return bool(_APPROVAL.match(head)) and not _NEGATION.search(stripped)
-
-
-def classify_user_turn(body, prior_assistant_chars,
-                       max_chars=None, min_prior=None):
-    """The pack's central definition, in one place: what a user turn means.
-
-    Returns "interrupt", "question", "approval", "correction" or "". Precedence
-    is fixed in that order, so a turn that could read as two things is always
-    the earlier one. `measure` counts the result and `moments` quotes it, so
-    both read the same rule, and the threshold sweep calls it too rather than
-    keeping a second copy that drifts.
-
-    A correction is deliberately over-flagged. Measured against turns read and
-    marked by hand -- 300 originally, of which 144 survived a later correction to
-    the sampler, which had been drawing from a population including records the
-    ledger does not count -- no wording rule got past about 0.63 precision, because whether a reply
-    is a correction is a judgment about intent and every missed one was a
-    correction phrased as a question. Four content rules were tried and none beat
-    the length rule. So this aims for recall instead -- 0.93 against the marks,
-    at 0.60 precision, measured over 144 marked turns drawn from the population
-    the ledger actually counts -- and the column is named `correction_candidates`
-    because
-    that is what it holds. The model reading a pack does the judging; a regex
-    cannot, and pretending otherwise put a number nobody should trust at the top
-    of the ranking.
-
-    Also measured and NOT adopted: whether the next assistant turn concedes
-    ("you're right", "my mistake") is a sharp signal on its own -- 0.85 precision
-    -- but it rescues only 2 more points of recall on top of the rule below, and
-    it would need the classifier to see the following turn. Not worth the
-    machinery; recorded so nobody re-derives it.
-    """
-    if _INTERRUPT.search(body):
-        return "interrupt"
-    reply = body.strip()
-    # The thresholds are arguments so the sweep can ask this same function what
-    # a different pair would have produced. They were a second copy of this rule
-    # for a while, and it drifted: the copy still answered "question" where this
-    # answers "correction", so a sweep table disagreed with the settled row
-    # printed directly above it.
-    max_chars = CORRECTION_MAX_CHARS if max_chars is None else max_chars
-    min_prior = CORRECTION_MIN_PRIOR_CHARS if min_prior is None else min_prior
-    short_reply = (0 < len(reply) <= max_chars
-                   and prior_assistant_chars >= min_prior)
-    if short_reply:
-        # A corrective signal wins every tie here, and the order was chosen by
-        # measurement rather than taste: it beat the alternative on two classes
-        # and lost on none. Both losing orderings misfiled the same shape --
-        # agreement wrapped around a complaint, and a complaint wearing a
-        # question mark. On the corrected sample the settled order measures
-        # approval 1.00/0.70, question 0.96/0.71, correction 0.60/0.93.
-        if _CORRECTIVE.search(reply):
-            return "correction"
-        if is_approval(reply):
-            return "approval"
-        if reply.endswith("?"):
-            return "question"
-        return "correction"
-    # Not short, but carries a corrective signal after a substantial turn: the
-    # class the length rule was blindest to. A question mark does not exclude it
-    # here -- "do all the tests still pass?" is a challenge, and treating every
-    # question as merely a question is what cost the most recall.
-    if (prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS
-            and len(reply) <= CANDIDATE_MAX_CHARS
-            and _CORRECTIVE.search(reply)
-            and not is_approval(reply)):
-        return "correction"
-    return ""
 
 
 def is_error_record(rec):
@@ -2488,28 +2300,6 @@ def read_labels(path):
     return out
 
 
-def _predict_at(sample, max_chars, min_prior):
-    """What the classifier would have said at a different pair of thresholds.
-
-    Calls the real rule rather than restating it. It restated it once, and the
-    copy went stale the next time the rule changed -- a sweep that disagrees
-    with the row it is meant to explain is worse than no sweep.
-
-    The stored lengths are used rather than the stored text because the text is
-    redacted and truncated while the numbers are the reply's real lengths.
-    """
-    if sample["predicted"] == "interrupt":
-        return "interrupt"
-    if not (0 < sample["reply_chars"] <= max_chars
-            and sample["prior_chars"] >= min_prior):
-        return "none"
-    # The stored text is redacted, which can only shorten it, so the length gate
-    # above is applied from the stored numbers and the wording rules from the
-    # text. A threshold pair is exactly those two numbers.
-    return classify_user_turn(sample["said"].strip(),
-                              sample["prior_chars"],
-                              max_chars=max_chars,
-                              min_prior=min_prior) or "none"
 
 
 def _weighted(marked, predict):

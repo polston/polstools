@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 from pathlib import Path
 
@@ -17,15 +16,13 @@ from .labels import (LabelStore, import_legacy_turn_labels,
                      multiclass_calibration_report,
                      strict_multiclass_comparison_report)
 from .predictors import load_predictor
+from .text_rules import (CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS,
+                         _predict_at)
 
 
 def _current_legacy_predictor():
-    path = Path(__file__).resolve().parents[1] / "bin" / "retro.py"
-    spec = importlib.util.spec_from_file_location("retro_eval_legacy_bridge", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return lambda sample: module._predict_at(
-        sample, module.CORRECTION_MAX_CHARS, module.CORRECTION_MIN_PRIOR_CHARS)
+    return lambda sample: _predict_at(
+        sample, CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS)
 
 
 def main(argv=None):
