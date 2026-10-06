@@ -8,6 +8,8 @@ Subcommands:
   apply    preserve ccstatusline or install fallback, then align Codex
   profile-sync  install or refresh only the owned Claude profile indicator
   restore  restore settings changed by apply when untouched afterwards
+  antigravity  report whether Antigravity's statusLine runs the p renderer and
+           print the /statusline command that selects it (never writes)
 
 Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
 not run. Rollback metadata contains only settings managed by apply.
@@ -46,6 +48,7 @@ ACTIVATION_PROFILE_SOURCE = PLUGIN_ROOT / "profiles" / "skill-activation-v1.json
 ROLLBACK_NAME = "rollback-v1.json"
 PROFILE_OWNER = "skill-activation-v1"
 PROFILE_WIDGET_ID = "p-skill-profile"
+ANTIGRAVITY_RENDERER = PLUGIN_ROOT / "renderer" / "antigravity-statusline.py"
 IS_WINDOWS = os.name == "nt"
 RENDERER_INTERPRETERS = {
     "pwsh", "pwsh.exe", "powershell", "powershell.exe",
@@ -99,6 +102,10 @@ def paths():
     return {
         "claude": Path(os.environ.get("STATUSLINE_CLAUDE_SETTINGS") or Path.home() / ".claude" / "settings.json"),
         "codex": Path(os.environ.get("STATUSLINE_CODEX_CONFIG") or Path.home() / ".codex" / "config.toml"),
+        "antigravity": Path(
+            os.environ.get("STATUSLINE_ANTIGRAVITY_SETTINGS")
+            or Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+        ),
         "state": state_dir,
         "rollback": state_dir / ROLLBACK_NAME,
         "install": install_dir,
@@ -1001,10 +1008,38 @@ def preview():
     return 0
 
 
+def antigravity_command():
+    launcher = (PLUGIN_ROOT / "bin" / "python-launcher").as_posix()
+    return "sh %s %s" % (shlex.quote(launcher), shlex.quote(ANTIGRAVITY_RENDERER.as_posix()))
+
+
+def antigravity_status():
+    """Antigravity owns its settings file and writes it through /statusline;
+    this command only reads it."""
+    desired = antigravity_command()
+    try:
+        with paths()["antigravity"].open(encoding="utf-8") as handle:
+            settings = json.load(handle)
+    except FileNotFoundError:
+        settings = {}
+    if not isinstance(settings, dict):
+        raise ValueError("Antigravity settings must be a JSON object")
+    current = settings.get("statusLine")
+    current = current if isinstance(current, dict) else {}
+    if current.get("command") == desired and current.get("enabled", True) is not False:
+        print("antigravity: p renderer active")
+        return 0
+    state = "another command" if current.get("command") else "no custom command"
+    print("antigravity: %s; to use the p renderer run in an Antigravity session:" % state)
+    print("/statusline " + desired)
+    return 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "command", choices=("sync", "check", "preview", "apply", "profile-sync", "restore")
+        "command",
+        choices=("sync", "check", "preview", "apply", "profile-sync", "restore", "antigravity"),
     )
     args = parser.parse_args(argv)
     try:
@@ -1015,6 +1050,7 @@ def main(argv=None):
             "apply": apply_config,
             "profile-sync": profile_sync,
             "restore": restore_config,
+            "antigravity": antigravity_status,
         }[args.command]()
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print("statusline-ctl: cannot run: " + str(error), file=sys.stderr)

@@ -18,6 +18,14 @@ or replace unrelated plugin configuration. Inspect only Claude's `statusLine`
 field before recommending a change. Run it as
 `<python> <plugin-root>/bin/statusline-ctl <command>`.
 
+## Antigravity
+
+Antigravity changes its status line only through its own `/statusline`
+command, so never edit its settings file. Run
+`<python> <plugin-root>/bin/statusline-ctl antigravity`: exit 0 means the p
+renderer is active; exit 1 prints the `/statusline` line for the operator to
+type in an Antigravity session; exit 2 means its settings could not be read.
+
 ## Default run
 
 When invoked without an explicit command, run `statusline-ctl sync`. It checks
