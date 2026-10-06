@@ -171,8 +171,12 @@ def _duckdb_actions(path: Path, work_dir: Path, backend: str):
             "SELECT count(*) FROM (SELECT source, span_kind FROM %s GROUP BY ALL)" % source),
         "trace_reconstruction": lambda: scalar(
             "SELECT count(*) FROM %s WHERE trace_id = '%s'" % (source, escaped_target)),
+        # Same rule as the stdlib reference: the first eight hex digits of
+        # SHA-256(trace_id), modulo 100, below 70.
         "dataset_split": lambda: scalar(
-            "SELECT count(*) FROM (SELECT DISTINCT trace_id FROM %s) WHERE hash(trace_id) %% 100 < 70" % source),
+            "SELECT count(*) FROM (SELECT DISTINCT trace_id FROM %s) "
+            "WHERE ('0x' || substr(sha256(trace_id), 1, 8))::BIGINT %% 100 < 70"
+            % source),
         "report_generation": lambda: scalar(
             "SELECT count(*) FROM (SELECT source, sum(coalesce(input_tokens,0) + coalesce(output_tokens,0)) FROM %s GROUP BY source)" % source),
     }
@@ -200,9 +204,10 @@ def benchmark_storage(path: Path, backend: str, work_dir: Path, *, runs: int = 5
     registry = registry or default_benchmark_registry()
     actions, cleanup, stored_artifact = registry.create(backend, path, work_dir)
     timings = {name: [] for name in WORKLOADS}
+    answers = {}
     try:
-        for action in actions.values():
-            action()
+        for name, action in actions.items():
+            answers[name] = action()
         for _ in range(runs):
             for name, action in actions.items():
                 started = time.perf_counter()
@@ -222,6 +227,9 @@ def benchmark_storage(path: Path, backend: str, work_dir: Path, *, runs: int = 5
                          if stored_artifact and stored_artifact.exists()
                          else path.stat().st_size),
         "workloads": {name: _measurement(values) for name, values in timings.items()},
+        # Content-free counts from the warm-up pass: backends benchmark the
+        # same workload only when these agree with the stdlib reference.
+        "answers": {name: int(answers[name]) for name in WORKLOADS},
     }
     return result
 

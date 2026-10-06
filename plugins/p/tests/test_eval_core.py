@@ -1,7 +1,6 @@
 """Contract tests for the local-first evaluation core."""
 
 import sys
-import importlib.util
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +8,9 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_optional import requires  # noqa: E402
 from retro_eval.dataset import DatasetManifest, stable_split  # noqa: E402
 from retro_eval.proposals import Proposal, rank_proposals  # noqa: E402
 from retro_eval.schema import (  # noqa: E402
@@ -151,7 +152,7 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual((-0.25, 0.75), result["interval"])
         self.assertEqual("oracle", result["backend"])
 
-    @unittest.skipUnless(importlib.util.find_spec("scipy"), "optional SciPy not installed")
+    @requires("scipy")
     def test_scipy_bca_backend_is_seeded_and_contains_observed_mean(self):
         from retro_eval.scipy_statistics import ScipyBcaBackend
 
