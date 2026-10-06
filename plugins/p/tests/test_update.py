@@ -122,7 +122,8 @@ class CachePreservationTests(unittest.TestCase):
             self.assertFalse(hasattr(self.update, "_find_executable"))
 
     def test_codex_reinstall_restores_active_snapshot_and_uses_supported_order(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, \
+                patched_env({"P_UPDATE_STATE_DIR": str(Path(tmp) / "state")}):
             cache = self._cache(Path(tmp))
             calls = []
 
