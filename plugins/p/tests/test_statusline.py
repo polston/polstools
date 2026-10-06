@@ -443,6 +443,41 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertEqual(before, (claude_path.read_bytes(), codex_path.read_bytes()))
             self.assertFalse((root / "state").exists())
 
+    def test_apply_and_restore_write_through_a_symlinked_settings_file(self):
+        if os.name == "nt":
+            self.skipTest("symbolic links need privileges on Windows")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            dotfiles = root / "dot"
+            dotfiles.mkdir()
+            links = {}
+            for key, name, body in (
+                ("STATUSLINE_CLAUDE_SETTINGS", "claude.json", '{"theme": "dark"}\n'),
+                ("STATUSLINE_CODEX_CONFIG", "codex.toml", "[tui]\n"),
+            ):
+                target = dotfiles / name
+                target.write_text(body, "utf-8")
+                link = Path(env[key])
+                link.symlink_to(target)
+                links[key] = (link, target)
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            claude_target = links["STATUSLINE_CLAUDE_SETTINGS"][1]
+            codex_target = links["STATUSLINE_CODEX_CONFIG"][1]
+            for link, target in links.values():
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.read_text("utf-8"), target.read_text("utf-8"))
+            applied = json.loads(claude_target.read_text("utf-8"))
+            self.assertIn("statusLine", applied)
+            self.assertEqual(applied["theme"], "dark")
+            self.assertIn("status_line", codex_target.read_text("utf-8"))
+            restored = self.run_ctl("restore", env)
+            self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+            for key, (link, target) in links.items():
+                self.assertTrue(link.is_symlink(), key)
+            self.assertEqual(json.loads(claude_target.read_text("utf-8")), {"theme": "dark"})
+            self.assertNotIn("status_line", codex_target.read_text("utf-8"))
+
     def test_restore_does_not_overwrite_later_owned_setting_edits(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

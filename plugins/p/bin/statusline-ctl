@@ -142,7 +142,14 @@ def _stage_write(path, data):
         raise
 
 
+def _resolved(path):
+    """A symlinked settings file is written through to its target; the link stays."""
+    path = Path(path)
+    return Path(os.path.realpath(path)) if path.is_symlink() else path
+
+
 def atomic_write(path, data):
+    path = _resolved(path)
     temporary = _stage_write(path, data)
     try:
         os.replace(temporary, path)
@@ -160,7 +167,7 @@ def atomic_write_many(changes):
     seen = set()
     try:
         for path, data in changes:
-            path = Path(path)
+            path = _resolved(path)
             if path in seen:
                 raise ValueError("transaction contains a duplicate target")
             seen.add(path)
