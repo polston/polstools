@@ -22,6 +22,8 @@ class AdapterResult:
     tool_call_count: int = 0
     tool_result_count: int = 0
     skills: tuple[str, ...] = ()
+    # False when the source has no authoritative main/subagent marker.
+    population_observable: bool = True
 
 
 class SourceUnreadable(OSError):

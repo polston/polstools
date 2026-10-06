@@ -190,6 +190,8 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
             "included_traces": len(traces),
             "main_traces": sum(record.main_or_subagent == "main" for record in traces),
             "subagent_traces": sum(record.main_or_subagent == "subagent" for record in traces),
+            "unclassified_traces": sum(record.main_or_subagent not in {"main", "subagent"}
+                                       for record in traces),
             "excluded_traces": raw_capabilities.get("excluded"),
             "discovered_files": raw_capabilities.get("files"),
             "snapshot_start": min(timestamps).isoformat() if timestamps else None,

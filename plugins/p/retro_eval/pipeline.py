@@ -151,7 +151,7 @@ class EvaluationPipeline:
             source_hashes = []
             source_fingerprint_failures = 0
             included = excluded_count = prompts = tool_calls = tool_results = 0
-            main = subagents = skill_traces = 0
+            main = subagents = unclassified = skill_traces = 0
             for path in paths:
                 try:
                     source_hashes.append(_file_sha256(path))
@@ -165,8 +165,11 @@ class EvaluationPipeline:
                     continue
                 if result.included:
                     included += 1
-                    main += not result.is_subagent
-                    subagents += result.is_subagent
+                    if not result.population_observable:
+                        unclassified += 1
+                    else:
+                        main += not result.is_subagent
+                        subagents += result.is_subagent
                     prompts += result.human_prompt_count
                     tool_calls += result.tool_call_count
                     tool_results += result.tool_result_count
@@ -189,6 +192,7 @@ class EvaluationPipeline:
                 "excluded": excluded_count,
                 "main": main,
                 "subagents": subagents,
+                "unclassified_population": unclassified,
                 "human_prompts": prompts,
                 "tool_calls": tool_calls,
                 "tool_results": tool_results,
