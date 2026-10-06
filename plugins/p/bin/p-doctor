@@ -190,6 +190,27 @@ def normalize_claude_plugins(payload):
     return result
 
 
+def codex_installed_root(item):
+    """The directory Codex loads an installed plugin from.
+
+    An explicit installed-path field wins. Otherwise it is the versioned cache
+    copy, <CODEX_HOME or ~/.codex>/plugins/cache/<marketplace>/<name>/<version>,
+    the same layout p-update's codex_cache_root() builds (a unit test keeps the
+    two in step). `source.path` is where the plugin came from, never what is
+    installed, so it is not used.
+    """
+    explicit = item.get("installedPath")
+    if explicit:
+        return str(explicit)
+    version = item.get("version")
+    if not version:
+        return ""
+    name = item.get("name") or str(item.get("pluginId") or "").split("@", 1)[0] or "p"
+    marketplace = item.get("marketplaceName") or PLUGIN_ID.split("@", 1)[1]
+    home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    return str(Path(home) / "plugins" / "cache" / marketplace / name / str(version))
+
+
 def normalize_codex_plugins(payload):
     if not isinstance(payload, dict) or not isinstance(payload.get("installed"), list):
         raise ValueError("Codex plugin list JSON must contain installed[]")
@@ -197,12 +218,11 @@ def normalize_codex_plugins(payload):
     for item in payload["installed"]:
         if not isinstance(item, dict):
             continue
-        source = item.get("source") if isinstance(item.get("source"), dict) else {}
         result.append({
             "id": item.get("pluginId") or item.get("id") or "",
             "version": item.get("version") or "",
             "enabled": bool(item.get("enabled")),
-            "root": item.get("installedPath") or source.get("path") or "",
+            "root": codex_installed_root(item),
             "scope": "user",
         })
     return result
@@ -758,7 +778,14 @@ def collect(repo_root=None):
         installed_by_harness[harness] = installed
         if len(installed) == 1 and installed[0].get("enabled"):
             root = installed[0].get("root")
-            if HOOK_CONTRACTS.get(harness) is None:
+            if root and not Path(root).is_dir():
+                checks.append(Check(
+                    harness + ".content", "FAIL",
+                    "%s installed copy of p %s is missing or unreadable, so its files and hooks were not checked"
+                    % (harness_label, installed[0].get("version") or "(unknown)"),
+                    _version_fix(harness, installed[0].get("scope", "user")),
+                ))
+            elif HOOK_CONTRACTS.get(harness) is None:
                 checks.extend(probe_plugin_hooks(harness, root or ""))
             elif root:
                 checks.extend(probe_plugin_hooks(harness, root))

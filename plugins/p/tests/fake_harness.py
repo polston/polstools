@@ -31,6 +31,25 @@ class FakeHarness:
         """Answer `name args...` with (returncode, stdout) or a callable returning it."""
         self._handlers[(name, tuple(args))] = result
 
+    def codex_installs_p(self, version, source_path, marketplace="polstools"):
+        """Answer `codex plugin list --json` in the shape the real CLI emits.
+
+        There is no installed-path field: `source.path` is where the plugin came
+        from (a local marketplace's plugin directory), not what Codex loaded.
+        """
+        self.on("codex", ["plugin", "list", "--json"], (0, {"installed": [{
+            "authPolicy": "ON_USE", "enabled": True, "installPolicy": "AVAILABLE",
+            "installed": True, "marketplaceName": marketplace,
+            "marketplaceSource": {"source": str(source_path), "sourceType": "local"},
+            "name": "p", "pluginId": "p@" + marketplace,
+            "source": {"path": str(source_path), "source": "local"},
+            "version": version,
+        }]}))
+        self.on("codex", ["plugin", "marketplace", "list", "--json"], (0, {"marketplaces": []}))
+
+    def codex_cache_dir(self, version, marketplace="polstools"):
+        return self.home / ".codex" / "plugins" / "cache" / marketplace / "p" / version
+
     def env(self, prefix, names=("claude", "codex", "agy")):
         values = {
             "HOME": str(self.home),
