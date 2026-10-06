@@ -478,6 +478,21 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertEqual(json.loads(claude_target.read_text("utf-8")), {"theme": "dark"})
             self.assertNotIn("status_line", codex_target.read_text("utf-8"))
 
+    def test_a_full_restore_retires_the_managed_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+            Path(env["STATUSLINE_CODEX_CONFIG"]).write_text("[tui]\n", "utf-8")
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            self.assertEqual(self.run_ctl("restore", env).returncode, 0)
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertIn("not managed", checked.stdout)
+            self.assertFalse((root / "install").exists())
+            self.assertEqual(list((root / "state").glob("rollback*")), [])
+            self.assertEqual(self.run_ctl("restore", env).returncode, 2)
+
     def test_restore_does_not_overwrite_later_owned_setting_edits(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

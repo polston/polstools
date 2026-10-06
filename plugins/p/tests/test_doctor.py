@@ -5,6 +5,7 @@ from pathlib import Path
 import importlib.machinery
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -608,6 +609,32 @@ class ContentAndConfigTests(unittest.TestCase):
             with self.subTest(code=code):
                 checks = self.doctor.statusline_checks(runner=lambda *a, **k: Result(code))
                 self.assertEqual([status], [check.status for check in checks])
+
+    def test_statusline_check_passes_after_a_full_restore(self):
+        ctl = str(PLUGIN_ROOT / "bin" / "statusline-ctl")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "userdir").mkdir()
+            env = {
+                "HOME": str(root / "userdir"),
+                "STATUSLINE_CLAUDE_SETTINGS": str(root / "claude-settings.json"),
+                "STATUSLINE_CODEX_CONFIG": str(root / "codex-config.toml"),
+                "STATUSLINE_STATE_DIR": str(root / "state"),
+                "STATUSLINE_INSTALL_DIR": str(root / "install"),
+                "STATUSLINE_CCSTATUSLINE_CONFIG": str(root / "ccstatusline.json"),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            (root / "claude-settings.json").write_text("{}\n", "utf-8")
+            (root / "codex-config.toml").write_text("[tui]\n", "utf-8")
+            with patched_env(env):
+                for command in ("apply", "restore"):
+                    done = subprocess.run(
+                        [sys.executable, "-B", ctl, command],
+                        text=True, capture_output=True, check=False,
+                    )
+                    self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+                checks = self.doctor.statusline_checks()
+        self.assertEqual(["PASS"], [check.status for check in checks])
 
     def test_python_adequacy_follows_each_copys_launcher_exit_status(self):
         with tempfile.TemporaryDirectory() as tmp:

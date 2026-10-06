@@ -898,6 +898,30 @@ def sync_config():
     return check_config() if applied == 0 else applied
 
 
+def retire_managed_state(target):
+    """Forget the rollback record and delete the installed bundle after a full restore.
+
+    Only the files the bundle installs are removed, so a directory the operator
+    pointed STATUSLINE_INSTALL_DIR at keeps anything else it holds.
+    """
+    bundle = {
+        target[key]
+        for key in (
+            "renderer", "renderer_py", "renderer_ps1",
+            "profile_label", "profile_lib", "profile_policy",
+        )
+    }
+    for path in [target["rollback"], *sorted(bundle)]:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        target["install"].rmdir()
+    except OSError:
+        pass
+
+
 def restore_config():
     target = paths()
     try:
@@ -943,6 +967,7 @@ def restore_config():
         if skipped:
             print("not restored: " + "; ".join(skipped))
             return 1
+        retire_managed_state(target)
         print("restored: prior managed statusline settings")
         return 0
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
