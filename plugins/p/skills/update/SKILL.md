@@ -23,13 +23,16 @@ It reads every available harness before changing anything: a harness without
 p is skipped, and one that cannot be read stops the update with nothing
 changed. It preserves prior Codex cache snapshots across the remove/add
 operation, reinstalls Antigravity from the copy Claude or Codex now loads,
-refreshes p's Claude status indicator, and runs the newly installed doctor.
+refreshes p's Claude status indicator, runs `codex plugin marketplace upgrade
+polstools` first when Codex's marketplace is a remote repository, regenerates
+Codex skill-activation entries with `skill-profile-ctl sync-native` when p owns
+a region of the Codex config, and runs the newly installed doctor.
 Antigravity does not record where p came from, so when it is the only harness
 with p the updater stops and asks for `--agy-source <plugin directory>`; ask
 the operator for that directory rather than guessing it. Use `--dry-run` when
 the operator wants the plan without changes.
 
-Report every PASS, SKIP, and PLAN line, the doctor result, and the exit code.
+Report every PASS, SKIP, FAIL, and PLAN line, the doctor result, and the exit code.
 Exit 0 means installed harnesses agree and existing sessions retain their
 original skill paths; exit 1 means the update landed but the doctor or the
 status indicator flagged drift; exit 2 means it could not complete safely.
@@ -37,4 +40,5 @@ Start new sessions to load the new version.
 
 Do not replay individual update steps after an ambiguous interruption. Rerun
 the updater: its operations are cache-preserving and final doctor verification
-reconciles the installed state.
+reconciles the installed state. If the Codex re-add fails, the updater exits 2
+and prints `codex plugin add p@polstools`; run that once the cause is fixed.

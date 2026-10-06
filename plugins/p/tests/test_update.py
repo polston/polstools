@@ -203,6 +203,25 @@ class SnapshotSafetyTests(unittest.TestCase):
                 self.update.update_codex(run, cache, "1.8.0", False,
                                          backup_root=Path(tmp) / "backup")
 
+    def test_marker_is_left_by_a_failed_add_and_cleared_by_a_good_one(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patched_env({"P_UPDATE_STATE_DIR": str(Path(tmp) / "state")}):
+            cache = Path(tmp) / "cache"
+            (cache / "1.8.0").mkdir(parents=True)
+            marker = self.update.codex_readd_marker()
+
+            def failing(argv):
+                if argv[2] == "add":
+                    raise self.update.UpdateError("codex plugin add p@polstools exited 1")
+
+            with self.assertRaises(self.update.UpdateError):
+                self.update.update_codex(failing, cache, "1.8.0", False,
+                                         backup_root=Path(tmp) / "backup")
+            self.assertTrue(marker.is_file())
+            self.update.update_codex(lambda argv: None, cache, "1.8.0", False,
+                                     backup_root=Path(tmp) / "backup")
+            self.assertFalse(marker.exists())
+
     def test_superseded_snapshots_are_pruned_only_after_the_retention_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "cache"
@@ -308,6 +327,30 @@ class FakeHarnessUpdateTests(unittest.TestCase):
             self._mutations(),
         )
         self.assertIn("SKIP Codex", out)
+
+    def _interrupted_codex(self, add_result):
+        self._claude_with_p()
+        self._codex_without_p()
+        marker = self.fake.home / ".codex" / "p-update" / "codex-readd-pending"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("pending\n", encoding="utf-8")
+        self.fake.on("codex", ["plugin", "add", "p@polstools"], add_result)
+        return marker
+
+    def test_rerun_after_an_interrupted_codex_reinstall_adds_p_back(self):
+        marker = self._interrupted_codex((0, ""))
+        code, out, err = self._main(["claude", "codex"])
+        self.assertEqual(0, code, err)
+        self.assertIn(("codex", "plugin", "add", "p@polstools"), self.fake.calls)
+        self.assertFalse(marker.exists())
+        self.assertNotIn("SKIP Codex", out)
+
+    def test_failed_readd_keeps_the_marker_and_prints_the_command(self):
+        marker = self._interrupted_codex((1, ""))
+        code, out, err = self._main(["claude", "codex"])
+        self.assertEqual(2, code)
+        self.assertIn("codex plugin add p@polstools", err)
+        self.assertTrue(marker.exists())
 
     def test_unreadable_harness_stops_before_any_change(self):
         self._claude_with_p()

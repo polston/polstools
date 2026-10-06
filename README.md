@@ -76,8 +76,12 @@ sh plugins/p/bin/python-launcher plugins/p/bin/p-update
 It reads every harness (Claude Code, Codex, Antigravity) first, skips one that
 has no p, and stops before changing anything if one cannot be read. It then updates each harness that has
 p, preserves prior Codex cache snapshots so already-running sessions keep valid
-skill paths, and finishes by running the newly installed doctor. Start new
-sessions to load the new version.
+skill paths, and finishes by running the newly installed doctor. For a remote
+Codex marketplace it first runs `codex plugin marketplace upgrade polstools`,
+and it regenerates Codex skill-activation entries with `skill-profile-ctl
+sync-native` when p owns a region of the Codex config. If the Codex re-add
+fails, the updater exits 2 and prints `codex plugin add p@polstools`; run it
+once the cause is fixed. Start new sessions to load the new version.
 
 Antigravity records no install source, so the updater reinstalls it from the
 copy another harness now loads. With Antigravity alone, name the plugin

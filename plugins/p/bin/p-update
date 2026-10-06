@@ -109,6 +109,24 @@ def codex_cache_root(env=None):
     return home / "plugins" / "cache" / MARKETPLACE / "p"
 
 
+def codex_readd_marker():
+    """Present while Codex has had p removed and not yet had it added back."""
+    return update_state_root() / "codex-readd-pending"
+
+
+def recover_codex(runner, executable="codex"):
+    """Add p back to Codex after an update stopped between remove and add."""
+    marker = codex_readd_marker()
+    try:
+        runner([executable, "plugin", "add", PLUGIN_ID])
+    except UpdateError as error:
+        raise UpdateError(
+            "%s; Codex has no p installed, run `codex plugin add %s` once the "
+            "cause is fixed" % (error, PLUGIN_ID)
+        ) from error
+    marker.unlink(missing_ok=True)
+
+
 def update_state_root(env=None):
     env = os.environ if env is None else env
     override = env.get("P_UPDATE_STATE_DIR")
@@ -221,9 +239,13 @@ def update_codex(
     with preserve_cache_versions(cache_root, backup_root):
         if refresh_marketplace:
             runner([executable, "plugin", "marketplace", "upgrade", MARKETPLACE])
+        marker = codex_readd_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("pending\n", encoding="utf-8")
         runner([executable, "plugin", "remove", PLUGIN_ID])
         try:
             runner([executable, "plugin", "add", PLUGIN_ID])
+            marker.unlink(missing_ok=True)
         except UpdateError as error:
             raise UpdateError(
                 "%s after p was removed, so Codex has no p installed now; "
@@ -394,6 +416,19 @@ def main(argv=None):
     except (OSError, ImportError, SyntaxError) as error:
         print("p update: p doctor could not be loaded: %s" % type(error).__name__, file=sys.stderr)
         return 2
+    pending_readd = (
+        "codex" in state and not state["codex"]["items"] and codex_readd_marker().is_file()
+    )
+    if pending_readd and not errors and not args.dry_run:
+        try:
+            recover_codex(run_checked, state["codex"]["executable"])
+        except (OSError, ValueError, RuntimeError) as error:
+            print("p update: %s" % error, file=sys.stderr)
+            return 2
+        print("PASS Codex p added back after an interrupted update")
+        del state["codex"]
+    elif "codex" in state and state["codex"]["items"]:
+        codex_readd_marker().unlink(missing_ok=True)
     if args.agy_source and not (args.agy_source / "plugin.json").is_file():
         errors.append("--agy-source is not a p plugin directory")
     with_p = [harness for harness, entry in state.items() if entry["items"]]
@@ -402,7 +437,7 @@ def main(argv=None):
             "Antigravity does not record where p was installed from; "
             "rerun with --agy-source <plugin directory>"
         )
-    if not with_p and not errors:
+    if not with_p and not errors and not pending_readd:
         errors.append("no available harness has p installed")
     if errors:
         for error in errors:
@@ -410,6 +445,11 @@ def main(argv=None):
         print("p update: nothing was changed", file=sys.stderr)
         return 2
 
+    if pending_readd and not args.dry_run and not with_p:
+        print("PASS p added back to Codex; run `p-doctor` and start new sessions")
+        return 0
+    if args.dry_run and pending_readd:
+        print("PLAN codex plugin add %s, because an earlier update removed it" % PLUGIN_ID)
     for harness in sorted(set(state) - set(with_p)):
         print("SKIP %s does not have p installed" % LABELS[harness])
     if args.dry_run:
