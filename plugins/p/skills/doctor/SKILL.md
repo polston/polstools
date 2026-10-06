@@ -16,7 +16,9 @@ sh "${CLAUDE_PLUGIN_ROOT}/bin/python-launcher" "${CLAUDE_PLUGIN_ROOT}/bin/p-doct
 ```
 
 When the operator explicitly asks to compare a local marketplace checkout,
-append `--repo-root <marketplace-root>` after verifying that root.
+append `--repo-root <marketplace-root>` after verifying that root. With it,
+each installed copy's files are compared with that checkout; without it, only
+installed copies that report the same version are compared with each other.
 
 Report every check, repair instruction, and the exit code. Exit 0 is healthy,
 exit 1 found actionable drift, and exit 2 means an available harness could not
