@@ -113,6 +113,40 @@ class AntigravityInstallHealthTests(unittest.TestCase):
         self.assertEqual("FAIL", check({"components": ["skills", "commands"]}).status)
         self.assertEqual("SKIP", check({}).status)
 
+    def _agy_payload(self, *imports):
+        return {"imports": list(imports)}
+
+    def test_unrelated_antigravity_import_is_not_a_polstools_id(self):
+        plugins = self.doctor.normalize_agy_plugins(self._agy_payload(
+            {"name": "p", "source": "https://github.com/polston/polstools/tree/main/plugins/p"},
+            {"name": "someone-elses-plugin", "source": "https://example.invalid/other/repo"},
+        ))
+        checks = self.doctor.evaluate_harness("agy", plugins, "1.0.0")
+        obsolete = [c for c in checks if c.key == "agy.obsolete"]
+        self.assertEqual(["PASS"], [c.status for c in obsolete])
+        self.assertNotIn("someone-elses-plugin", "".join(c.summary + c.fix for c in checks))
+
+    def test_former_and_polstools_sourced_imports_are_obsolete_with_bare_names(self):
+        plugins = self.doctor.normalize_agy_plugins(self._agy_payload(
+            {"name": "statusline", "source": "x"},
+            {"name": "extra", "source": "https://github.com/polston/polstools/tree/main/plugins/extra"},
+        ))
+        checks = self.doctor.evaluate_harness("agy", plugins, "1.0.0")
+        fail = [c for c in checks if c.key == "agy.obsolete"][0]
+        self.assertEqual("FAIL", fail.status)
+        self.assertIn("`agy plugin uninstall statusline`", fail.fix)
+        self.assertIn("`agy plugin uninstall extra`", fail.fix)
+        self.assertNotIn("@polstools`", fail.fix)
+
+    def test_non_object_antigravity_json_is_unreadable_not_a_crash(self):
+        config = Path(self.tmp.name) / "userdir" / ".gemini" / "config"
+        (config / "plugins" / "p").mkdir(parents=True)
+        (config / "config.json").write_text("[]", encoding="utf-8")
+        (config / "plugins" / "p" / "plugin.json").write_text("[]", encoding="utf-8")
+        plugins = self.doctor.normalize_agy_plugins(self._agy_payload({"name": "p"}))
+        self.assertEqual("", plugins[0]["version"])
+        self.assertTrue(plugins[0]["enabled"])
+
     def test_validator_runs_agy_with_a_scratch_home_that_is_removed(self):
         root = Path(self.tmp.name)
         fake_bin = root / "bin"

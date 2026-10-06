@@ -35,6 +35,10 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 RUN = subprocess.run  # harness CLI runner; tests substitute a fake harness
 PLUGIN_ID = "p@polstools"
+# Antigravity imports with these names, or whose source is this repository,
+# are earlier polstools plugins; every other import belongs to someone else.
+FORMER_PLUGIN_NAMES = frozenset({"statusline"})
+POLSTOOLS_SOURCE_RE = re.compile(r"polston/polstools|/polstools/")
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit")
 HARNESS_LABELS = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity"}
 # The hook contract each harness loads from an installed p. A harness mapped to
@@ -252,7 +256,11 @@ def normalize_agy_plugins(payload):
         try:
             with config_path.open(encoding="utf-8") as handle:
                 cfg = json.load(handle)
+            if not isinstance(cfg, dict):
+                raise ValueError("config.json is not an object")
             enabled_map = cfg.get("plugins") or {}
+            if not isinstance(enabled_map, dict):
+                enabled_map = {}
         except (OSError, ValueError):
             pass
     for item in payload["imports"]:
@@ -266,14 +274,27 @@ def normalize_agy_plugins(payload):
             try:
                 with manifest_path.open(encoding="utf-8") as handle:
                     mdata = json.load(handle)
+                if not isinstance(mdata, dict):
+                    raise ValueError("plugin.json is not an object")
                 version = mdata.get("version") or ""
+                if not isinstance(version, str):
+                    version = ""
             except (OSError, ValueError):
                 pass
         enabled = True
         if name in enabled_map and isinstance(enabled_map[name], dict):
             enabled = enabled_map[name].get("enabled", True)
+        source = item.get("source")
+        ours = name in FORMER_PLUGIN_NAMES or (
+            isinstance(source, str) and bool(POLSTOOLS_SOURCE_RE.search(source)))
+        if name == "p":
+            plugin_id = PLUGIN_ID
+        elif ours:
+            plugin_id = name + "@polstools"
+        else:
+            plugin_id = "agy:" + name
         result.append({
-            "id": PLUGIN_ID if name == "p" else (name + "@polstools"),
+            "id": plugin_id,
             "version": version,
             "enabled": enabled,
             "root": str(root) if root.is_dir() else "",
@@ -300,7 +321,10 @@ def _remove_fix(harness, plugin_ids, scope="user"):
     elif harness == "codex":
         commands = ["`codex plugin remove %s`" % item for item in plugin_ids]
     else:
-        commands = ["`agy plugin uninstall %s`" % item for item in plugin_ids]
+        commands = [
+            "`agy plugin uninstall %s`" % item.replace("@polstools", "")
+            for item in plugin_ids
+        ]
     return "Run " + ", then ".join(commands) + "."
 
 
