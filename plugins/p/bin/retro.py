@@ -181,7 +181,7 @@ _APPROVAL = re.compile(
 # definitions at once is worse than no ledger: it reports a number belonging to
 # neither, and nothing in the output says so. `extract` rebuilds on a mismatch
 # rather than trusting prose to prevent it.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_candidates", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
@@ -853,13 +853,16 @@ def measure(path, harness="claude", root=None):
 
         # attributionSkill is stamped on EVERY assistant record produced while a
         # skill is active, so counting records counts turns, not invocations.
-        # A run is one contiguous stretch of the same skill.
+        # A run is one contiguous stretch of assistant records carrying the
+        # same skill. Only assistant records start or end a run: tool results
+        # and prompts in between carry no stamp and leave the run open.
         skill = rec.get("attributionSkill")
         if skill:
             skills.add(str(skill))
-            if skill != prev_skill:
+        if rtype == "assistant":
+            if skill and skill != prev_skill:
                 m["skill_runs"] += 1
-        prev_skill = skill
+            prev_skill = skill
 
         if rtype == "permission-mode":
             # These records are a repeated snapshot of the current mode, not a
