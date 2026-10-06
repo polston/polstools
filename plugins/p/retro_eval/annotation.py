@@ -115,6 +115,13 @@ def _check_packet_request(output, manifest_path, per_source, split):
         raise ValueError("annotation split must be calibration or test")
 
 
+def _refuse_empty(pools):
+    empty = sorted(source for source, candidates in pools.items() if not candidates)
+    if not pools or empty:
+        raise ValueError("no annotatable user turns for source: %s"
+                         % (", ".join(empty) or "(no inputs)"))
+
+
 def _write_packet(pools, output: Path, manifest_path: Path, *, per_source,
                   dataset_id, rubric_id, rubric_version, split,
                   annotation_protocol, provenance):
@@ -123,10 +130,7 @@ def _write_packet(pools, output: Path, manifest_path: Path, *, per_source,
     Refuses before writing anything when any requested source contributes no
     annotatable case: an empty packet is a failed run, not a sample.
     """
-    empty = sorted(source for source, candidates in pools.items() if not candidates)
-    if not pools or empty:
-        raise ValueError("no annotatable user turns for source: %s"
-                         % (", ".join(empty) or "(no inputs)"))
+    _refuse_empty(pools)
     selected = []
     source_counts = {}
     for source, candidates in sorted(pools.items()):
@@ -164,40 +168,48 @@ def sample_trace_annotations(traces_path: Path, prompt_evidence, output: Path,
                              manifest_path: Path, *, per_source=20,
                              dataset_id="turn-friction-heldout-v1",
                              rubric_id="turn_friction_legacy", rubric_version=1,
-                             split="test", annotation_protocol=None):
+                             split="test", annotation_protocol=None,
+                             requested_sources=()):
     """Sample direct-human prompts from a retro-eval-extract trace snapshot.
 
     ``prompt_evidence`` maps PROMPT span ids to redacted turns collected from
     the same source roots and id salt that produced ``traces_path``. Every
-    source present in the snapshot must contribute at least one case.
+    source present in the snapshot and every name in ``requested_sources``
+    must contribute at least one case; a requested source with no trace
+    records is refused, never dropped.
     """
     _check_packet_request(output, manifest_path, per_source, split)
     records = JsonlTraceStore(traces_path).read()
-    salt = _salt(output.parent)
     pools = {record.source: [] for record in records}
+    for source in requested_sources:
+        pools.setdefault(str(source), [])
     for record in records:
         if record.span_kind != SpanKind.PROMPT or record.actor_kind != "human":
             continue
         details = prompt_evidence.get(record.span_id)
         if not details or not str(details.get("user_turn") or "").strip():
             continue
-        case_id = hmac.new(salt, ("trace|" + record.span_id).encode(),
-                           hashlib.sha256).hexdigest()[:24]
-        rank = hmac.new(salt, ("rank|trace|" + record.span_id).encode(),
-                        hashlib.sha256).hexdigest()
-        pools[record.source].append((rank, {
-            "case_id": case_id, "source": record.source, "split": split,
-            "context_chars": int(details.get("context_chars") or 0),
-            "user_turn_chars": int(details.get("user_turn_chars") or 0),
-            "context": str(details.get("context") or ""),
-            "user_turn": str(details["user_turn"]),
-            "human_label": "", "notes": "",
-        }))
+        pools[record.source].append((record.span_id, details))
+    # Refuse before the salt file or any output directory is created.
+    _refuse_empty(pools)
+    salt = _salt(output.parent)
+    pools = {source: [(hmac.new(salt, ("rank|trace|" + span_id).encode(),
+                                hashlib.sha256).hexdigest(), {
+        "case_id": hmac.new(salt, ("trace|" + span_id).encode(),
+                            hashlib.sha256).hexdigest()[:24],
+        "source": source, "split": split,
+        "context_chars": int(details.get("context_chars") or 0),
+        "user_turn_chars": int(details.get("user_turn_chars") or 0),
+        "context": str(details.get("context") or ""),
+        "user_turn": str(details["user_turn"]),
+        "human_label": "", "notes": "",
+    }) for span_id, details in candidates] for source, candidates in pools.items()}
     return _write_packet(
         pools, output, manifest_path, per_source=per_source,
         dataset_id=dataset_id, rubric_id=rubric_id, rubric_version=rubric_version,
         split=split, annotation_protocol=annotation_protocol,
         provenance={"input_kind": "normalized_traces",
+                    "requested_sources": sorted(str(s) for s in requested_sources),
                     "trace_sha256": _digest(traces_path)})
 
 

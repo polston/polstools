@@ -202,5 +202,78 @@ class LabelChainTests(unittest.TestCase):
         self.assertEqual(2, completed.returncode, completed.stderr)
 
 
+class RequestedSourceTests(unittest.TestCase):
+    """Every source named on the command line must yield a case."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        write_sources(self.base)
+        (self.base / "empty").mkdir()
+        silent = self.base / "silent" / "2026" / "09" / "01"
+        silent.mkdir(parents=True)
+        stamp = "2026-09-01T12:00:00Z"
+        rows = [rollout_meta(stamp), rollout_assistant("only an answer", stamp)]
+        (silent / "rollout-1.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        self.env = dict(os.environ, RETRO_HOME=str(self.base / "retro-state"))
+        self.out = self.base / "labels"
+
+    def run_sample(self, **overrides):
+        roots = {"claude": self.base / "claude", "codex": self.base / "codex",
+                 "antigravity": self.base / "agy"}
+        roots.update({name: self.base / path for name, path in overrides.items()})
+        work = self.base / "work"
+        root_args = []
+        for name, path in roots.items():
+            root_args += ["--root", "%s=%s" % (name, path)]
+        extracted = subprocess.run(
+            ["sh", str(LAUNCHER), "-B",
+             str(PLUGIN_ROOT / "bin" / "retro-eval-extract"),
+             "--work-dir", str(work), *root_args],
+            capture_output=True, text=True, timeout=120, env=self.env)
+        self.assertEqual(0, extracted.returncode, extracted.stderr)
+        source_args = []
+        for name, path in roots.items():
+            source_args += ["--source-root", "%s=%s" % (name, path)]
+        return labels(self.env, "sample", "--traces", work / "traces.jsonl",
+                      "--id-salt", work / "id-salt.bin", *source_args,
+                      "--output", self.out / "s.csv",
+                      "--manifest", self.out / "s-manifest.json")
+
+    def assert_refused(self, completed, *names):
+        self.assertEqual(2, completed.returncode, completed.stderr)
+        lines = completed.stderr.strip().splitlines()
+        self.assertEqual(1, len(lines), completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+        for name in names:
+            self.assertIn(name, lines[0])
+        for other in {"claude", "codex", "antigravity"} - set(names):
+            self.assertNotIn(other, lines[0])
+        self.assertFalse(self.out.exists())
+
+    def test_requested_source_with_an_empty_root_is_refused(self):
+        self.assert_refused(self.run_sample(codex="empty"), "codex")
+
+    def test_requested_source_without_annotatable_turns_is_refused(self):
+        self.assert_refused(self.run_sample(codex="silent"), "codex")
+
+    def test_every_failing_source_is_named_in_one_line(self):
+        self.assert_refused(self.run_sample(codex="silent", antigravity="empty"),
+                            "antigravity", "codex")
+
+    def test_populated_sources_are_listed_with_their_counts(self):
+        completed = self.run_sample()
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        manifest = json.loads((self.out / "s-manifest.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(["antigravity", "claude", "codex"],
+                         manifest["requested_sources"])
+        self.assertEqual(manifest["requested_sources"],
+                         sorted(manifest["source_counts"]))
+        self.assertTrue(all(count > 0 for count in manifest["source_counts"].values()))
+
+
 if __name__ == "__main__":
     unittest.main()

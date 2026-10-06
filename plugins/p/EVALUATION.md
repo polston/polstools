@@ -247,7 +247,9 @@ test set, and import it after the human fills `human_label`:
   --predictions <RETRO_HOME>/labels/rule-calibration.jsonl
 
 <python> <plugin-root>/bin/retro-eval-labels sample \
-  --extract <claude-extract.json> --extract <codex-extract.json> \
+  --traces <RETRO_HOME>/cross-harness-v1/traces.jsonl \
+  --id-salt <RETRO_HOME>/cross-harness-v1/id-salt.bin \
+  --source-root claude=<claude-root> --source-root codex=<codex-root> \
   --output <RETRO_HOME>/labels/heldout.csv \
   --manifest <RETRO_HOME>/labels/heldout-manifest.json \
   --per-source 20

@@ -169,8 +169,9 @@ def main(argv=None):
             except OSError as exc:
                 raise ValueError("id salt is unreadable") from exc
             evidence = collect_private_prompt_evidence(source_roots, id_salt)
-            result = sample_trace_annotations(args.traces, evidence, args.output,
-                                              args.manifest, **options)
+            result = sample_trace_annotations(
+                args.traces, evidence, args.output, args.manifest,
+                requested_sources=sorted(source_roots), **options)
     elif args.command in {"import-annotations", "predict-annotations"}:
         catalogue = load_rubric_catalogue(args.rubrics)
         try:
