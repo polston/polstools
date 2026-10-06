@@ -233,6 +233,11 @@ def _redaction_patterns():
     return patterns
 
 
+# Terminal control characters (tab, newline and carriage return stay): a value
+# written to the candidates file or printed must not carry an escape sequence.
+_CONTROL_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
 def redact(text):
     """Strip machine-identifying and credential-shaped values.
 
@@ -241,6 +246,7 @@ def redact(text):
     """
     if not text:
         return ""
+    text = _CONTROL_CHARS.sub("?", str(text))
     for pattern, replacement in _redaction_patterns():
         text = pattern.sub(replacement, text)
     return text

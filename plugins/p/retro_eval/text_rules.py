@@ -105,6 +105,17 @@ def _redaction_patterns():
     return pats
 
 
+# C0 controls except tab, newline and carriage return, DEL, and the C1
+# controls. A transcript field printed or written verbatim could otherwise
+# carry a terminal escape sequence that runs when the output is shown.
+_CONTROL_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
+def strip_controls(text):
+    """`text` with terminal control characters replaced by `?`."""
+    return _CONTROL_CHARS.sub("?", str(text))
+
+
 def redact(text):
     """Strip machine-identifying and credential-shaped values from text.
 
@@ -113,6 +124,7 @@ def redact(text):
     """
     if not text:
         return ""
+    text = strip_controls(text)
     for pattern, replacement in _redaction_patterns():
         text = pattern.sub(replacement, text)
     return text

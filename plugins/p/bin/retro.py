@@ -68,7 +68,7 @@ def claude_config_dir():
     `rules` and `effect` inspecting the default while the walk honoured the
     override.
     """
-    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    config = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
     return Path(config) if config else HOME / ".claude"
 
 
@@ -119,11 +119,14 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
+import skill_activation  # noqa: E402
+
 from retro_eval.catalog import ensure_rubric_use, load_rubric_catalogue
 from retro_eval.text_rules import (  # noqa: E402,F401 -- re-exported
     CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS, _INTERRUPT,
     _predict_at, _redaction_patterns, classify_user_turn, is_approval,
-    redact)
+    redact, strip_controls)
 
 RUBRICS_FILE = PLUGIN_ROOT / "rubrics" / "rubrics.json"
 LEGACY_TURN_RUBRIC = "turn_friction_legacy"
@@ -226,7 +229,7 @@ SWEEP_MIN_PRIOR = (0, 200, 400, 800, 1600)
 
 # --- Transcript parsing ----------------------------------------------------
 
-def _content_text(content, block_types, bare_strings=False):
+def _content_text(content, block_types, bare_strings=False, skipped=None):
     """The text-bearing pieces of a `content` field, as an unjoined list of
     strings -- callers decide how to filter and join, since the two shapes
     that flatten through here disagree about both.
@@ -236,6 +239,10 @@ def _content_text(content, block_types, bare_strings=False):
     content never does). A `tool_result` block, when its type is in
     `block_types`, contributes its own string `content` field instead of a
     `text` key -- the one shape neither format's other block types use.
+
+    A text piece that is not a string is dropped, and tallied under `bad_text`
+    in `skipped` when the caller passes a Counter: one forward-incompatible
+    block must not cost the whole transcript.
     """
     if isinstance(content, str):
         return [content]
@@ -252,16 +259,19 @@ def _content_text(content, block_types, bare_strings=False):
                     parts.append(inner)
             else:
                 parts.append(block.get("text") or "")
-    return parts
+    good = [p for p in parts if isinstance(p, str)]
+    if skipped is not None and len(good) != len(parts):
+        skipped["bad_text"] += len(parts) - len(good)
+    return good
 
 
-def text_of(message):
+def text_of(message, skipped=None):
     """Flatten a message's content to plain text. Content is a string on some
     records and a list of typed blocks on others."""
     if not isinstance(message, dict):
         return ""
     parts = _content_text(message.get("content"), ("text", "tool_result"),
-                          bare_strings=True)
+                          bare_strings=True, skipped=skipped)
     return "\n".join(p for p in parts if p)
 
 
@@ -627,6 +637,28 @@ def is_rollout(path):
     return False
 
 
+def _token_count(value, skipped):
+    """A usage field as a non-negative int: absent or null is 0, a wrong-typed
+    value is 0 and tallied under `bad_token_count`."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or value != value or value in (float("inf"), float("-inf")) \
+            or value < 0:
+        skipped["bad_token_count"] += 1
+        return 0
+    return int(value)
+
+
+def _dict_or_skip(value, skipped, reason):
+    """`value or {}` when it is a mapping; a present non-mapping is tallied."""
+    if isinstance(value, dict):
+        return value
+    if value:
+        skipped[reason] += 1
+    return {}
+
+
 def measure(path, harness="claude", root=None):
     """Reduce one transcript to a metrics row.
 
@@ -635,6 +667,7 @@ def measure(path, harness="claude", root=None):
     the three outcomes as a single value call measure_outcome() instead.
     """
     m = Counter()
+    skipped = Counter()
     session_id = project = branch = version = None
     first_ts = last_ts = None
     seen_sigs = set()
@@ -703,13 +736,14 @@ def measure(path, harness="claude", root=None):
                 m["queued_prompts"] += 1
         elif rtype == "assistant":
             m["turns"] += 1
-            msg = rec.get("message") or {}
+            msg = _dict_or_skip(rec.get("message"), skipped, "bad_message")
             last_assistant = msg
-            usage = msg.get("usage") or {}
-            tokens_in += int(usage.get("input_tokens") or 0)
-            tokens_out += int(usage.get("output_tokens") or 0)
-            cache_read += int(usage.get("cache_read_input_tokens") or 0)
-            body = text_of(msg)
+            usage = _dict_or_skip(msg.get("usage"), skipped, "bad_usage")
+            tokens_in += _token_count(usage.get("input_tokens"), skipped)
+            tokens_out += _token_count(usage.get("output_tokens"), skipped)
+            cache_read += _token_count(usage.get("cache_read_input_tokens"),
+                                       skipped)
+            body = text_of(msg, skipped)
             # Accumulate, do not replace. One assistant turn is often several
             # records -- text, then a tool call, then more text -- and taking
             # only the last one asks "was the final fragment long" instead of
@@ -755,7 +789,7 @@ def measure(path, harness="claude", root=None):
         if rtype == "user":
             if is_error_record(rec):
                 m["tool_errors"] += 1
-            user_msg = rec.get("message") or {}
+            user_msg = _dict_or_skip(rec.get("message"), skipped, "bad_message")
             # An interrupt is the caller stopping the run. Read from the text
             # blocks only - a tool result that happens to quote the marker is
             # not the caller interrupting anything.
@@ -816,6 +850,8 @@ def measure(path, harness="claude", root=None):
         "skills_used": sorted(skills),
     }
     row["schema"] = SCHEMA_VERSION
+    if skipped:
+        row["skipped"] = dict(skipped)
     for key in COUNTERS:
         row[key] = m[key]
 
@@ -1885,7 +1921,7 @@ def cmd_skills(args):
         in_claude = name in installed["claude"]
         in_codex = name in installed["codex"]
         note = "" if (in_claude or in_codex) else "built-in command, or renamed"
-        print(f"| {name} | {used['claude'][name] or ''} "
+        print(f"| {strip_controls(name)} | {used['claude'][name] or ''} "
               f"| {used['codex'][name] or ''} | {note} |")
     if any_codex:
         print(f"\nCodex denominator: {signal_files['codex']} transcripts "
@@ -2005,13 +2041,9 @@ def concentration(rows, key):
     return by_project.most_common(1)[0][1] / total * 100
 
 
-# The same table format-ctl and lib/skill_activation.py read; adding a
-# harness or a variable means editing all three.
-HARNESS_SESSION_VARS = (
-    ("claude", ("CLAUDE_CODE_SESSION_ID",)),
-    ("codex", ("CODEX_SESSION_ID", "CODEX_THREAD_ID")),
-    ("antigravity", ("ANTIGRAVITY_CONVERSATION_ID",)),
-)
+# The table lib/skill_activation.py owns (format-ctl keeps a copy, pinned
+# equal by a test).
+HARNESS_SESSION_VARS = skill_activation.HARNESS_SESSION_VARS
 
 
 def reporting_session_ids(extra):
@@ -2215,7 +2247,8 @@ def label_candidates():
             date = date or str(rec.get("timestamp") or "")[:10]
             rtype = rec.get("type")
             if rtype == "assistant":
-                msg = rec.get("message") or {}
+                msg = rec.get("message")
+                msg = msg if isinstance(msg, dict) else {}
                 # Accumulate across a turn's records, exactly as `measure` does.
                 # Replacing here meant the sweep argued from a different length
                 # than the ledger recorded for the same turn.
@@ -2810,7 +2843,12 @@ def main():
     p_rules.set_defaults(func=cmd_rules)
 
     args = parser.parse_args()
-    sys.exit(args.func(args) or EXIT_CLEAN)
+    try:
+        code = args.func(args)
+    except Exception as error:  # noqa: BLE001 -- the exit-code contract
+        sys.stderr.write("error: %s: %s\n" % (type(error).__name__, error))
+        sys.exit(EXIT_CANNOT_RUN)
+    sys.exit(code or EXIT_CLEAN)
 
 
 if __name__ == "__main__":

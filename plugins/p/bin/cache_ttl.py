@@ -587,7 +587,8 @@ def report(projects_dir, days, project, as_json, stream, now=None):
         if result["unpriced"]:
             message += ("every main-thread request used a model with no "
                         "price row: %s\n"
-                        % ", ".join(sorted(result["unpriced"])))
+                        % ", ".join(retro.strip_controls(m)
+                                    for m in sorted(result["unpriced"])))
             extra = {"unpriced_requests": dict(result["unpriced"]),
                      "unpriced_share_of_main_read_tokens": round(unpriced_share, 1)}
         if unpriced_share > UNPRICED_READ_SHARE_LIMIT:
@@ -777,7 +778,8 @@ def report(projects_dir, days, project, as_json, stream, now=None):
         stream.write("unpriced models (no price row; not defaulted)\n")
         for model, count in sorted(unpriced_all.items()):
             stream.write("  %-30s %6d requests %12d tokens\n"
-                         % (model, count, unpriced_tokens[model]))
+                         % (retro.strip_controls(model), count,
+                            unpriced_tokens[model]))
         stream.write("\n")
     if census["files_skipped_before_window"]:
         stream.write("files not read: %d of %d, last modified before the window\n\n"
