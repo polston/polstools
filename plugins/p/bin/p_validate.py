@@ -647,6 +647,12 @@ def antigravity_validate(plugin_root):
         scratch_home = Path(tmp) / "home"
         scratch_home.mkdir()
         env = dict(os.environ, HOME=str(scratch_home), USERPROFILE=str(scratch_home))
+        for name, sub in (
+            ("XDG_CONFIG_HOME", ".config"), ("XDG_DATA_HOME", ".local/share"),
+            ("XDG_CACHE_HOME", ".cache"), ("XDG_STATE_HOME", ".local/state"),
+            ("APPDATA", "AppData/Roaming"), ("LOCALAPPDATA", "AppData/Local"),
+        ):
+            env[name] = str(scratch_home / sub)
         result = subprocess.run(
             [agy_bin, "plugin", "validate", str(copy_root)],
             text=True, encoding="utf-8", capture_output=True, env=env,

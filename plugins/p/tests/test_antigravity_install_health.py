@@ -151,24 +151,29 @@ class AntigravityInstallHealthTests(unittest.TestCase):
         root = Path(self.tmp.name)
         fake_bin = root / "bin"
         fake_bin.mkdir()
-        seen = root / "seen-home.txt"
+        seen = root / "seen-env.txt"
         output = root / "agy-output.txt"
         output.write_text(AGY_LOADED, encoding="utf-8")
+        names = ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                 "XDG_CACHE_HOME", "XDG_STATE_HOME", "APPDATA", "LOCALAPPDATA")
         script = fake_bin / "agy"
-        script.write_text(
-            '#!/bin/sh\nprintf %s "$HOME" > "$SEEN_HOME"\ncat "$AGY_OUTPUT"\n',
-            encoding="utf-8")
+        lines = "".join('printf "%%s=%%s\\n" %s "$%s" >> "$SEEN_ENV"\n' % (n, n) for n in names)
+        script.write_text("#!/bin/sh\n" + lines + 'cat "$AGY_OUTPUT"\n', encoding="utf-8")
         script.chmod(0o755)
+        operator = str(root / "userdir")
         environ = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
-                       SEEN_HOME=str(seen), AGY_OUTPUT=str(output),
-                       USERPROFILE=str(root / "userdir"))
+                       SEEN_ENV=str(seen), AGY_OUTPUT=str(output), USERPROFILE=operator,
+                       **{n: operator for n in names if n not in ("HOME", "USERPROFILE")})
         with mock.patch.dict(os.environ, environ, clear=True):
             errors = self.validator.antigravity_validate(PLUGIN_ROOT)
         self.assertEqual([], errors)
-        recorded = seen.read_text(encoding="utf-8")
-        self.assertNotEqual(str(root / "userdir"), recorded)
-        self.assertNotEqual(os.environ["HOME"], recorded)
-        self.assertFalse(Path(recorded).exists())
+        recorded = dict(line.split("=", 1) for line in seen.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(set(names), set(recorded))
+        scratch = Path(recorded["HOME"]).parent
+        for name in names:
+            self.assertNotEqual(operator, recorded[name], name)
+            self.assertTrue(str(recorded[name]).startswith(str(scratch)), name)
+        self.assertFalse(scratch.exists())
 
 
 if __name__ == "__main__":
