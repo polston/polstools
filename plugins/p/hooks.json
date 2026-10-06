@@ -1,0 +1,11 @@
+{
+  "p-format": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "sh bin/agy-format-hook",
+        "timeout": 10
+      }
+    ]
+  }
+}

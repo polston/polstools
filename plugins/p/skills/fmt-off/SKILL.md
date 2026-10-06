@@ -15,7 +15,7 @@ Before any other action, resolve the plugin root from this `SKILL.md` and run
 2. Pick the scope from the request. Nothing named, or "session": run the
    script with no arguments. "default" or "globally": run the script with the
    single argument `default`. A named harness: run the script with
-   `default claude` or `default codex`.
+   `default claude`, `default codex`, or `default antigravity`.
 3. If it exits 0, confirm in one line what its output says changed — the
    session state or the written default — and reply normally for the rest of
    the session when this session's format is off.

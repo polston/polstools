@@ -1,0 +1,77 @@
+#!/usr/bin/env sh
+# Antigravity PreInvocation hook for the p response format.
+#
+# Antigravity runs this from the plugin's root hooks.json with the plugin root
+# as the working directory and camelCase JSON on stdin, before every model
+# invocation. The decision is format-gate's, unchanged: this entry passes
+# conversationId on as the gate's session id, names the harness, and gates a
+# pre-encoded JSON envelope, so the gate's verbatim payload is already valid
+# hook output. The first invocation (invocationNum 0, which protojson omits)
+# gets the full specification; later invocations get the turn reminder.
+#
+# The off path starts no interpreter: stdin is read and cut with shell
+# builtins, and format-gate decides off in sh. Output: the envelope when the
+# gate is on, otherwise {}. Exit: always 0 - a hook must not break the agent
+# loop; a gate failure prints {} and one line on stderr, which p-doctor
+# reports.
+
+here=${0%/*}
+[ "$here" = "$0" ] && here=.
+
+event=''
+while IFS= read -r line || [ -n "$line" ]; do
+  event=$event$line
+done
+
+# Value of a top-level "key": cut to its leading [A-Za-z0-9._-] run.
+field() {
+  case $event in
+    *"\"$1\""*) ;;
+    *) value=''; return ;;
+  esac
+  value=${event#*\"$1\"}
+  value=${value#*:}
+  while :; do
+    case $value in
+      [[:space:]]* | \"*) value=${value#?} ;;
+      *) break ;;
+    esac
+  done
+  value=${value%%[!A-Za-z0-9._-]*}
+}
+
+field conversationId; sid=$value
+field invocationNum; invocation=$value
+field initialNumSteps; steps=$value
+case $invocation in '' | *[!0-9]*) invocation=0 ;; esac
+case $steps in '' | *[!0-9]*) steps=0 ;; esac
+
+if [ "$invocation" = 0 ]; then
+  payload=$here/../style/antigravity/response-format.json
+else
+  payload=$here/../style/antigravity/turn-reminder.json
+fi
+
+output=$(P_FORMAT_HARNESS=antigravity sh "$here/format-gate" gate "$payload" \
+  --hook-id format.pre-invocation --hook-version 1 --trigger-kind PreInvocation \
+  <<EOF
+{"session_id":"$sid"}
+EOF
+)
+status=$?
+if [ "$status" -ne 0 ]; then
+  state=error
+  output=''
+  echo "agy-format-hook: format gate exited $status" >&2
+elif [ -n "$output" ]; then
+  state=on
+else
+  state=off
+fi
+
+if [ -n "$output" ]; then
+  printf '%s\n' "$output"
+else
+  printf '{}\n'
+fi
+exit 0
