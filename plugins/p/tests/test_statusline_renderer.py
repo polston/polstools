@@ -235,6 +235,19 @@ class RendererProcessTests(unittest.TestCase):
             )
             self.assertEqual(popen.call_count, 1)
 
+    def test_unusable_columns_values_leave_lines_unfitted(self):
+        sample = json.dumps(
+            {"model": {"display_name": "Example"}, "workspace": {"current_dir": "a-long-directory-name-for-width"}}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeHome(tmp)
+            for value in ("", "0", "-5", "wide", "12.5"):
+                with self.subTest(columns=value), mock.patch.dict(
+                    os.environ, dict(fake.env(), COLUMNS=value), clear=True
+                ):
+                    lines = self.renderer.render(sample)
+                    self.assertEqual(ANSI.sub("", lines[0]), "Example | a-long-directory-name-for-width | p:h")
+
     def test_activation_policy_error_shows_the_unknown_profile_label(self):
         activation = load_activation()
         error = activation.PolicyError("session-state directory is not trusted")
@@ -349,6 +362,16 @@ class WindowsPathTests(unittest.TestCase):
         self.assertEqual(shorten("D:\\Accounts\\AnnX\\src", "D:\\Accounts\\Ann", windows=True), "D:\\Accounts\\AnnX\\src")
         self.assertEqual(shorten("/srv/Ann/src", "/srv/ann", windows=False), "/srv/Ann/src")
         self.assertEqual(shorten("/srv/ann/src", "/srv/ann/", windows=False), "~/src")
+
+    def test_narrow_line_shortens_a_windows_cwd_to_its_last_component(self):
+        data = {
+            "model": {"display_name": "Example"},
+            "workspace": {"current_dir": "D:\\work\\a-long-project-directory", "git_branch": "main"},
+            "context_window": {"remaining_percentage": 50},
+        }
+        lines = self.renderer.render_lines(data, profile_label="p:w", home="D:\\Accounts\\Ann",
+                                           windows=True, columns=60, color=False)
+        self.assertEqual(lines, ["Example | a-long-project-directory | main | 50% left | p:w"])
 
 
 RATE_LIMITS = {"rate_limits": {"five_hour": {"used_percentage": 10}}}
@@ -481,8 +504,8 @@ class PowerShellCacheDirectoryTrustTests(CacheDirectoryTrustTests):
         self.assertNotIn("model-week", plain, "the foreign cache must not be read")
         return plain
 
-    def test_refresh_does_not_write_through_a_planted_temporary_link(self):
-        self.skipTest("the refresh child is the Python renderer, covered by the base class")
+    # The refresh child is the Python renderer; its temporary-file test is not repeated here.
+    test_refresh_does_not_write_through_a_planted_temporary_link = None
 
 
 class PerUserCacheNameTests(unittest.TestCase):

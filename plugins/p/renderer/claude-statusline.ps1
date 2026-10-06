@@ -12,7 +12,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } 
 $esc = [char]27
 $Reset = "$esc[0m"; $Dim = "$esc[2m"; $Cyan = "$esc[2;36m"; $Yellow = "$esc[2;33m"
 $Magenta = "$esc[35m"; $Red = "$esc[31m"; $Amber = "$esc[33m"; $Green = "$esc[32m"
-$Block = [string][char]0x2588; $Shade = [string][char]0x2591
+$Block = [string][char]0x2588; $Shade = [string][char]0x2591; $Ellipsis = [string][char]0x2026
 $Invariant = [System.Globalization.CultureInfo]::InvariantCulture
 $IsWin = ($PSVersionTable.PSEdition -eq 'Desktop') -or [bool]$IsWindows
 
@@ -61,6 +61,17 @@ function Format-Tokens([double]$count) {
     }
     return ([long][math]::Floor($count / 1000 + 0.5)).ToString($Invariant) + 'k'
 }
+function Get-Width([string]$text) { return $text.Length - ([regex]::Matches($text, '[\uDC00-\uDFFF]')).Count }
+function Limit-Text([string]$text, [int]$points) {
+    $builder = New-Object System.Text.StringBuilder; $count = 0
+    for ($i = 0; $i -lt $text.Length -and $count -lt $points; $i++) {
+        [void]$builder.Append($text[$i])
+        if ([char]::IsHighSurrogate($text[$i]) -and $i + 1 -lt $text.Length) { $i++; [void]$builder.Append($text[$i]) }
+        $count++
+    }
+    return $builder.ToString()
+}
+
 function Get-ShortCwd([string]$cwd, [string]$homeDir, [bool]$windows) {
     if (-not $cwd -or -not $homeDir) { return $cwd }
     $trimmed = $homeDir.TrimEnd('/', '\')
@@ -81,10 +92,52 @@ function New-Gauge([string]$key, [string]$label, [double]$left, [string]$tokens)
     $head = ''; $paintedHead = ''; $suffix = ''; $paintedSuffix = ''
     if ($label) { $head = $label + ' '; $paintedHead = (Paint $Dim $label) + ' ' }
     if ($tokens) { $suffix = ' ' + $tokens; $paintedSuffix = ' ' + (Paint $Dim $tokens) }
-    return New-Segment $key ($head + $bar + ' ' + $pct + $suffix) ($paintedHead + (Get-Tone $left) + $bar + $Reset + ' ' + $pct + $paintedSuffix)
+    return @{
+        key = $key; label = $label; left = $left; tokens = $tokens
+        plain = $head + $bar + ' ' + $pct + $suffix
+        painted = $paintedHead + (Get-Tone $left) + $bar + $Reset + ' ' + $pct + $paintedSuffix
+        compactPlain = $head + $pct + $suffix
+        compactPainted = $paintedHead + $pct + $paintedSuffix
+    }
 }
 
-function Join-Line($segments) {
+function Get-LineWidth($segments) { return Get-Width ((@($segments | ForEach-Object { $_.plain })) -join ' | ') }
+
+function Invoke-Step($segments, [string]$kind, [string]$key) {
+    $updated = New-Object System.Collections.ArrayList
+    foreach ($segment in $segments) {
+        if ($kind -eq 'drop' -and $segment.key -eq $key) { continue }
+        if ($kind -eq 'tokens' -and $segment.tokens) {
+            $segment = New-Gauge $segment.key $segment.label $segment.left ''
+        } elseif ($kind -eq 'bars' -and $segment.ContainsKey('compactPlain')) {
+            $segment = @{ key = $segment.key; label = $segment.label; left = $segment.left; tokens = $segment.tokens
+                plain = $segment.compactPlain; painted = $segment.compactPainted
+                compactPlain = $segment.compactPlain; compactPainted = $segment.compactPainted }
+        } elseif ($kind -eq 'basename' -and $segment.key -eq 'cwd') {
+            $name = ($segment.plain.TrimEnd('/', '\') -replace '\\', '/').Split('/')[-1]
+            if (-not $name) { $name = $segment.plain }
+            $segment = New-Segment 'cwd' $name (Paint $Dim $name)
+        }
+        [void]$updated.Add($segment)
+    }
+    return ,$updated
+}
+
+$Line1Steps = @(@('tokens', ''), @('drop', 'effort'), @('bars', ''), @('basename', ''), @('drop', 'branch'), @('drop', 'cwd'), @('drop', 'model'))
+$Line2Steps = @(@('bars', ''), @('drop', 'scoped'), @('drop', 'wk'))
+
+function Format-Line($segments, $steps, $columns) {
+    if ($columns) {
+        foreach ($step in $steps) {
+            if ((Get-LineWidth $segments) -le $columns) { break }
+            $segments = Invoke-Step $segments $step[0] $step[1]
+        }
+        $plain = (@($segments | ForEach-Object { $_.plain })) -join ' | '
+        if ((Get-Width $plain) -gt $columns) {
+            if ($columns -gt 1) { return (Limit-Text $plain ($columns - 1)) + $Ellipsis }
+            return Limit-Text $plain $columns
+        }
+    }
     return (@($segments | ForEach-Object { $_.painted })) -join (' ' + (Paint $Dim '|') + ' ')
 }
 
@@ -290,8 +343,10 @@ function Get-Lines([string]$inputJson) {
         }
     }
 
-    $lines = @(Join-Line $line1)
-    if ($line2.Count -gt 0) { $lines += Join-Line $line2 }
+    $columns = 0
+    if (-not [int]::TryParse([string]$env:COLUMNS, [ref]$columns) -or $columns -lt 1) { $columns = 0 }
+    $lines = @(Format-Line $line1 $Line1Steps $columns)
+    if ($line2.Count -gt 0) { $lines += Format-Line $line2 $Line2Steps $columns }
     return $lines
 }
 

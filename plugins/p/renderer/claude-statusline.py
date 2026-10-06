@@ -117,24 +117,97 @@ def _gauge(key, label, left, tokens, color, label_paint):
     pct = percent_text(left)
     head = (label + " ") if label else ""
     suffix = (" " + tokens) if tokens else ""
-    painted = head + bar + " " + pct + suffix
     if color:
         painted_head = (label_paint + label + RESET + " ") if label else ""
         painted_suffix = (" " + DIM + tokens + RESET) if tokens else ""
-        painted = painted_head + tone(left) + bar + RESET + " " + pct + painted_suffix
-    return _segment(key, head + bar + " " + pct + suffix, painted)
+        painted_full = painted_head + tone(left) + bar + RESET + " " + pct + painted_suffix
+        painted_compact = painted_head + pct + painted_suffix
+    else:
+        painted_full = head + bar + " " + pct + suffix
+        painted_compact = head + pct + suffix
+    return {
+        "key": key,
+        "plain": head + bar + " " + pct + suffix,
+        "painted": painted_full,
+        "compact_plain": head + pct + suffix,
+        "compact_painted": painted_compact,
+        "tokens": tokens,
+        "left": left,
+        "label": label,
+        "label_paint": label_paint,
+    }
+
+
+def _width(text):
+    return len(text)
 
 
 def _separator(color):
     return " " + (DIM + "|" + RESET if color else "|") + " "
 
 
-def join_line(segments, color):
-    return _separator(color).join(segment["painted"] for segment in segments)
+def _join(segments, field):
+    return [segment[field] for segment in segments]
+
+
+def _line_width(segments):
+    return _width(" | ".join(_join(segments, "plain")))
+
+
+def _apply_step(segments, step, color):
+    kind, key = step
+    updated = []
+    changed = False
+    for segment in segments:
+        if kind == "drop" and segment["key"] == key:
+            changed = True
+            continue
+        if kind == "tokens" and segment.get("tokens"):
+            segment = _gauge(
+                segment["key"], segment["label"], segment["left"], "", color, segment["label_paint"]
+            )
+            changed = True
+        elif kind == "bars" and "compact_plain" in segment and segment["plain"] != segment["compact_plain"]:
+            segment = dict(segment, plain=segment["compact_plain"], painted=segment["compact_painted"])
+            changed = True
+        elif kind == "basename" and segment["key"] == "cwd":
+            name = segment["plain"].rstrip("/\\")
+            name = name.replace("\\", "/").rsplit("/", 1)[-1] or segment["plain"]
+            if name != segment["plain"]:
+                segment = _segment("cwd", name, (DIM + name + RESET) if color else name)
+                changed = True
+        updated.append(segment)
+    return updated, changed
+
+
+LINE1_STEPS = (
+    ("tokens", None),
+    ("drop", "effort"),
+    ("bars", None),
+    ("basename", None),
+    ("drop", "branch"),
+    ("drop", "cwd"),
+    ("drop", "model"),
+)
+LINE2_STEPS = (("bars", None), ("drop", "scoped"), ("drop", "wk"))
+
+
+def fit_line(segments, steps, columns, color):
+    if not segments:
+        return None
+    if columns:
+        for step in steps:
+            if _line_width(segments) <= columns:
+                break
+            segments, _ = _apply_step(segments, step, color)
+        plain = " | ".join(_join(segments, "plain"))
+        if _width(plain) > columns:
+            return plain[: max(columns - 1, 0)] + "…" if columns > 1 else plain[:columns]
+    return _separator(color).join(_join(segments, "painted"))
 
 
 def render_lines(data, *, profile_label, scoped=None, home="", windows=False,
-                 branch="", color=True):
+                 branch="", columns=None, color=True):
     """Pure renderer: every input is an argument; returns the printed lines.
 
     scoped is None (no model-scoped gauge), ("gauge", label, used_percent), or
@@ -185,9 +258,9 @@ def render_lines(data, *, profile_label, scoped=None, home="", windows=False,
             text = (scoped[1] or SCOPED_FALLBACK_LABEL) + " --"
             line2.append(_segment("scoped", text, paint(DIM, text)))
 
-    lines = [join_line(line1, color)]
+    lines = [fit_line(line1, LINE1_STEPS, columns, color)]
     if line2:
-        lines.append(join_line(line2, color))
+        lines.append(fit_line(line2, LINE2_STEPS, columns, color))
     return lines
 
 
@@ -322,6 +395,14 @@ def profile_label(session_id):
         return "p:?"
 
 
+def _columns():
+    try:
+        value = int(os.environ.get("COLUMNS", ""))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def render(raw, now_ms=None):
     try:
         data = json.loads(raw) if raw.strip() else {}
@@ -349,6 +430,7 @@ def render(raw, now_ms=None):
         home=as_text(os.environ.get("HOME") or os.environ.get("USERPROFILE") or ""),
         windows=os.name == "nt",
         branch=branch,
+        columns=_columns(),
     )
 
 
