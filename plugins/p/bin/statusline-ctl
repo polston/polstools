@@ -142,14 +142,26 @@ def _stage_write(path, data):
         raise
 
 
-def _resolved(path):
-    """A symlinked settings file is written through to its target; the link stays."""
+def _resolved(path, follow=False):
+    """Choose the file a write lands on.
+
+    Only the operator's harness settings (follow=True) are written through a
+    symbolic link, and only to an existing regular file; the link stays. Every
+    other target (rollback record, installed bundle) refuses a link outright.
+    """
     path = Path(path)
-    return Path(os.path.realpath(path)) if path.is_symlink() else path
+    if not path.is_symlink():
+        return path
+    if not follow:
+        raise ValueError("refusing to write through a symbolic link: " + str(path))
+    real = Path(os.path.realpath(path))
+    if not real.is_file():
+        raise ValueError("symbolic link does not lead to a regular file: " + str(path))
+    return real
 
 
-def atomic_write(path, data):
-    path = _resolved(path)
+def atomic_write(path, data, follow=False):
+    path = _resolved(path, follow)
     temporary = _stage_write(path, data)
     try:
         os.replace(temporary, path)
@@ -162,12 +174,18 @@ def atomic_write(path, data):
 
 
 def atomic_write_many(changes):
-    """Stage all writes, then restore every committed target after any failure."""
+    """Changes are (path, data) or (path, data, follow_link).
+
+    Stage all writes, then restore every committed target after any failure."""
     prepared = []
     seen = set()
+    # Refuse every bad link before anything is staged or any directory is made.
+    resolved = [
+        (_resolved(change[0], len(change) > 2 and change[2]), change[1])
+        for change in changes
+    ]
     try:
-        for path, data in changes:
-            path = _resolved(path)
+        for path, data in resolved:
             if path in seen:
                 raise ValueError("transaction contains a duplicate target")
             seen.add(path)
@@ -721,7 +739,7 @@ def profile_sync():
             cc_settings, desired_profile_widget(target)
         )
         changes.append(
-            (cc_path, json.dumps(cc_updated, indent=2, ensure_ascii=False) + "\n")
+            (cc_path, json.dumps(cc_updated, indent=2, ensure_ascii=False) + "\n", True)
         )
     atomic_write_many(changes)
     if provider == "legacy":
@@ -810,15 +828,15 @@ def apply_config():
     changes = [(target["rollback"], rollback_text)]
     changes.extend(profile_bundle_changes(target, include_renderer=manage_claude))
     if codex_text != codex_updated:
-        changes.append((target["codex"], codex_updated))
+        changes.append((target["codex"], codex_updated, True))
     if manage_claude and current_claude != desired_c:
         claude["statusLine"] = desired_c
         changes.append(
-            (target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
+            (target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n", True)
         )
     if provider == "ccstatusline" and cc_updated != cc_settings:
         changes.append(
-            (cc_path, json.dumps(cc_updated, indent=2, ensure_ascii=False) + "\n")
+            (cc_path, json.dumps(cc_updated, indent=2, ensure_ascii=False) + "\n", True)
         )
     atomic_write_many(changes)
     if manage_claude:
@@ -945,12 +963,16 @@ def restore_config():
                     claude["statusLine"] = previous.get("value")
                 else:
                     claude.pop("statusLine", None)
-                atomic_write(target["claude"], json.dumps(claude, indent=2, ensure_ascii=False) + "\n")
+                atomic_write(
+                    target["claude"],
+                    json.dumps(claude, indent=2, ensure_ascii=False) + "\n",
+                    follow=True,
+                )
             else:
                 skipped.append("Claude setting changed after apply")
 
         if read_codex_status(codex_text) == tuple(rollback["applied"]["codex"]):
-            atomic_write(target["codex"], restore_codex_status(codex_text, rollback["previous"]["codex"]))
+            atomic_write(target["codex"], restore_codex_status(codex_text, rollback["previous"]["codex"]), follow=True)
         else:
             skipped.append("Codex setting changed after apply")
         if rollback.get("managed", {}).get("ccstatusline"):
@@ -968,6 +990,7 @@ def restore_config():
                 atomic_write(
                     cc_path,
                     (json.dumps(restored_cc, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
+                    follow=True,
                 )
         if skipped:
             print("not restored: " + "; ".join(skipped))

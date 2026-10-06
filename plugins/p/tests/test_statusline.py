@@ -478,6 +478,44 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertEqual(json.loads(claude_target.read_text("utf-8")), {"theme": "dark"})
             self.assertNotIn("status_line", codex_target.read_text("utf-8"))
 
+    def test_a_link_planted_at_a_rollback_or_bundle_path_is_refused(self):
+        if os.name == "nt":
+            self.skipTest("symbolic links need privileges on Windows")
+        for planted in (
+            Path("state") / "rollback-v1.json",
+            Path("install") / "claude-statusline.py",
+        ):
+            with self.subTest(planted=str(planted)), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.make_env(root)
+                victim = root / "victim.txt"
+                victim.write_text("untouched\n", "utf-8")
+                link = root / planted
+                link.parent.mkdir(parents=True)
+                link.symlink_to(victim)
+                result = self.run_ctl("apply", env)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(victim.read_text("utf-8"), "untouched\n")
+                self.assertTrue(link.is_symlink())
+                self.assertFalse(Path(env["STATUSLINE_CLAUDE_SETTINGS"]).exists())
+                self.assertFalse(Path(env["STATUSLINE_CODEX_CONFIG"]).exists())
+
+    def test_a_dangling_settings_link_is_refused_and_creates_nothing(self):
+        if os.name == "nt":
+            self.skipTest("symbolic links need privileges on Windows")
+        for key in ("STATUSLINE_CLAUDE_SETTINGS", "STATUSLINE_CODEX_CONFIG"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.make_env(root)
+                missing = root / "dot" / "missing"
+                missing.parent.mkdir()
+                Path(env[key]).symlink_to(missing)
+                result = self.run_ctl("apply", env)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertFalse(missing.exists())
+                self.assertFalse((root / "state").exists())
+                self.assertFalse((root / "install").exists())
+
     def test_a_malformed_rollback_file_exits_two_without_a_traceback(self):
         for body in (
             {"schema": 2, "applied": "x"},
