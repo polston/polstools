@@ -64,9 +64,21 @@ launch() {
 }
 
 if [ "${POLSTOOLS_SINGLE_START:-}" = 1 ]; then
-  # One read of all of stdin; the sentinel keeps trailing newlines.
-  hook_input=$(cat; printf x)
-  hook_input=${hook_input%x}
+  if command -v cat >/dev/null 2>&1; then
+    # One read of all of stdin, linear in its size; the sentinel keeps
+    # trailing newlines.
+    hook_input=$(cat; printf x)
+    hook_input=${hook_input%x}
+  else
+    # No cat on PATH: shell builtins only, slower on very long input.
+    hook_input=
+    newline='
+'
+    while IFS= read -r line; do
+      hook_input=$hook_input$line$newline
+    done
+    hook_input=$hook_input$line
+  fi
 fi
 
 python_override=$(shell_path "${POLSTOOLS_PYTHON:-}")
