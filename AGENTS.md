@@ -51,7 +51,9 @@ substitution is silent, and nobody re-reads metadata.
   dependencies, no compiled artifacts. A tracked file is executable in the git
   index exactly when it starts with a shebang; `p-validate` enforces that.
   `format-gate` and `agy-format-hook` are shell on purpose: a hook must still
-  run, and report failure as exit 1, when no Python is installed.
+  run when no Python is installed. `format-gate` reports a failure as exit 1
+  with empty stdout; `agy-format-hook` always exits 0, prints `{}` and one line
+  on stderr.
 - `plugins/p/hooks/hooks.json` — hook wiring for Claude Code and Codex session
   events; both events enter through `bin/format-gate`, and commands reference
   plugin files via `${CLAUDE_PLUGIN_ROOT}`. Antigravity reads hooks only from
