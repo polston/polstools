@@ -94,6 +94,13 @@ class MutatedPackageTests(unittest.TestCase):
             self._errors(),
         )
 
+    def test_bare_skill_relative_references_are_checked_against_the_skill(self):
+        (self.plugin / "skills" / "fmt-on" / "scripts" / "toggle.py").unlink()
+        self.assertEqual(
+            ["skills/fmt-on/SKILL.md references missing plugin file scripts/toggle.py"],
+            self._errors(),
+        )
+
     def test_deleting_a_script_every_skill_calls_is_flagged(self):
         (self.plugin / "bin" / "skill-profile-ctl").unlink()
         errors = self._errors()

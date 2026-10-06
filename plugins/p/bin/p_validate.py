@@ -148,9 +148,12 @@ def _missing_references(text, plugin_root, skill_root):
     for prefix, slash, relative in PLUGIN_REFERENCE_RE.findall(text):
         if prefix == "`" and slash:
             continue
-        if prefix == "`" and not relative.startswith("bin/"):
+        skill_relative = relative.startswith(("scripts/", "references/"))
+        if prefix == "`" and not relative.startswith("bin/") and not (
+                skill_relative and skill_root != plugin_root):
             continue
-        base = skill_root if prefix == "<skill-root>" else plugin_root
+        base = skill_root if prefix == "<skill-root>" or (
+            prefix == "`" and skill_relative) else plugin_root
         if not (base / relative).exists():
             missing.add(relative)
     return sorted(missing)
