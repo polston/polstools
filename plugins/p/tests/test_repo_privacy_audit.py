@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -39,6 +40,12 @@ DETECTION_MATRIX = (
     ("host-lan.txt", "printer" + ".lan", "internal_hostname"),
     ("host-internal.txt", "db" + ".internal", "internal_hostname"),
     ("uuid.txt", "123e4567-" + "e89b-12d3-a456-426614174000", "uuid"),
+    ("uuid-hyphen-prefix.txt", "sess-" + "123e4567-" + "e89b-12d3-a456-426614174000",
+     "uuid"),
+    ("uuid-rollout.txt", "rollout-2025-05-07T17-24-21-" + "123e4567-"
+     + "e89b-12d3-a456-426614174000" + ".jsonl", "uuid"),
+    ("cred-aws-secret.txt", "aws_secret" + "_access_key = " + "A" * 40,
+     "credential"),
     ("email.txt", "someone" + "@" + "example.com", "email"),
     ("money.txt", "$" + "1234", "money_amount"),
     ("billing.txt", "subscription" + "Type", "account_billing_field"),
@@ -191,6 +198,58 @@ class DetectionTests(AuditCase):
         self.assertNotIn(self.root.resolve().as_posix(), result.stdout)
 
 
+class RobustnessTests(AuditCase):
+    def test_long_single_line_files_are_scanned_in_bounded_time(self):
+        # One line, no newline: an address-shaped run, a longer one, and a
+        # line with a trigger at every other byte.
+        self.write("a.txt", "a" * 20000 + "@" + "b" * 20000)
+        self.write("b.txt", "a" * 200000 + "@" + "b" * 200000)
+        self.write("c.txt", "$1" * 400000)
+        self.commit("long lines")
+        env = git_env()
+        env["LC_ALL"] = "C"
+
+        result = subprocess.run(
+            ["sh", str(AUDITOR), "-C", str(self.repo)], capture_output=True,
+            text=True, env=env, timeout=60)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_name_with_terminal_control_sequences_is_printed_inert(self):
+        name = "\x1b]0;title\x07\x1b[31m red.pem"
+        self.write(name, "x")
+        self.commit("hostile name")
+
+        result = self.audit()
+
+        self.assertNotIn("\x1b", result.stdout)
+        self.assertNotIn("\x07", result.stdout)
+        self.assertIn("red.pem", result.stdout)
+
+    def test_a_git_failure_does_not_echo_git_stderr(self):
+        stub_dir = self.root / "stub"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        secret_url = "https://" + "user:" + "tokq9z" + "@host.example/r.git"
+        stub.write_text(
+            "#!/bin/sh\n"
+            'case " $* " in *" log "*) echo "fatal: ' + secret_url
+            + '" >&2; exit 128;; esac\n'
+            'exec "' + shutil.which("git") + '" "$@"\n', encoding="utf-8")
+        stub.chmod(0o755)
+        self.commit("base")
+        env = git_env()
+        env["PATH"] = str(stub_dir) + os.pathsep + env["PATH"]
+
+        result = subprocess.run(
+            ["sh", str(AUDITOR), "-C", str(self.repo)], capture_output=True,
+            text=True, env=env)
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("tokq9z", result.stdout + result.stderr)
+        self.assertIn("git log failed", result.stderr)
+
+
 class PlacesTests(AuditCase):
     def test_commit_identity_email_is_accepted_and_counted(self):
         self.commit("ordinary commit")
@@ -226,6 +285,14 @@ class PlacesTests(AuditCase):
 
         result = self.audit()
 
+        self.assertEqual(self.rows(result.stdout)["email"][0], 1)
+
+    def test_trailer_shaped_subject_line_is_a_finding(self):
+        self.commit("Co-Authored-By: A <" + self.email("leak") + ">")
+
+        result = self.audit()
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(self.rows(result.stdout)["email"][0], 1)
 
     def test_commit_message_email_remains_a_finding(self):

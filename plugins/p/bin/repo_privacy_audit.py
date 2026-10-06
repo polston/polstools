@@ -62,12 +62,17 @@ def lit(*words):
     return tuple(re.escape(w) for w in words)
 
 
-_EMAIL = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+# The lookbehind lets a match start only at the head of a run of local-part
+# characters, and the domain is bounded, so one line of any length costs a
+# linear scan rather than one per character.
+_EMAIL = (r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@"
+          r"[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}")
 
 _CREDENTIAL = "|".join((
     r"gh[pousr]_[A-Za-z0-9]{36,255}",
     r"github_pat_[A-Za-z0-9_]{22,255}",
     r"\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b",
+    r"(?i:aws_?secret_?access_?key)[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}",
     r"\bsk-ant-[A-Za-z0-9_-]{20,}",
     r"\bsk-(?:proj-|svcacct-|admin-)?(?=[A-Za-z_-]*[0-9])[A-Za-z0-9_-]{20,}",
     r"\bxox[abprse]-[A-Za-z0-9-]{10,}",
@@ -81,12 +86,13 @@ _CREDENTIAL = "|".join((
     r"(?i:authorization)[\"']?\s*[:=]\s*[\"']?(?i:bearer|basic|token)\s+"
     r"[A-Za-z0-9._~+/=-]{12,}",
     r"(?i:\bbearer)\s+[A-Za-z0-9._~+/-]{20,}",
-    r"\b[a-z][a-z0-9+.-]*://[^\s/:@\"'<>${}]+:[^\s/@\"'<>${}]+@[A-Za-z0-9.-]+",
+    r"\b[a-z][a-z0-9+.-]{0,30}://[^\s/:@\"'<>${}]+:[^\s/@\"'<>${}]+@[A-Za-z0-9.-]+",
 ))
 _CREDENTIAL_TRIGGERS = lit(
     "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "akia", "asia",
     "abia", "acca", "sk-", "xox", "hooks.slack", "private " "key", "aiza",
     "k_live_", "npm_", "glpat-", "eyj", "authorization", "bearer", "://",
+    "aws",
 )
 
 _SEP = r"(?:\\|/|%5[Cc]|%2[Ff])+"
@@ -124,7 +130,7 @@ _HOSTNAME = (
     r"(?i:local|lan|internal|localdomain|home\.arpa)"
     r"(?![A-Za-z0-9_(-]|\.[A-Za-z0-9])"
 )
-# What someone spent or is billed is confidential, and identity-shaped patterns
+# Dollar amounts only. What someone spent or is billed is confidential, and identity-shaped patterns
 # are structurally blind to it. Thresholded at a thousand so small published
 # per-token list rates do not bury a four-figure total.
 _MONEY = r"\$[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{2})?|\$[0-9]{4,}(?:\.[0-9]{2})?"
@@ -136,9 +142,9 @@ _BILLING = (
 )
 # Session, account and device ids. The nil UUID is a placeholder, not an id.
 _UUID = (
-    r"(?<![0-9A-Fa-f-])(?!0{8}-0{4}-0{4}-0{4}-0{12})"
+    r"(?<![0-9A-Fa-f])(?!0{8}-0{4}-0{4}-0{4}-0{12})"
     r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}"
-    r"-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
+    r"-[0-9A-Fa-f]{12}(?![0-9A-Fa-f])"
 )
 _SECRETISH = (
     r"(?i:password|passwd|secret|api[_-]?key|access[_-]?token|bearer|webhook)"
@@ -227,12 +233,19 @@ def scan(data, categories):
         else:
             tried = set()
             for trigger in cat.triggers:
-                for m in trigger.finditer(low):
+                # Resume after the line just tried: a long line holding many
+                # trigger hits is looked up once, not once per hit.
+                pos = 0
+                while True:
+                    m = trigger.search(low, pos)
+                    if m is None:
+                        break
                     a = data.rfind(b"\n", 0, m.start()) + 1
+                    b = data.find(b"\n", m.start())
+                    pos = b + 1 if b >= 0 else len(data) + 1
                     if a in tried:
                         continue
                     tried.add(a)
-                    b = data.find(b"\n", m.start())
                     line = data[a:b if b >= 0 else len(data)]
                     if cat.precise.search(line.decode("utf-8", "replace")):
                         lines.add(a)
@@ -318,8 +331,10 @@ class Git:
             input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=self.env)
         if proc.returncode != 0:
-            raise CannotRun("git %s failed: %s" % (
-                args[0], proc.stderr.decode("utf-8", "replace").strip()))
+            # Not git's own message: a partial clone's lazy fetch error can
+            # carry the remote URL, credentials included, into a CI log.
+            raise CannotRun("git %s failed (exit status %d)" % (
+                args[0], proc.returncode))
         return proc.stdout
 
     def blobs(self, shas):
@@ -463,7 +478,10 @@ def main(argv):
         body = log[k + 2].rstrip(b"\n")
         found = scan(body, categories)
         if "email" in found:
-            last_para = body.rfind(b"\n\n") + 2 if b"\n\n" in body else 0
+            # A subject line is never a trailer, so a body with no blank line
+            # has no trailer paragraph at all.
+            last_para = (body.rfind(b"\n\n") + 2 if b"\n\n" in body
+                         else len(body) + 1)
             for offset in sorted(found["email"]):
                 end = body.find(b"\n", offset)
                 line = body[offset:end if end >= 0 else len(body)]
@@ -584,7 +602,9 @@ def main(argv):
         for cat in categories:
             if cat.precise.search(location):
                 return "<name withheld: it matches %s>" % cat.name
-        return location
+        # A name is attacker-controlled bytes: no escape sequence reaches the
+        # terminal.
+        return re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", location)
 
     print("repo-privacy-audit")
     print("commits: %d   blobs: %d   index and working-tree files: %d"

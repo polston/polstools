@@ -91,10 +91,10 @@ The auditor's categories cover the mechanical shapes of these: email,
 credential (token formats, private-key blocks, authorization headers,
 passwords in URLs), Windows and Unix home paths in raw, JSON-escaped and
 percent-encoded forms, private IPv4 and IPv6 ranges, MAC addresses,
-private-use hostnames, UUIDs, money amounts and billing fields. `-k` adds
-`password=`-style assignments, off by default because configuration code
-matches it legitimately. Real names, another project's name and a bare
-password do not have a shape: pass them with `-p`, and read the rest.
+private-use hostnames, UUIDs, dollar amounts of a thousand or more and
+billing fields. `-k` adds `password=`-style assignments, off by default
+because configuration code matches it legitimately. Real names, another
+project's name and a bare password do not have a shape: pass them with `-p`, and read the rest.
 
 There is no allowlist. A committed list of accepted values is a place to hide a
 real one, and a pattern that keeps hitting legitimate content is fixed in the
