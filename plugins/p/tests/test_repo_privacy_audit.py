@@ -205,6 +205,9 @@ class RobustnessTests(AuditCase):
         self.write("a.txt", "a" * 20000 + "@" + "b" * 20000)
         self.write("b.txt", "a" * 200000 + "@" + "b" * 200000)
         self.write("c.txt", "$1" * 400000)
+        # Every start of a key prefix has a run of key characters to look
+        # through for a digit.
+        self.write("d.txt", "sk-" * 100000)
         self.commit("long lines")
         env = git_env()
         env["LC_ALL"] = "C"

@@ -74,7 +74,10 @@ _CREDENTIAL = "|".join((
     r"\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b",
     r"(?i:aws_?secret_?access_?key)[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}",
     r"\bsk-ant-[A-Za-z0-9_-]{20,}",
-    r"\bsk-(?:proj-|svcacct-|admin-)?(?=[A-Za-z_-]*[0-9])[A-Za-z0-9_-]{20,}",
+    # The digit lookahead is bounded: unbounded, every "sk-" start on a long
+    # line rescanned the rest of the line.
+    r"\bsk-(?:proj-|svcacct-|admin-)?(?=[A-Za-z_-]{0,255}[0-9])"
+    r"[A-Za-z0-9_-]{20,}",
     r"\bxox[abprse]-[A-Za-z0-9-]{10,}",
     r"hooks\.slack\.com/services/T[A-Za-z0-9]+/",
     "-----BEGIN[ A-Z0-9]*" "PRIVATE " "KEY(?: BLOCK)?-----",
