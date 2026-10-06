@@ -3,8 +3,8 @@
 
 Enforcement model: activation is a cooperative gate, not a sandbox. Every
 governed SKILL.md and command runs `skill-profile-ctl check <name>` before
-acting and stops when it exits 1 or 2; neither Claude Code nor Codex blocks a
-skill that skips that step, and no hook enforces it. In Codex, the optional
+acting and stops when it exits 1 or 2; no harness blocks a skill that skips
+that step, and no hook enforces it. In Codex, the optional
 `sync-native` adapter additionally hides disabled skills from the catalog of
 sessions started afterwards. Claude Code has no per-skill catalog control.
 
