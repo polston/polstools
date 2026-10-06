@@ -3,9 +3,9 @@
 
 Checks package metadata, installed versions, enabled state, obsolete polstools
 plugin IDs in each harness's plugin list and Codex's config, installed file
-content, the skill-activation policy, and the exact hook commands of every
-harness with a p hook contract. Output never includes installation paths or
-raw command stderr.
+content, the skill-activation policy, the statusline bundle, and the exact
+hook commands of every harness with a p hook contract. Output never includes
+installation paths or raw command stderr.
 
 Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
 not complete an available harness check.
@@ -672,6 +672,20 @@ def _run_plugin_tool(argv, runner):
     return int(getattr(completed, "returncode", 2))
 
 
+def statusline_checks(plugin_root=PLUGIN_ROOT, runner=subprocess.run):
+    code = _run_plugin_tool(
+        [sys.executable, "-B", str(Path(plugin_root) / "bin" / "statusline-ctl"), "check"], runner
+    )
+    if code == 0:
+        return [Check("statusline", "PASS", "the p statusline bundle matches this plugin, or p does not manage it")]
+    if code == 1:
+        return [Check(
+            "statusline", "FAIL", "the installed p statusline bundle has drifted from this plugin",
+            "Run the statusline-check skill, then the statusline-apply skill if it confirms drift.",
+        )]
+    return [Check("statusline", "ERROR", "the statusline bundle could not be checked")]
+
+
 def activation_checks(plugin_root=PLUGIN_ROOT, runner=subprocess.run):
     code = _run_plugin_tool(
         [sys.executable, "-B", str(Path(plugin_root) / "bin" / "skill-profile-ctl"), "validate"], runner
@@ -832,6 +846,7 @@ def collect(repo_root=None):
     if roots:
         checks.extend(content_checks(roots, repo_root))
     checks.extend(activation_checks())
+    checks.extend(statusline_checks())
     return override_version or self_version, checks
 
 

@@ -320,6 +320,7 @@ class FakeHarnessDoctorTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.fake = FakeHarness(self._tmp.name)
         self.doctor.RUN = self.fake
+        self.doctor.statusline_checks = lambda *a, **k: []
         self.doctor.activation_checks = lambda *a, **k: []
 
     def tearDown(self):
@@ -407,6 +408,7 @@ class CodexInstalledRootTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.fake = FakeHarness(self._tmp.name)
         self.doctor.RUN = self.fake
+        self.doctor.statusline_checks = lambda *a, **k: []
         self.doctor.activation_checks = lambda *a, **k: []
         self.version = self.doctor._manifest_version()
         self.source = Path(self._tmp.name) / "source" / "p"
@@ -558,6 +560,16 @@ class ContentAndConfigTests(unittest.TestCase):
                 self.assertEqual([status], [check.status for check in checks])
         self.assertEqual("validate", seen[0][-1])
         self.assertEqual(Path("fixture-root") / "bin" / "skill-profile-ctl", Path(seen[0][-2]))
+
+    def test_statusline_check_exit_codes_map_to_check_status(self):
+        class Result:
+            def __init__(self, code):
+                self.returncode = code
+
+        for code, status in ((0, "PASS"), (1, "FAIL"), (2, "ERROR")):
+            with self.subTest(code=code):
+                checks = self.doctor.statusline_checks(runner=lambda *a, **k: Result(code))
+                self.assertEqual([status], [check.status for check in checks])
 
     def test_a_third_harness_hook_contract_plugs_into_the_probe(self):
         captured = []
