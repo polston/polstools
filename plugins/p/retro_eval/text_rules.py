@@ -270,6 +270,8 @@ def content_text(content, block_types, bare_strings=False, skipped=None):
                 inner = block.get("content")
                 if isinstance(inner, str):
                     parts.append(inner)
+                elif inner is not None and skipped is not None:
+                    skipped["bad_text"] += 1
             else:
                 parts.append(block.get("text") or "")
     good = [p for p in parts if isinstance(p, str)]
@@ -288,13 +290,15 @@ def text_of(message, skipped=None):
     return "\n".join(p for p in parts if p)
 
 
-def prose_of(message):
+def prose_of(message, skipped=None):
     """A message's text blocks only.
 
     Deliberately not text_of(), which also flattens tool_result bodies into the
     string. That is right for quoting a turn and wrong for asking whether the
     agent itself said anything: a transcript that merely read a file mentioning
     the interrupt marker would otherwise read as interrupted.
+
+    A non-string text piece is dropped and tallied like content_text's.
     """
     if not isinstance(message, dict):
         return ""
@@ -303,5 +307,9 @@ def prose_of(message):
         return content
     if not isinstance(content, list):
         return ""
-    return "\n".join(block.get("text") or "" for block in content
-                     if isinstance(block, dict) and block.get("type") == "text")
+    parts = [block.get("text") or "" for block in content
+             if isinstance(block, dict) and block.get("type") == "text"]
+    good = [p for p in parts if isinstance(p, str)]
+    if skipped is not None and len(good) != len(parts):
+        skipped["bad_text"] += len(parts) - len(good)
+    return "\n".join(good)

@@ -704,7 +704,7 @@ def measure(path, harness="claude", root=None):
                     m["repeat_calls"] += 1
                 seen_sigs.add(key)
         elif rtype == "user":
-            body = text_of(rec.get("message") or {})
+            body = text_of(rec.get("message") or {}, skipped)
             # Gate before classifying. Roughly 50,000 of 59,000 user records are
             # written by a tool or the harness, and flattening then classifying
             # each one only to discard the answer was 8% of a rebuild.

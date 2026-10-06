@@ -96,6 +96,17 @@ class WrongTypedFields(Sandbox):
         bad["message"]["content"][0]["text"] = 7
         self.assert_survives(bad, "bad_text")
 
+    def test_user_text_as_number(self):
+        bad = claude_user("x", NOW + timedelta(seconds=2))
+        bad["message"]["content"][0]["text"] = 7
+        self.assert_survives(bad, "bad_text")
+
+    def test_user_tool_result_body_not_a_string(self):
+        bad = claude_user("x", NOW + timedelta(seconds=2))
+        bad["message"]["content"] = [
+            {"type": "tool_result", "tool_use_id": "t1", "content": 7}]
+        self.assert_survives(bad, "bad_text")
+
     def test_unexpected_exception_is_one_line_exit_2(self):
         retro = _load("retro_main_under_test", "retro.py")
         err = io.StringIO()
