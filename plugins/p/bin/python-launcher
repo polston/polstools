@@ -64,19 +64,19 @@ launch() {
 }
 
 if [ "${POLSTOOLS_SINGLE_START:-}" = 1 ]; then
-  hook_input=
-  newline='
-'
-  while IFS= read -r line; do
-    hook_input=$hook_input$line$newline
-  done
-  hook_input=$hook_input$line
+  # One read of all of stdin; the sentinel keeps trailing newlines.
+  hook_input=$(cat; printf x)
+  hook_input=${hook_input%x}
 fi
 
 python_override=$(shell_path "${POLSTOOLS_PYTHON:-}")
-if [ -n "$python_override" ] && [ -x "$python_override" ]; then
-  launch 1 "$python_override" "$@"
-  echo "python-launcher: POLSTOOLS_PYTHON is not Python 3.9 or newer; searching PATH" >&2
+if [ -n "$python_override" ]; then
+  if [ -x "$python_override" ]; then
+    launch 1 "$python_override" "$@"
+    echo "python-launcher: POLSTOOLS_PYTHON is not Python 3.9 or newer; searching PATH" >&2
+  else
+    echo "python-launcher: POLSTOOLS_PYTHON is not an executable file; searching PATH" >&2
+  fi
 fi
 
 # Every PATH entry, not only the first match: a stub that shadows a real
@@ -122,9 +122,25 @@ if [ -n "$local_app_data" ]; then
 fi
 
 if command -v uv >/dev/null 2>&1; then
-  cache_base=$(shell_path "${TMPDIR:-${TEMP:-/tmp}}")
-  UV_CACHE_DIR=${UV_CACHE_DIR:-${POLSTOOLS_UV_CACHE:-$cache_base/polstools-uv-cache}}
-  export UV_CACHE_DIR
+  # uv keeps its own per-user cache unless one is named. A cache under the
+  # temp directory is used only when it is a real directory this user owns
+  # (created here with a private mode); a name someone else planted in a
+  # shared temp directory is never used.
+  if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR=${POLSTOOLS_UV_CACHE:-}
+    if [ -z "$UV_CACHE_DIR" ] && [ -n "${TMPDIR:-}" ]; then
+      cache_dir=$(shell_path "$TMPDIR")/polstools-uv-cache
+      mkdir -m 700 "$cache_dir" 2>/dev/null || :
+      if [ -d "$cache_dir" ] && [ ! -L "$cache_dir" ] && [ -O "$cache_dir" ]; then
+        UV_CACHE_DIR=$cache_dir
+      fi
+    fi
+  fi
+  if [ -n "$UV_CACHE_DIR" ]; then
+    export UV_CACHE_DIR
+  else
+    unset UV_CACHE_DIR
+  fi
   launch 0 uv run --no-project python "$@"
 fi
 
