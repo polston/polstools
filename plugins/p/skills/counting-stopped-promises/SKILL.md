@@ -104,9 +104,11 @@ opened: it cannot hold a record inside the window. The census counts it under
 
 A value that is empty or only whitespace counts as unset, so a misconfigured
 shell cannot redirect the walk. Both `.jsonl` and `.jsonl.gz` are read. The
-candidates file defaults into the system temporary directory and the tool
-refuses to write it inside a git work tree — it is the only file carrying
-message text, and it carries it redacted.
+candidates file defaults to `stopped-promises-candidates.txt` under
+`RETRO_HOME` (else `~/.retro`), created readable by the owner only, and the
+tool refuses to write it inside a git work tree — it is the only file carrying
+message text, and it carries it redacted. A run that cannot run writes no
+candidates file. The stderr line names the file's path.
 
 Exit codes follow the other scripts here: `0` every candidate has a verdict,
 `1` some are unreviewed or coverage is partial, `2` could not run.

@@ -641,7 +641,27 @@ def score(candidates, verdicts, turn_ends_total):
 # --- Reporting -------------------------------------------------------------
 
 def default_candidates_path():
-    return Path(tempfile.gettempdir()) / "stopped-promises-candidates.txt"
+    """The operator's private work directory, the one the sibling uses for
+    every file that quotes a conversation: RETRO_HOME, else ~/.retro. Never
+    the system temp directory, which is shared on a multi-user machine and
+    whose path the redactor cannot render in a form anyone could open."""
+    work = (os.environ.get("RETRO_HOME") or "").strip()
+    base = Path(work).expanduser() if work else Path.home() / ".retro"
+    return base / "stopped-promises-candidates.txt"
+
+
+def display_path(path):
+    """A path the operator can open, with only the home prefix collapsed.
+
+    redact() turns any absolute path outside home into "<path>", which made the
+    one line saying where the message text went useless. Every path printed
+    here is one the operator chose (an argument or RETRO_HOME), so the account
+    name inside home is the only part worth hiding.
+    """
+    text, home = str(path), str(Path.home())
+    if text == home or text.startswith(home + os.sep):
+        return "~" + text[len(home):]
+    return text
 
 
 def refuse_if_in_repo(path):
@@ -655,6 +675,8 @@ def refuse_if_in_repo(path):
 
 
 def write_candidates(path, candidates, meta):
+    """Owner-only: the file quotes the operator's conversations."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     lines = [
         "# stopped-promise candidates - UNVERIFIED",
         "#",
@@ -669,7 +691,10 @@ def write_candidates(path, candidates, meta):
     ]
     for candidate in candidates:
         lines.append(f"{candidate.id}  {(candidate.timestamp or '')[:10]}  ...{candidate.tail}")
-    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(path, 0o600)   # O_CREAT's mode does not apply to an existing file
 
 
 def _session_in_window(records, since, until):
@@ -841,13 +866,6 @@ def main(argv=None):
     window = f"{args.since or 'start'}..{args.until or 'now'}"
     path = Path(args.candidates) if args.candidates else default_candidates_path()
     refuse_if_in_repo(path)
-    try:
-        write_candidates(path, candidates, {"classifier": _classifier_version(),
-                                            "window": window})
-    except OSError as exc:
-        print(f"cannot write candidates file: {type(exc).__name__}", file=sys.stderr)
-        return EXIT_CANNOT_RUN
-    print(f"candidates written to {redact(str(path))}", file=sys.stderr)
 
     payload = {"classifier": _classifier_version(), "window": window,
                "census": report["census"], "counts": report["counts"],
@@ -870,17 +888,27 @@ def main(argv=None):
 
     census = report["census"]
     if not report["counts"]["ended_by_speaker"]:
+        # Nothing was measured, so nothing is written: a file of zero
+        # candidates beside an exit 2 reads as a result.
         status = EXIT_CANNOT_RUN
         payload["coverage"]["status"] = "cannot_run"
         print("no eligible main-thread turn ends in the selected window", file=sys.stderr)
-    elif (census["files_unsupported"] or census["files_unreadable"]
-          or census["files_unknown_window"] or complaints):
-        status = EXIT_FLAGGED
-        payload["coverage"]["status"] = "partial"
-        print("partial coverage: unsupported, unreadable, or unscoped inputs were excluded",
-              file=sys.stderr)
     else:
-        payload["coverage"]["status"] = "supported"
+        try:
+            write_candidates(path, candidates, {"classifier": _classifier_version(),
+                                                "window": window})
+        except OSError as exc:
+            print(f"cannot write candidates file: {type(exc).__name__}", file=sys.stderr)
+            return EXIT_CANNOT_RUN
+        print(f"candidates written to {display_path(path)}", file=sys.stderr)
+        if (census["files_unsupported"] or census["files_unreadable"]
+                or census["files_unknown_window"] or complaints):
+            status = EXIT_FLAGGED
+            payload["coverage"]["status"] = "partial"
+            print("partial coverage: unsupported, unreadable, or unscoped inputs "
+                  "were excluded", file=sys.stderr)
+        else:
+            payload["coverage"]["status"] = "supported"
 
     if args.json:
         print(json.dumps(payload, indent=2))
