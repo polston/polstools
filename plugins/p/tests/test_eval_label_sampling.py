@@ -225,9 +225,12 @@ class RequestedSourceTests(unittest.TestCase):
                  "antigravity": self.base / "agy"}
         roots.update({name: self.base / path for name, path in overrides.items()})
         work = self.base / "work"
+        # Extraction refuses a root with no included trace, so the snapshot
+        # holds only the populated sources; sample is still asked for them all.
         root_args = []
         for name, path in roots.items():
-            root_args += ["--root", "%s=%s" % (name, path)]
+            if path.name not in ("empty", "silent"):
+                root_args += ["--root", "%s=%s" % (name, path)]
         extracted = subprocess.run(
             ["sh", str(LAUNCHER), "-B",
              str(PLUGIN_ROOT / "bin" / "retro-eval-extract"),

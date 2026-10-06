@@ -36,19 +36,32 @@ class WorkStore:
         if _inside_repository(self.root):
             raise ValueError("evaluation work directory must be outside a repository")
 
-    def id_salt(self) -> bytes:
-        self.root.mkdir(parents=True, exist_ok=True)
+    def id_salt(self, persist: bool = True) -> bytes:
+        """Return the work directory's salt, minting one if none exists.
+
+        With persist=False nothing is written; the caller stores the value with
+        keep_id_salt once it knows the run will produce output.
+        """
         path = self.root / "id-salt.bin"
         try:
             value = path.read_bytes()
         except OSError:
             value = os.urandom(32)
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(value)
+            if persist:
+                self.keep_id_salt(value)
         if len(value) != 32:
             raise ValueError("local id salt must be exactly 32 bytes")
         return value
+
+    def keep_id_salt(self, value: bytes) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(self.root / "id-salt.bin",
+                                 os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(value)
 
     def public_metadata(self) -> dict[str, object]:
         return {"work_format": 1, "ids": "installation-scoped keyed hashes"}
@@ -128,7 +141,7 @@ class EvaluationPipeline:
                          if not Path(path).is_dir())
         if missing:
             raise ValueError("source root is not a directory: %s" % ", ".join(missing))
-        salt = self.work.id_salt()
+        salt = self.work.id_salt(persist=False)
         adapter_options = {name: dict(value)
                            for name, value in (adapter_options or {}).items()}
         if exclude_session_ids:
@@ -222,6 +235,13 @@ class EvaluationPipeline:
             if instruction_coverage["unresolved"]:
                 raise ValueError("evaluated sessions fall outside manifest coverage")
 
+        empty = sorted(name for name, counts in sources.items()
+                       if not counts["included"])
+        if empty:
+            raise ValueError(
+                "no included trace from requested source root: %s; "
+                "nothing was written" % ", ".join(empty))
+        self.work.keep_id_salt(salt)
         self.trace_store.write(all_records)
         summary = ExtractionSummary(
             included_traces=included_total,

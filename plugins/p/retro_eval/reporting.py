@@ -241,6 +241,9 @@ def main(argv=None):
     report = run_deterministic_report(
         args.work_dir, created_commit=args.created_commit,
         dataset_id=args.dataset_id)
+    if not report["manifest"]["traces"]:
+        raise ValueError("the snapshot has no traces; extract again with source "
+                         "roots that contain sessions")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
                            encoding="utf-8")

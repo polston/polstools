@@ -30,7 +30,10 @@ Every `retro-eval-*` command uses the plugin's exit-code convention: 0 ran
 clean and flagged nothing, 1 ran clean and flagged something (for example a
 taxonomy assessment that is not ready), 2 could not run. A missing source root,
 an unregistered source name, an abbreviated commit, or an input that yields no
-cases is a 2 with one `error:` line, never an empty success.
+cases is a 2 with one `error:` line, never an empty success. For `retro-eval-extract`
+that includes any requested source root that yields no included trace: nothing is
+written and the previous snapshot is left as it was. `retro-eval-report` refuses a
+snapshot with no traces.
 
 ## Architecture
 

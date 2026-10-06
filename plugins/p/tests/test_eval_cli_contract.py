@@ -115,6 +115,46 @@ class CliContractTests(unittest.TestCase):
         payload = json.loads(report.read_text(encoding="utf-8"))
         self.assertEqual(FULL_COMMIT, payload["dataset_manifest"]["created_commit"])
 
+    def snapshot_files(self):
+        return {path.name: path.read_bytes() for path in sorted(self.work.iterdir())}
+
+    def test_extract_refuses_a_root_with_no_sessions_and_keeps_the_snapshot(self):
+        self.assertEqual(0, self.extract().returncode)
+        before = self.snapshot_files()
+        self.assertTrue(before["traces.jsonl"])
+        wrong = self.base / "one-level-off"
+        wrong.mkdir()
+        completed = run_cli("retro-eval-extract", "--work-dir", self.work,
+                            "--root", "claude=%s" % (self.base / "claude"),
+                            "--root", "codex=%s" % wrong)
+        self.assertCannotRun(completed)
+        self.assertIn("codex", completed.stderr)
+        self.assertEqual(before, self.snapshot_files())
+
+    def test_extract_refuses_a_root_whose_sessions_are_all_excluded(self):
+        completed = self.extract("--exclude-session-id", "s0",
+                                 "--exclude-session-id", "s1")
+        self.assertCannotRun(completed)
+        self.assertIn("claude", completed.stderr)
+        self.assertFalse(self.work.exists())
+
+    def test_extract_into_a_new_work_dir_writes_nothing_when_a_root_is_empty(self):
+        wrong = self.base / "one-level-off"
+        wrong.mkdir()
+        self.assertCannotRun(run_cli("retro-eval-extract", "--work-dir", self.work,
+                                     "--root", "claude=%s" % wrong))
+        self.assertFalse(self.work.exists())
+
+    def test_report_refuses_a_snapshot_with_no_traces(self):
+        self.assertEqual(0, self.extract().returncode)
+        (self.work / "traces.jsonl").write_text("", encoding="utf-8")
+        report = self.base / "out" / "report.json"
+        completed = run_cli("retro-eval-report", "--work-dir", self.work,
+                            "--output", report, "--created-commit", FULL_COMMIT)
+        self.assertCannotRun(completed)
+        self.assertIn("no traces", completed.stderr)
+        self.assertFalse(report.exists())
+
     def test_abbreviated_commits_are_refused_by_both_commands(self):
         self.assertEqual(0, self.extract().returncode)
         completed = run_cli("retro-eval-report", "--work-dir", self.work,
