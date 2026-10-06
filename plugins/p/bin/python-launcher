@@ -56,18 +56,45 @@ shell_path() {
   printf '%s\n' "$value"
 }
 
+# The supported floor. Every candidate is probed before it is used, so a
+# Windows Store alias, a Python 2 "python", or an interpreter older than the
+# floor is skipped instead of failing the command.
+usable() {
+  # A positive answer is required: a stub that exits 0 for any arguments
+  # must not pass.
+  [ "$("$@" -S -E -c 'import sys; print("python-ok" if sys.version_info >= (3, 9) else "")' \
+    2>/dev/null)" = python-ok ]
+}
+
 python_override=$(shell_path "${POLSTOOLS_PYTHON:-}")
 if [ -n "$python_override" ] && [ -x "$python_override" ]; then
-  exec "$python_override" "$@"
+  if usable "$python_override"; then
+    exec "$python_override" "$@"
+  fi
+  echo "python-launcher: POLSTOOLS_PYTHON is not Python 3.9 or newer; searching PATH" >&2
 fi
 
+# Every PATH entry, not only the first match: a stub that shadows a real
+# interpreter must not hide it.
+set -f
+old_ifs=$IFS
+IFS=:
+search_path=$PATH
 for name in python3 python; do
-  if command -v "$name" >/dev/null 2>&1; then
-    exec "$name" "$@"
-  fi
+  for dir in $search_path; do
+    for candidate in "${dir:-.}/$name" "${dir:-.}/$name.exe"; do
+      if [ -f "$candidate" ] && [ -x "$candidate" ] && usable "$candidate"; then
+        IFS=$old_ifs
+        set +f
+        exec "$candidate" "$@"
+      fi
+    done
+  done
 done
+IFS=$old_ifs
+set +f
 
-if command -v py >/dev/null 2>&1; then
+if command -v py >/dev/null 2>&1 && usable py -3; then
   exec py -3 "$@"
 fi
 
@@ -77,14 +104,14 @@ app_data=$(shell_path "${APPDATA:-}")
 local_app_data=$(shell_path "${LOCALAPPDATA:-}")
 if [ -n "$app_data" ]; then
   for candidate in "$app_data"/uv/python/*/python.exe; do
-    if [ -x "$candidate" ]; then
+    if [ -x "$candidate" ] && usable "$candidate"; then
       exec "$candidate" "$@"
     fi
   done
 fi
 if [ -n "$local_app_data" ]; then
   for candidate in "$local_app_data"/Programs/Python/Python*/python.exe; do
-    if [ -x "$candidate" ]; then
+    if [ -x "$candidate" ] && usable "$candidate"; then
       exec "$candidate" "$@"
     fi
   done
