@@ -41,11 +41,22 @@ def _review_directory(value=None) -> Path:
     return directory.resolve()
 
 
+def _is_label_packet(raw) -> bool:
+    """retro-eval-labels sample packets carry no review round; they are
+    served by retro-eval-labels serve, not by this workflow."""
+    return (isinstance(raw, dict) and "review_round" not in raw
+            and "adaptive_sampling" not in raw and "sample_sha256" in raw)
+
+
 def _packet_states(review_dir: Path, split: str):
     packets = []
+    label_packets = []
     for manifest_path in sorted(review_dir.glob("*-manifest.json")):
         try:
             raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if _is_label_packet(raw):
+                label_packets.append(manifest_path.name)
+                continue
             if str(raw["split"]) != split:
                 continue
             rubric_id = str(raw["rubric_id"])
@@ -90,6 +101,11 @@ def _packet_states(review_dir: Path, split: str):
     packets.sort(key=lambda item: (
         item["round"], _RUBRIC_ORDER.get(item["rubric_id"], 99),
         item["source_name"]))
+    if not packets and label_packets:
+        raise ValueError(
+            "%s holds label packets (%s), not review packets; serve one with "
+            "retro-eval-labels serve --source <packet.csv> --manifest <manifest>"
+            % (review_dir.name, ", ".join(label_packets)))
     return packets
 
 

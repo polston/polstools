@@ -183,6 +183,18 @@ class LabelChainTests(unittest.TestCase):
         self.assertEqual(2, completed.returncode, completed.stderr)
         self.assertFalse((self.out / "empty.csv").exists())
 
+    def test_review_workflow_names_label_packets_instead_of_misreading_them(self):
+        self.assertEqual(0, self.sample().returncode)
+        for phase in ("calibration", "heldout"):
+            with self.subTest(phase=phase):
+                completed = subprocess.run(
+                    ["sh", str(LAUNCHER), "-B",
+                     str(PLUGIN_ROOT / "bin" / "retro-eval-review"), "status",
+                     "--review-dir", str(self.out), "--phase", phase],
+                    capture_output=True, text=True, timeout=120, env=self.env)
+                self.assertEqual(2, completed.returncode, completed.stderr)
+                self.assertIn("heldout-manifest.json", completed.stderr)
+
     def test_trace_sampling_requires_roots_and_salt(self):
         completed = self.labels("sample", "--traces", self.work / "traces.jsonl",
                                 "--output", self.out / "x.csv",
