@@ -96,6 +96,15 @@ class WrongTypedFields(Sandbox):
         bad["message"]["content"][0]["text"] = 7
         self.assert_survives(bad, "bad_text")
 
+    def test_stopped_promises_selftest_holds_for_any_home_basename(self):
+        for name in ("run", "a", "home", "h", "path", "data",
+                     "averylongaccountnamedirectory"):
+            home = self.userdir / name
+            home.mkdir()
+            self.env["HOME"] = str(home)
+            done = self.run_tool("stopped-promises.py", "--selftest")
+            self.assertEqual(0, done.returncode, (name, done.stdout[-400:]))
+
     def test_user_text_as_number(self):
         bad = claude_user("x", NOW + timedelta(seconds=2))
         bad["message"]["content"][0]["text"] = 7
@@ -154,10 +163,11 @@ class ControlCharacters(Sandbox):
             done = self.run_tool("cache_ttl.py", *argv)
             self.assert_clean(done.stdout + done.stderr, " ".join(argv))
 
-    def test_redact_strips_controls_in_both_copies(self):
+    def test_stopped_promises_uses_the_shared_control_stripper(self):
         sys.path.insert(0, str(PLUGIN_ROOT))
         from retro_eval import text_rules
         stopped = _load("stopped_redact_under_test", "stopped-promises.py")
+        self.assertIs(text_rules.strip_controls, stopped.strip_controls)
         for fn in (text_rules.redact, stopped.redact):
             out = fn("a\x1b]0;x\x07b\x9bc\x00d\tline\nend")
             self.assert_clean(out, fn.__module__)

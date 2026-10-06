@@ -36,6 +36,11 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+from retro_eval.text_rules import strip_controls  # noqa: E402
+
 SELFTESTS = []
 
 
@@ -233,11 +238,6 @@ def _redaction_patterns():
     return patterns
 
 
-# Terminal control characters (tab, newline and carriage return stay): a value
-# written to the candidates file or printed must not carry an escape sequence.
-_CONTROL_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
-
-
 def redact(text):
     """Strip machine-identifying and credential-shaped values.
 
@@ -246,7 +246,7 @@ def redact(text):
     """
     if not text:
         return ""
-    text = _CONTROL_CHARS.sub("?", str(text))
+    text = strip_controls(text)
     for pattern, replacement in _redaction_patterns():
         text = pattern.sub(replacement, text)
     return text
@@ -1081,9 +1081,15 @@ def test_redaction_leaves_the_rest_of_the_sentence_alone(tmp):
     silently emptied every candidate tail containing a path."""
     probe = "I will run it on " + "D:" + "/data" + " now and report the counts."
     out = redact(probe)
-    assert out.startswith("I will run it on "), out
-    assert out.endswith(" now and report the counts."), f"sentence tail eaten: {out}"
-    assert "data" not in out, f"path survived: {out}"
+    # The account-name rule may legitimately rewrite any ordinary word of the
+    # sentence when the home directory is named after it, so the expectation is
+    # the path-only redaction run through that same last rule.
+    expected = "I will run it on <path> now and report the counts."
+    account = Path.home().name
+    if len(account) > 2:
+        expected = re.sub(r"\b" + re.escape(account) + r"\b", "<user>", expected,
+                          flags=re.I)
+    assert out == expected, f"sentence not preserved around the path: {out}"
 
 
 @selftest_case
