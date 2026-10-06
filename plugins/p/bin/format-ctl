@@ -262,34 +262,26 @@ def resolve(session_id):
     return default_state()
 
 
-_CACHED_TELEMETRY_PATH = None
-_CACHED_RETRO_HOME = None
-
-
 def _telemetry_path():
-    global _CACHED_TELEMETRY_PATH, _CACHED_RETRO_HOME
+    """The owned hook-event log under RETRO_HOME, or "" when telemetry is off
+    or RETRO_HOME sits inside a Git checkout (telemetry never enters one).
+    gate() resolves it once per process and passes it to each event."""
     root = os.environ.get("RETRO_HOME")
     if not root:
         return ""
-    if root == _CACHED_RETRO_HOME and _CACHED_TELEMETRY_PATH is not None:
-        return _CACHED_TELEMETRY_PATH
-    _CACHED_RETRO_HOME = root
     resolved_root = os.path.abspath(root)
     current = resolved_root
     while True:
         if os.path.isdir(os.path.join(current, ".git")):
-            _CACHED_TELEMETRY_PATH = ""
             return ""
         parent = os.path.dirname(current)
         if parent == current:
             break
         current = parent
-    _CACHED_TELEMETRY_PATH = os.path.join(resolved_root, "telemetry", "owned-hook-events.jsonl")
-    return _CACHED_TELEMETRY_PATH
+    return os.path.join(resolved_root, "telemetry", "owned-hook-events.jsonl")
 
 
-def _emit_hook_event(base, event, **values):
-    path = _telemetry_path()
+def _emit_hook_event(path, base, event, **values):
     if not path:
         return
     payload = {**base, "event": event, "observed_at_ns": time.time_ns(), **values}
@@ -327,12 +319,13 @@ def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
         "trigger_kind": trigger_kind,
         "invocation_id": secrets.token_hex(12),
     }
-    _emit_hook_event(base, "opportunity")
-    _emit_hook_event(base, "start")
+    sink = _telemetry_path()
+    _emit_hook_event(sink, base, "opportunity")
+    _emit_hook_event(sink, base, "start")
     state, _ = resolve(hook_session_id())
     if state == "off":
         _emit_hook_event(
-            base, "end", status="disabled", latency_ms=max(
+            sink, base, "end", status="disabled", latency_ms=max(
                 0, (time.perf_counter_ns() - started) // 1_000_000),
             injected_bytes=0, content_sha256=hashlib.sha256(b"").hexdigest())
         return 0
@@ -343,13 +336,13 @@ def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
     except OSError as e:
         print("format-ctl: cannot read payload: %s" % e, file=sys.stderr)
         _emit_hook_event(
-            base, "end", status="missing_payload", latency_ms=max(
+            sink, base, "end", status="missing_payload", latency_ms=max(
                 0, (time.perf_counter_ns() - started) // 1_000_000),
             injected_bytes=0, content_sha256=hashlib.sha256(b"").hexdigest())
         return 1
     encoded = content.encode("utf-8")
     _emit_hook_event(
-        base, "end", status="ok", latency_ms=max(
+        sink, base, "end", status="ok", latency_ms=max(
             0, (time.perf_counter_ns() - started) // 1_000_000),
         injected_bytes=len(encoded),
         content_sha256=hashlib.sha256(encoded).hexdigest())

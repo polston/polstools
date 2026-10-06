@@ -152,6 +152,27 @@ class SessionStateTests(unittest.TestCase):
         self.assertEqual(len(list(self.state.iterdir())), 1)
 
 
+class TelemetryTests(unittest.TestCase):
+    def test_one_lifecycle_outside_a_checkout_and_none_inside_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = root / "payload.md"
+            payload.write_text("payload\n", encoding="utf-8")
+            outside = root / "retro"
+            inside = root / "checkout" / "retro"
+            (root / "checkout" / ".git").mkdir(parents=True)
+            for home in (outside, inside):
+                result = run_ctl(["gate", str(payload)], hermetic_env(
+                    root, P_FORMAT_DEFAULT="on", RETRO_HOME=str(home)),
+                    '{"session_id": "s"}')
+                self.assertEqual(result.stdout, "payload\n")
+            log = outside / "telemetry" / "owned-hook-events.jsonl"
+            events = [json.loads(line)["event"]
+                      for line in log.read_text("utf-8").splitlines()]
+            self.assertEqual(events, ["opportunity", "start", "end"])
+            self.assertFalse(inside.exists())
+
+
 class DefaultsFileTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
