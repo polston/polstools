@@ -49,6 +49,10 @@ ACTIVATION_PROFILE_SOURCE = PLUGIN_ROOT / "profiles" / "skill-activation-v1.json
 ROLLBACK_NAME = "rollback-v1.json"
 PROFILE_OWNER = "skill-activation-v1"
 PROFILE_WIDGET_ID = "p-skill-profile"
+RENDERER_INTERPRETERS = {
+    "pwsh", "pwsh.exe", "powershell", "powershell.exe",
+    "python", "python.exe", "python3", "python3.exe", "py", "py.exe",
+}
 
 
 def load_profile():
@@ -295,8 +299,19 @@ def desired_claude(renderer_path):
     return value
 
 
-def claude_provider(current, desired):
-    """Classify the configured Claude renderer without executing it."""
+def _same_file(left, right):
+    try:
+        return os.path.normcase(str(Path(left).resolve())) == os.path.normcase(str(Path(right).resolve()))
+    except (OSError, ValueError):
+        return False
+
+
+def claude_provider(current, desired, owned_renderers=()):
+    """Classify the configured Claude renderer without executing it.
+
+    "legacy" is a command an earlier release wrote: an interpreter running one
+    of this plugin's installed renderer copies, but not today's command.
+    """
     if current == desired:
         return "bundled"
     if current is None:
@@ -307,11 +322,23 @@ def claude_provider(current, desired):
     if not isinstance(command, str) or not command.strip():
         return "external"
     try:
-        argv = shlex.split(command, posix=os.name != "nt")
+        argv = [arg.strip('"') for arg in shlex.split(command, posix=os.name != "nt")]
     except ValueError:
         return "external"
-    executable = Path(argv[0].strip('"')).name.lower() if argv else ""
-    return "ccstatusline" if executable in {"ccstatusline", "ccstatusline.exe"} else "external"
+    executable = Path(argv[0]).name.lower() if argv else ""
+    if executable in {"ccstatusline", "ccstatusline.exe"}:
+        return "ccstatusline"
+    if (
+        len(argv) > 1
+        and executable in RENDERER_INTERPRETERS
+        and any(_same_file(argv[-1], owned) for owned in owned_renderers)
+    ):
+        return "legacy"
+    return "external"
+
+
+def owned_renderers(target):
+    return (target["renderer_py"], target["renderer_ps1"])
 
 
 def profile_command(label_path):
@@ -718,11 +745,13 @@ def profile_sync():
     claude = load_claude(target["claude"])
     desired_c = desired_claude(target["renderer"])
     current_claude = claude.get("statusLine")
-    provider = claude_provider(current_claude, desired_c)
-    if provider not in {"bundled", "ccstatusline"}:
+    provider = claude_provider(current_claude, desired_c, owned_renderers(target))
+    if provider not in {"bundled", "legacy", "ccstatusline"}:
         print("profile indicator not updated: Claude has no supported active renderer")
         return 1
-    changes = profile_bundle_changes(target, include_renderer=provider == "bundled")
+    changes = profile_bundle_changes(
+        target, include_renderer=provider in {"bundled", "legacy"}
+    )
     if provider == "ccstatusline":
         cc_path = ccstatusline_config_path(current_claude, target)
         cc_settings = load_ccstatusline(cc_path)
@@ -733,6 +762,12 @@ def profile_sync():
             (cc_path, json.dumps(cc_updated, indent=2, ensure_ascii=False) + "\n")
         )
     atomic_write_many(changes)
+    if provider == "legacy":
+        print(
+            "profile indicator synchronized; Claude still runs an earlier p "
+            "renderer command, run statusline-ctl sync to update it"
+        )
+        return 0
     print("profile indicator synchronized for Claude " + provider)
     return 0
 
@@ -744,7 +779,7 @@ def apply_config():
     codex_current = read_codex_status(codex_text)
     desired_c = desired_claude(target["renderer"])
     current_claude = claude.get("statusLine")
-    provider = claude_provider(current_claude, desired_c)
+    provider = claude_provider(current_claude, desired_c, owned_renderers(target))
     if provider == "external":
         print("not applied: Claude statusLine is externally managed; no settings changed")
         return 1
@@ -771,7 +806,13 @@ def apply_config():
         if manage_claude else None
     )
 
-    if manage_claude and previous_rollback and current_claude == desired_c:
+    previously_applied = (previous_rollback or {}).get("applied", {}).get("claude")
+    if (
+        manage_claude
+        and previous_rollback
+        and current_claude is not None
+        and current_claude in (desired_c, previously_applied)
+    ):
         claude_previous = previous_rollback["previous"]["claude"]
     if previous_rollback and codex_current == CODEX_STATUS_LINE:
         codex_previous = previous_rollback["previous"]["codex"]
@@ -834,8 +875,10 @@ def check_config():
     try:
         desired_c = desired_claude(target["renderer"])
         claude = load_claude(target["claude"])
-        provider = claude_provider(claude.get("statusLine"), desired_c)
-        if provider not in {"bundled", "ccstatusline"}:
+        provider = claude_provider(claude.get("statusLine"), desired_c, owned_renderers(target))
+        if provider == "legacy":
+            drift.append("Claude setting (renderer command from an earlier p release)")
+        elif provider not in {"bundled", "ccstatusline"}:
             drift.append("Claude setting")
         codex_text = target["codex"].read_text(encoding="utf-8-sig") if target["codex"].exists() else ""
         if read_codex_status(codex_text) != CODEX_STATUS_LINE:
@@ -845,7 +888,7 @@ def check_config():
             or target["renderer"].read_bytes() != RENDERER_SOURCE.read_bytes()
         ):
             drift.append("Claude renderer")
-        if provider in {"bundled", "ccstatusline"}:
+        if provider in {"bundled", "legacy", "ccstatusline"}:
             for destination, source in (
                 (target["profile_label"], PROFILE_LABEL_SOURCE),
                 (target["profile_lib"], ACTIVATION_LIB_SOURCE),

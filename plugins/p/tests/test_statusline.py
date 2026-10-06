@@ -83,6 +83,31 @@ class StatuslineUnitTests(unittest.TestCase):
             ],
         )
 
+    def test_claude_provider_recognizes_earlier_p_renderer_commands_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = Path(tmp) / "installed-v1"
+            installed.mkdir()
+            owned = (installed / "claude-statusline.py", installed / "claude-statusline.ps1")
+            for path in owned:
+                path.write_text("", "utf-8")
+            desired = {"type": "command", "command": "python3 \"" + owned[0].as_posix() + "\""}
+            ps1 = owned[1].as_posix()
+            cases = {
+                "pwsh -NoProfile -File \"" + ps1 + "\"": "legacy",
+                "powershell -NoProfile -ExecutionPolicy Bypass -File \"" + ps1 + "\"": "legacy",
+                "/usr/bin/python3 " + owned[0].as_posix(): "legacy",
+                "pwsh -NoProfile -File \"" + ps1 + "\" --extra": "external",
+                "bash -c \"pwsh -File " + ps1 + "\"": "external",
+                "pwsh -NoProfile -File \"" + str(Path(tmp) / "elsewhere.ps1") + "\"": "external",
+                "my-renderer \"" + ps1 + "\"": "external",
+            }
+            for command, expected in cases.items():
+                with self.subTest(command=command):
+                    self.assertEqual(
+                        self.ctl.claude_provider({"type": "command", "command": command}, desired, owned),
+                        expected,
+                    )
+
     def test_claude_provider_recognizes_only_direct_ccstatusline(self):
         desired = {"type": "command", "command": "bundled"}
         self.assertEqual(self.ctl.claude_provider(desired, desired), "bundled")
@@ -624,6 +649,86 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertIn("Codex (native footer)", result.stdout)
             self.assertIn("% left", result.stdout)
             self.assertNotIn("profile-marker", result.stdout)
+
+    def write_legacy_install(self, root, env):
+        """The state an earlier release left: a PowerShell command and its rollback."""
+        legacy = {
+            "type": "command",
+            "command": 'pwsh -NoProfile -File "'
+            + (Path(env["STATUSLINE_INSTALL_DIR"]) / "claude-statusline.ps1").resolve().as_posix()
+            + '"',
+        }
+        claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+        claude_path.write_text(json.dumps({"theme": "dark", "statusLine": legacy}, indent=2) + "\n", "utf-8")
+        Path(env["STATUSLINE_CODEX_CONFIG"]).write_text(
+            "[tui]\nstatus_line = " + json.dumps(list(self.ctl.CODEX_STATUS_LINE)) + "\n", "utf-8"
+        )
+        state = Path(env["STATUSLINE_STATE_DIR"])
+        state.mkdir(parents=True)
+        (state / "rollback-v1.json").write_text(
+            json.dumps(
+                {
+                    "schema": 2,
+                    "managed": {"claude": True, "codex": True, "ccstatusline": False},
+                    "applied": {"claude": legacy, "codex": list(self.ctl.CODEX_STATUS_LINE), "cc_widget": None},
+                    "previous": {
+                        "claude": {"present": False, "value": None},
+                        "codex": {"present": False, "raw": None, "sectionPresent": True},
+                        "cc_widgets": None,
+                    },
+                }
+            ),
+            "utf-8",
+        )
+        return claude_path, legacy
+
+    def test_earlier_p_renderer_command_is_reported_refreshed_and_upgraded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path, legacy = self.write_legacy_install(root, env)
+
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 1, checked.stderr)
+            self.assertIn("earlier p release", checked.stdout)
+
+            before = claude_path.read_bytes()
+            refreshed = self.run_ctl("profile-sync", env)
+            self.assertEqual(refreshed.returncode, 0, refreshed.stdout + refreshed.stderr)
+            self.assertEqual(claude_path.read_bytes(), before)
+            installed = Path(env["STATUSLINE_INSTALL_DIR"])
+            self.assertTrue((installed / "claude-statusline.ps1").is_file())
+            self.assertTrue((installed / "claude-statusline.py").is_file())
+
+            synced = self.run_ctl("sync", env)
+            self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+            self.assertIn("aligned:", synced.stdout)
+            now = json.loads(claude_path.read_text("utf-8"))
+            self.assertEqual(now["statusLine"], self.ctl.desired_claude(installed / "claude-statusline.py"))
+            self.assertEqual(now["theme"], "dark")
+
+            restored = self.run_ctl("restore", env)
+            self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+            self.assertNotIn("statusLine", json.loads(claude_path.read_text("utf-8")))
+
+    def test_apply_after_a_ccstatusline_rollback_records_the_missing_setting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            claude_path.write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"}}), "utf-8"
+            )
+            Path(env["STATUSLINE_CCSTATUSLINE_CONFIG"]).write_text(
+                json.dumps({"version": 3, "lines": [[{"id": "model", "type": "model"}]]}), "utf-8"
+            )
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            claude_path.write_text("{}\n", "utf-8")
+            applied = self.run_ctl("apply", env)
+            self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+            restored = self.run_ctl("restore", env)
+            self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+            self.assertNotIn("statusLine", json.loads(claude_path.read_text("utf-8")))
 
 
 class PackagingTests(unittest.TestCase):
