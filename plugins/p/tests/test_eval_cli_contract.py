@@ -165,6 +165,17 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(expected, completed.returncode, completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
 
+    def test_benchmark_on_an_empty_trace_file_cannot_run_without_a_traceback(self):
+        empty = self.base / "empty.jsonl"
+        empty.write_text("", encoding="utf-8")
+        completed = run_cli(
+            "retro-eval-benchmark", "--input", empty, "--backend", "jsonl",
+            "--work-dir", self.base / "bench-empty",
+            "--output", self.base / "bench-empty.json", "--runs", "1")
+        self.assertCannotRun(completed)
+        self.assertEqual(1, len(completed.stderr.strip().splitlines()))
+        self.assertTrue(completed.stderr.startswith("error:"), completed.stderr)
+
     def test_proposals_with_invalid_candidates_cannot_run(self):
         candidates = self.base / "candidates.json"
         candidates.write_text("{not json", encoding="utf-8")

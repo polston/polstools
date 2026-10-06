@@ -73,7 +73,9 @@ def _rows(path: Path):
 
 
 def _stdlib_actions(path: Path, work_dir: Path):
-    first = next(_rows(path))
+    first = next(_rows(path), None)
+    if first is None:
+        raise ValueError("benchmark input has no trace rows")
     target = str(first["trace_id"])
     all_rows = list(_rows(path))
     latest = max(str(row.get("started_at") or "") for row in all_rows)
