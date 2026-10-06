@@ -3,6 +3,7 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -97,6 +98,55 @@ class AntigravityInstallHealthTests(unittest.TestCase):
         self.assertEqual(
             [("agy.hooks", "ERROR")],
             [(c.key, c.status) for c in self.doctor.probe_antigravity_hook(root)])
+
+    def _scratch_tracking(self):
+        made = []
+        real = tempfile.mkdtemp
+
+        def tracking(*args, **kwargs):
+            made.append(real(*args, **kwargs))
+            return made[-1]
+
+        patcher = mock.patch.object(tempfile, "mkdtemp", tracking)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return made
+
+    def test_hung_hook_is_a_failed_check_and_leaves_no_scratch(self):
+        root = copy_plugin(Path(self.tmp.name) / "p")
+        made = self._scratch_tracking()
+        seen = []
+
+        def hangs(argv, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+        for checks in (self.doctor.probe_antigravity_hook(root, runner=hangs),
+                       self.doctor.probe_plugin_hooks("claude", root, runner=hangs)):
+            self.assertIn("FAIL", {c.status for c in checks})
+        self.assertTrue(seen and all(isinstance(t, (int, float)) for t in seen))
+        self.assertTrue(made and not any(Path(p).exists() for p in made))
+
+    def test_hook_output_that_is_not_utf8_is_reported_as_such(self):
+        root = copy_plugin(Path(self.tmp.name) / "p")
+        made = self._scratch_tracking()
+
+        def garbled(argv, **kwargs):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        checks = self.doctor.probe_antigravity_hook(root, runner=garbled)
+        self.assertTrue(all(c.status == "FAIL" and "UTF-8" in c.summary for c in checks))
+        self.assertFalse(any(Path(p).exists() for p in made))
+
+    def test_a_harness_query_that_hangs_is_an_error_not_a_hang(self):
+        def hangs(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+        with mock.patch.object(self.doctor, "RUN", hangs):
+            with self.assertRaisesRegex(RuntimeError, "did not finish"):
+                self.doctor._run_json("claude", ["plugin", "list", "--json"])
+        with self.assertRaisesRegex(RuntimeError, "did not finish"):
+            self.doctor.query_agy("agy", runner=hangs)
 
     def test_doctor_probe_flags_a_hook_that_does_not_inject(self):
         root = copy_plugin(Path(self.tmp.name) / "p")

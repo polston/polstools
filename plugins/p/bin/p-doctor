@@ -409,7 +409,37 @@ def _event_key(event):
     return "".join(result)
 
 
+HOOK_TIMEOUT = 10   # seconds; the hook manifests declare the same limit
+QUERY_TIMEOUT = 60   # seconds for a harness CLI query
+_SCRATCH_DIRS = []
+
+
+def _new_scratch(prefix):
+    path = tempfile.mkdtemp(prefix=prefix)
+    _SCRATCH_DIRS.append(path)
+    return path
+
+
+def _remove_scratch():
+    while _SCRATCH_DIRS:
+        shutil.rmtree(_SCRATCH_DIRS.pop(), ignore_errors=True)
+
+
 def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=None):
+    try:
+        return _probe_plugin_hooks(harness, plugin_root, runner, contract)
+    finally:
+        _remove_scratch()
+
+
+def probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
+    try:
+        return _probe_antigravity_hook(plugin_root, runner, contract)
+    finally:
+        _remove_scratch()
+
+
+def _probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=None):
     contract = contract or HOOK_CONTRACTS.get(harness)
     if contract is None:
         return [Check(
@@ -434,7 +464,7 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=Non
         )]
 
     checks = []
-    scratch = tempfile.mkdtemp(prefix="p-doctor-format-")
+    scratch = _new_scratch("p-doctor-format-")
     for event in events:
         key = "%s.hook.%s" % (harness, _event_key(event))
         try:
@@ -473,7 +503,20 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=Non
                 encoding="utf-8",
                 capture_output=True,
                 env=env,
+                timeout=HOOK_TIMEOUT,
             )
+        except subprocess.TimeoutExpired:
+            checks.append(Check(
+                key, "FAIL", "%s %s hook did not finish within %d seconds"
+                % (harness.capitalize(), event, HOOK_TIMEOUT), _version_fix(harness),
+            ))
+            continue
+        except UnicodeError:
+            checks.append(Check(
+                key, "FAIL", "%s %s hook output is not valid UTF-8"
+                % (harness.capitalize(), event), _version_fix(harness),
+            ))
+            continue
         except OSError:
             checks.append(Check(
                 key, "ERROR", "%s %s hook command could not start"
@@ -505,11 +548,10 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=Non
                 key, "PASS", "%s %s hook exits 0 with byte-exact output"
                 % (harness.capitalize(), event),
             ))
-    shutil.rmtree(scratch, ignore_errors=True)
     return checks
 
 
-def probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
+def _probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
     """Run the installed Antigravity hook exactly as agy does - its argv from
     <root>/hooks.json, cwd = the plugin root, camelCase JSON on stdin - and
     compare the parsed stdout with the off and on envelopes."""
@@ -527,7 +569,7 @@ def probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
             "agy.hooks", "ERROR", "Antigravity installed hook manifest cannot be read",
             _version_fix("agy"),
         )]
-    scratch = tempfile.mkdtemp(prefix="p-doctor-agy-")
+    scratch = _new_scratch("p-doctor-agy-")
     env = dict(os.environ)
     for name in ("RETRO_HOME", "P_FORMAT_HARNESS", "P_FORMAT_DEFAULT",
                  "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID",
@@ -553,8 +595,20 @@ def probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
             completed = runner(
                 argv, cwd=str(plugin_root), input=json.dumps(event), text=True,
                 encoding="utf-8", capture_output=True,
-                env=dict(env, P_FORMAT_DEFAULT=state),
+                env=dict(env, P_FORMAT_DEFAULT=state), timeout=HOOK_TIMEOUT,
             )
+        except subprocess.TimeoutExpired:
+            checks.append(Check(
+                key, "FAIL", "Antigravity PreInvocation hook did not finish within %d seconds"
+                % HOOK_TIMEOUT, _version_fix("agy"),
+            ))
+            continue
+        except UnicodeError:
+            checks.append(Check(
+                key, "FAIL", "Antigravity PreInvocation hook output is not valid UTF-8",
+                _version_fix("agy"),
+            ))
+            continue
         except OSError:
             checks.append(Check(
                 key, "ERROR", "Antigravity PreInvocation hook command could not start",
@@ -580,7 +634,6 @@ def probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
             checks.append(Check(
                 key, "PASS", "Antigravity PreInvocation hook returns the %s envelope" % state,
             ))
-    shutil.rmtree(scratch, ignore_errors=True)
     return checks
 
 
@@ -621,9 +674,17 @@ def _find_executable(name, prefix="P_DOCTOR_"):
 
 
 def _run_json(executable, args):
+    try:
+        completed = _run_json_once(executable, args)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("command did not finish within %d seconds" % QUERY_TIMEOUT) from error
+    return completed
+
+
+def _run_json_once(executable, args):
     completed = RUN(
         [executable, *args], text=True, encoding="utf-8",
-        capture_output=True, check=False,
+        capture_output=True, check=False, timeout=QUERY_TIMEOUT,
     )
     if completed.returncode != 0:
         raise RuntimeError("command exited %d" % completed.returncode)
@@ -878,10 +939,15 @@ def render(checks, expected_version):
 
 
 def query_agy(executable, runner=None):
-    completed = (runner or RUN)(
-        [executable, "plugin", "list"],
-        text=True, encoding="utf-8", capture_output=True, check=False,
-    )
+    try:
+        completed = (runner or RUN)(
+            [executable, "plugin", "list"],
+            text=True, encoding="utf-8", capture_output=True, check=False,
+            timeout=QUERY_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("agy plugin list did not finish within %d seconds"
+                           % QUERY_TIMEOUT) from error
     if completed.returncode != 0:
         raise RuntimeError("agy plugin list exited %d" % completed.returncode)
     out = (completed.stdout or "").strip()

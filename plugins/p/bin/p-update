@@ -32,6 +32,7 @@ MARKETPLACE = "polstools"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 LABELS = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity"}
 PARTIAL_SUFFIX = ".p-update-partial"
+COMMAND_TIMEOUT = 600  # seconds for one harness CLI command
 SNAPSHOT_RETENTION_SECONDS = 30 * 24 * 3600
 RUN = subprocess.run  # harness CLI runner; tests substitute a fake harness
 
@@ -46,12 +47,22 @@ def _command_label(argv):
 
 
 def run_checked(argv):
+    try:
+        return _run_checked(argv)
+    except subprocess.TimeoutExpired as error:
+        raise UpdateError(
+            "%s did not finish within %d seconds" % (_command_label(argv), COMMAND_TIMEOUT)
+        ) from error
+
+
+def _run_checked(argv):
     completed = RUN(
         argv,
         text=True,
         encoding="utf-8",
         capture_output=True,
         check=False,
+        timeout=COMMAND_TIMEOUT,
     )
     if completed.returncode != 0:
         raise UpdateError(
