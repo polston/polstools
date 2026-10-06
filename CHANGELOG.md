@@ -4,7 +4,7 @@ Notable changes to the `p` plugin. Each version heading matches the `version`
 field of the plugin manifests; changes made before this file existed are in the
 git history.
 
-## [Unreleased]
+## [1.11.0]
 
 - CI checks out full history, pins every action to a commit, runs on Linux,
   macOS, and Windows under Python 3.9 and 3.14, runs the stopped-promises
@@ -26,6 +26,13 @@ git history.
   clone. The Claude status line renderer is Python and fits the terminal width.
 - Antigravity token usage is reported as not measured, and the evaluation layer
   has an Antigravity adapter.
+- `statusline-ctl restore` leaves `check` and the doctor clean again, and a
+  settings file kept as a symbolic link is written through, never replaced.
+  The doctor no longer flags unrelated Antigravity plugins as obsolete, and a
+  Codex reinstall interrupted between remove and add is finished on the next
+  run. A transcript field of the wrong type is skipped and counted instead of
+  stopping `retro`. The privacy audit scans long lines in linear time and
+  catches UUIDs beside a hyphen. Every `bin/` script answers `--help` with 0.
 
 ## [1.10.1]
 
