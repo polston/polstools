@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from contextlib import redirect_stderr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -210,6 +211,23 @@ class MalformedUsageRows(Sandbox):
     def test_boolean_token_count_is_skipped(self):
         bad = usage_row("flag", self.MODEL, True, 0, 5000, 10, NOW)
         self.assert_skipped(bad)
+
+
+    def test_whole_float_token_count_is_counted_as_retro_counts_it(self):
+        row = usage_row("fl", self.MODEL, 100000.0, 0, 5000, 10, NOW)
+        data = self.report(row)
+        self.assertNotIn("bad_usage", data["skipped"], data["skipped"])
+
+    def test_both_tools_judge_a_count_by_the_one_predicate(self):
+        retro = _load("retro_pred_under_test", "retro.py")
+        for value in (12, 12.0, 0, -1, True, "7", float("nan"), float("inf"),
+                      [1], {"a": 1}):
+            tally = Counter()
+            counted = retro._token_count(value, tally)
+            self.assertEqual(retro.valid_token_count(value),
+                             not tally, repr(value))
+            if not tally:
+                self.assertEqual(int(value), counted)
 
 
 class SelftestHomeName(Sandbox):

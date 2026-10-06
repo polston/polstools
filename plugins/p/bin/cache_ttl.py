@@ -142,14 +142,14 @@ def _rows(path, main, skipped):
                           creation.get("ephemeral_5m_input_tokens"),
                           usage.get("output_tokens")]
                 counts = [0 if c is None else c for c in counts]
-                # A count that is not a non-negative int would either abort
+                # A count that fails retro.valid_token_count would either abort
                 # the run (a string) or silently shrink a total (a negative),
                 # so the whole row is set aside and tallied.
                 if not isinstance(rid, str) or not all(
-                        isinstance(c, int) and not isinstance(c, bool)
-                        and c >= 0 for c in counts):
+                        retro.valid_token_count(c) for c in counts):
                     skipped["bad_usage"] += 1
                     continue
+                counts = [int(c) for c in counts]
                 read, w1, w5, out = counts
                 model = message.get("model")
                 if not isinstance(model, str):

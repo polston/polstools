@@ -574,14 +574,20 @@ def is_rollout(path):
     return False
 
 
+def valid_token_count(value):
+    """True for a finite, non-negative int or float (never a bool); callers
+    truncate a float with int(). The one rule retro and cache_ttl share."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and value == value and value not in (float("inf"), float("-inf"))
+            and value >= 0)
+
+
 def _token_count(value, skipped):
     """A usage field as a non-negative int: absent or null is 0, a wrong-typed
     value is 0 and tallied under `bad_token_count`."""
     if value is None:
         return 0
-    if isinstance(value, bool) or not isinstance(value, (int, float)) \
-            or value != value or value in (float("inf"), float("-inf")) \
-            or value < 0:
+    if not valid_token_count(value):
         skipped["bad_token_count"] += 1
         return 0
     return int(value)
