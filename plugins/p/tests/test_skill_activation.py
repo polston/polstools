@@ -111,6 +111,22 @@ class ActivationPolicyTests(unittest.TestCase):
             names = [path.name for path in (root / "sessions").iterdir()]
             self.assertFalse(any("session-private-marker" in name for name in names))
 
+    def test_nested_harness_sessions_fail_closed_until_one_is_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env(root, session="inner-codex")
+            env["CLAUDE_CODE_SESSION_ID"] = "outer-claude"
+            with self.assertRaises(self.activation.PolicyError):
+                self.activation.set_profile(self.manifest, "work", "session", env=env)
+            self.assertFalse((root / "sessions").exists())
+            with self.assertRaises(self.activation.PolicyError):
+                self.activation.resolve(self.manifest, env=env)
+            env["P_SKILL_HARNESS"] = "codex"
+            self.activation.set_profile(self.manifest, "work", "session", env=env)
+            self.assertEqual(self.activation.resolve(self.manifest, env=env)["profile"], "work")
+            outer = dict(env, P_SKILL_HARNESS="claude")
+            self.assertEqual(self.activation.resolve(self.manifest, env=outer)["profile"], "home")
+
     def test_overrides_enable_disable_and_cannot_change_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = self.env(Path(tmp))

@@ -59,15 +59,14 @@ REFRESH_SECONDS = 24 * 3600
 # retro.py's reporting_session_ids() reads this same tuple of session-id env
 # vars to exclude the reporting session from a report; keep both in sync.
 HARNESSES = ("claude", "codex", "antigravity")
-SESSION_ENV_VARS = (
-    "CLAUDE_CODE_SESSION_ID",
-    "CODEX_SESSION_ID",
-    "CODEX_THREAD_ID",
-    "ANTIGRAVITY_SESSION_ID",
-    "ANTIGRAVITY_CONVERSATION_ID",
-    "AGY_SESSION_ID",
-    "AGY_CONVERSATION_ID",
+HARNESS_SESSION_VARS = (
+    ("claude", ("CLAUDE_CODE_SESSION_ID",)),
+    ("codex", ("CODEX_SESSION_ID", "CODEX_THREAD_ID")),
+    ("antigravity", ("ANTIGRAVITY_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID",
+                     "AGY_SESSION_ID", "AGY_CONVERSATION_ID")),
 )
+SESSION_ENV_VARS = tuple(
+    name for _, names in HARNESS_SESSION_VARS for name in names)
 STATES = ("on", "off")
 
 
@@ -111,11 +110,19 @@ def prune():
 
 
 def session_from_env():
-    for name in SESSION_ENV_VARS:
-        sid = os.environ.get(name)
-        if sid:
-            return sid
-    print("no supported harness session id is set", file=sys.stderr)
+    visible = visible_sessions()
+    override = os.environ.get("P_FORMAT_HARNESS")
+    if override in HARNESSES:
+        visible = [entry for entry in visible if entry[0] == override]
+    if len(visible) == 1:
+        return visible[0][1]
+    if visible:
+        print("format-ctl: session ids for %s are all set, so this session "
+              "started inside another; rerun with P_FORMAT_HARNESS set to "
+              "this session's harness"
+              % " and ".join(harness for harness, _ in visible), file=sys.stderr)
+    else:
+        print("no supported harness session id is set", file=sys.stderr)
     sys.exit(2)
 
 
@@ -155,22 +162,26 @@ def write_config(config):
         sys.exit(2)
 
 
+def visible_sessions():
+    """(harness, session id) for every harness whose session variable is
+    set. A harness started inside another inherits the outer one's variable,
+    so more than one entry means the environment alone cannot say which
+    session is running this command."""
+    found = []
+    for harness, names in HARNESS_SESSION_VARS:
+        for name in names:
+            if os.environ.get(name):
+                found.append((harness, os.environ[name]))
+                break
+    return found
+
+
 def harness_name():
     override = os.environ.get("P_FORMAT_HARNESS")
     if override in HARNESSES:
         return override
-    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
-        return "claude"
-    if os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_THREAD_ID"):
-        return "codex"
-    if (
-        os.environ.get("ANTIGRAVITY_SESSION_ID")
-        or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
-        or os.environ.get("AGY_SESSION_ID")
-        or os.environ.get("AGY_CONVERSATION_ID")
-    ):
-        return "antigravity"
-    return ""
+    visible = visible_sessions()
+    return visible[0][0] if len(visible) == 1 else ""
 
 
 def default_state():

@@ -152,5 +152,41 @@ class SessionStateTests(unittest.TestCase):
         self.assertEqual(len(list(self.state.iterdir())), 1)
 
 
+class NestedHarnessTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.payload = self.root / "payload.md"
+        self.payload.write_text("payload\n", encoding="utf-8")
+        self.nested = {"CLAUDE_CODE_SESSION_ID": "outer-claude",
+                       "CODEX_THREAD_ID": "inner-codex"}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def gate(self, sid, **extra):
+        return run_ctl(["gate", str(self.payload)], hermetic_env(self.root, **extra),
+                       json.dumps({"session_id": sid}))
+
+    def test_toggle_refuses_when_two_harness_sessions_are_visible(self):
+        result = run_ctl(["on"], hermetic_env(self.root, **self.nested))
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.root / "state").exists())
+
+    def test_named_harness_toggles_its_own_session_only(self):
+        result = run_ctl(["on"], hermetic_env(
+            self.root, P_FORMAT_HARNESS="codex", **self.nested))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.gate("inner-codex").stdout, "payload\n")
+        self.assertEqual(self.gate("outer-claude").stdout, "")
+
+    def test_ambiguous_hook_environment_uses_the_global_default(self):
+        (self.root / "format.json").write_text(
+            json.dumps({"default": "on", "claude": "off"}), encoding="utf-8")
+        self.assertEqual(self.gate("inner-codex", **self.nested).stdout, "payload\n")
+        self.assertEqual(
+            self.gate("inner-codex", P_FORMAT_HARNESS="claude", **self.nested).stdout, "")
+
+
 if __name__ == "__main__":
     unittest.main()

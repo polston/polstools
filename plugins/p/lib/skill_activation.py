@@ -14,15 +14,13 @@ import time
 
 SCHEMA_VERSION = 1
 STALE_SECONDS = 14 * 24 * 3600
-SESSION_ENV_VARS = (
-    "CLAUDE_CODE_SESSION_ID",
-    "CODEX_SESSION_ID",
-    "CODEX_THREAD_ID",
-    "ANTIGRAVITY_SESSION_ID",
-    "ANTIGRAVITY_CONVERSATION_ID",
-    "AGY_SESSION_ID",
-    "AGY_CONVERSATION_ID",
+HARNESS_SESSION_VARS = (
+    ("claude", ("CLAUDE_CODE_SESSION_ID",)),
+    ("codex", ("CODEX_SESSION_ID", "CODEX_THREAD_ID")),
+    ("antigravity", ("ANTIGRAVITY_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID",
+                     "AGY_SESSION_ID", "AGY_CONVERSATION_ID")),
 )
+SESSION_ENV_VARS = tuple(name for _, names in HARNESS_SESSION_VARS for name in names)
 IDENTIFIER_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 NATIVE_BEGIN = "# p-skill-activation begin"
 NATIVE_END = "# p-skill-activation end"
@@ -137,11 +135,28 @@ def validate_manifest(manifest, plugin_root=None):
 
 
 def session_id_from_env(env=None, required=False):
+    """The current session id. A harness started inside another inherits the
+    outer session's variable; when more than one harness is visible the
+    caller must name its own with P_SKILL_HARNESS, because guessing would
+    read or write the other session's state."""
     env = os.environ if env is None else env
-    for name in SESSION_ENV_VARS:
-        value = env.get(name)
-        if value:
-            return value
+    visible = []
+    for harness, names in HARNESS_SESSION_VARS:
+        for name in names:
+            if env.get(name):
+                visible.append((harness, env[name]))
+                break
+    named = env.get("P_SKILL_HARNESS")
+    if named in dict(HARNESS_SESSION_VARS):
+        visible = [entry for entry in visible if entry[0] == named]
+    if len(visible) > 1:
+        raise PolicyError(
+            "session ids for "
+            + " and ".join(harness for harness, _ in visible)
+            + " are all set; set P_SKILL_HARNESS to this session's harness"
+        )
+    if visible:
+        return visible[0][1]
     if required:
         raise PolicyError("no supported harness session id is set")
     return None
