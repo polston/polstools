@@ -138,25 +138,62 @@ def config_path():
     return os.path.join(base, "polstools", "format.json")
 
 
-def read_config():
+class MalformedConfig(Exception):
+    pass
+
+
+def load_config():
+    """The configured defaults; MalformedConfig when the file exists but is
+    not a JSON object. A missing file is an empty configuration."""
     try:
         with open(config_path(), encoding="utf-8") as handle:
             data = json.load(handle)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as error:
+        raise MalformedConfig(str(error))
     if not isinstance(data, dict):
-        return {}
+        raise MalformedConfig("not a JSON object")
     return {key: value for key, value in data.items()
             if key in ("default",) + HARNESSES and value in STATES}
 
 
+def read_config():
+    # The hook path: an unreadable file follows the built-in default rather
+    # than failing the prompt; `default` reports it instead.
+    try:
+        return load_config()
+    except MalformedConfig:
+        return {}
+
+
+def editable_config():
+    try:
+        return load_config()
+    except MalformedConfig as error:
+        print("format-ctl: the defaults file %s is malformed (%s); fix or "
+              "remove it" % (config_path(), error), file=sys.stderr)
+        sys.exit(2)
+
+
 def write_config(config):
     path = config_path()
+    directory = os.path.dirname(path) or "."
+    data = json.dumps(config, indent=2, sort_keys=True) + "\n"
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(config, handle, indent=2, sort_keys=True)
-            handle.write("\n")
+        os.makedirs(directory, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix="." + os.path.basename(path) + ".", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(data)
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
     except OSError as error:
         print("format-ctl: cannot write defaults: %s" % error, file=sys.stderr)
         sys.exit(2)
@@ -350,7 +387,7 @@ def show_status():
 
 def default_command(args):
     if not args or args == ["show"]:
-        config = read_config()
+        config = editable_config()
         for key, label in [("default", "global")] + [(h, h) for h in HARNESSES]:
             print("%s default: %s" % (label, config.get(key, "(unset)")))
         state, source = default_state()
@@ -370,7 +407,7 @@ def default_command(args):
     elif rest:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    config = read_config()
+    config = editable_config()
     scope = ("for " + harness) if harness else "globally"
     if action in STATES:
         config[harness or "default"] = action

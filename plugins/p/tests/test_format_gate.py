@@ -152,6 +152,41 @@ class SessionStateTests(unittest.TestCase):
         self.assertEqual(len(list(self.state.iterdir())), 1)
 
 
+class DefaultsFileTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.config = self.root / "format.json"
+        self.payload = self.root / "payload.md"
+        self.payload.write_text("payload\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_malformed_defaults_file_is_never_silently_replaced(self):
+        for broken in (b'{"default": "on"', b"[]", b"\xff"):
+            with self.subTest(broken=broken):
+                self.config.write_bytes(broken)
+                before = self.config.read_bytes()
+                env = hermetic_env(self.root)
+                for args in (["default", "on", "--harness", "claude"],
+                             ["default", "clear"], ["default"]):
+                    result = run_ctl(args, env)
+                    self.assertEqual(result.returncode, 2, args)
+                    self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(self.config.read_bytes(), before)
+                gate = run_ctl(["gate", str(self.payload)], env, '{"session_id": "s"}')
+                self.assertEqual((gate.returncode, gate.stdout), (0, ""))
+
+    def test_default_writes_replace_the_file_atomically(self):
+        env = hermetic_env(self.root)
+        self.assertEqual(run_ctl(["default", "on"], env).returncode, 0)
+        self.assertEqual(run_ctl(["default", "off", "--harness", "agy"], env).returncode, 0)
+        self.assertEqual(json.loads(self.config.read_text("utf-8")),
+                         {"default": "on", "antigravity": "off"})
+        self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith(".")], [])
+
+
 class NestedHarnessTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
