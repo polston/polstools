@@ -291,7 +291,7 @@ def owned_renderers(target):
 
 def profile_command(label_path):
     argv = [sys.executable, str(label_path.resolve())]
-    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    return subprocess.list2cmdline(argv) if IS_WINDOWS else shlex.join(argv)
 
 
 def ccstatusline_config_path(current, target):
@@ -299,7 +299,7 @@ def ccstatusline_config_path(current, target):
     if not isinstance(command, str):
         raise ValueError("Claude ccstatusline command is invalid")
     try:
-        argv = shlex.split(command, posix=os.name != "nt")
+        argv = shlex.split(command, posix=not IS_WINDOWS)
     except ValueError as error:
         raise ValueError("Claude ccstatusline command is invalid") from error
     if "--config" in argv:
