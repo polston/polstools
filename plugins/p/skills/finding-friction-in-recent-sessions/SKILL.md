@@ -28,9 +28,10 @@ not acquire new sources automatically.
 
 Antigravity moments are candidate-sampled across sessions of unknown
 main/child population, not friction-ranked or included in main-session rates.
-Its exported steps provide no token accounting, reliable tool-error markers,
-interrupt markers, permission changes, queued prompts, or skill attribution.
-Those fields are unavailable, not measured zeros. The separate evaluation
+Its exported steps do not carry token usage on every step, so token usage is
+not measured; they provide no reliable tool-error markers, interrupt markers,
+permission changes, queued prompts, or skill attribution. Those fields are
+unavailable, not measured zeros. The separate evaluation
 adapters in `<plugin-root>/EVALUATION.md` still cover only Claude and Codex.
 
 Report observed sources, main and child populations, exclusions, snapshot or

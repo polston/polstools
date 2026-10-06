@@ -1294,8 +1294,10 @@ def measure_codex(path, root):
     return row
 
 
-# Antigravity transcripts expose conversation steps, not token accounting or
-# authoritative main/subagent metadata. Do not infer those from prose or paths.
+# Antigravity transcripts expose conversation steps but no authoritative
+# main/subagent metadata, and they do not carry token usage on every step: a
+# total over the steps that do would be a partial figure presented as a whole,
+# so token usage is not measured. Do not infer either from prose or paths.
 ANTIGRAVITY_INELIGIBLE = (
     "tokens_in", "tokens_out", "cache_read", "tool_errors", "queued_prompts",
     "permission_mode_changes", "skill_runs", "interrupts",
@@ -1630,7 +1632,7 @@ def totals(rows):
             if key not in ineligible:
                 eligible_rows[key] += 1
         agg["tokens_out"] += int(row.get("tokens_out") or 0)
-        # Token accounting is absent from Antigravity transcript exports.
+        # Antigravity token usage is not measured (see ANTIGRAVITY_INELIGIBLE).
         if "tokens_out" not in ineligible:
             eligible_rows["tokens_out"] += 1
     return agg, eligible_rows
@@ -1858,8 +1860,9 @@ def cmd_pack(args):
                 now_counts, _ = totals(current_unknown)
                 prev_counts, _ = totals(prior_unknown)
                 lines += ["### antigravity — unclassified sessions", "",
-                          "Observed step counts only; main/child population and "
-                          "token accounting are unavailable. No per-session rates.", "",
+                          "Observed step counts only; main/child population is not "
+                          "recorded and token usage is not measured. No "
+                          "per-session rates.", "",
                           "| signal | this window | prior |",
                           "|---|---|---|",
                           f"| sessions | {len(current_unknown)} | {len(prior_unknown)} |"]
@@ -2182,12 +2185,19 @@ def cmd_subagents(args):
     are on the row's `date`, which comes from the first timestamp inside the
     transcript.
     """
-    rows = [r for r in load_rows()
-            if (r.get("population") or "") == "subagent"]
+    rows = load_rows()
     if args.days:
         start = (datetime.now(timezone.utc).date()
                  - timedelta(days=args.days)).isoformat()
         rows = [r for r in rows if (r.get("date") or "") >= start]
+    # Antigravity rows carry population "unknown": their exports do not say
+    # whether a run was a child, so none can enter this lens. Count them so
+    # the report says what it left out instead of reading as complete.
+    uncovered = sum(1 for r in rows if row_harness(r) == "antigravity")
+    uncovered_line = (f"not covered: antigravity {uncovered} transcripts - "
+                      f"their exports do not say whether a run was a child"
+                      if uncovered else "")
+    rows = [r for r in rows if (r.get("population") or "") == "subagent"]
     skip = reporting_session_ids(args.exclude_session)
     dropped = sum(1 for r in rows
                   if r.get("session_id") in skip
@@ -2198,6 +2208,8 @@ def cmd_subagents(args):
     window = f"last {args.days} days" if args.days else "all history"
     if not rows:
         print(f"# Subagent lens - {window}\n\nNo subagent transcripts in window.")
+        if uncovered_line:
+            print(uncovered_line)
         return EXIT_CLEAN
 
     taken = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -2209,6 +2221,8 @@ def cmd_subagents(args):
     if dropped:
         print(f"\n{dropped} rows written by the session running this report "
               f"were left out - transcripts still being written.")
+    if uncovered_line:
+        print("\n" + uncovered_line)
 
     claude_rows = [r for r in rows if row_harness(r) == "claude"]
     codex_rows = [r for r in rows if r.get("harness") == "codex"]
@@ -2586,6 +2600,24 @@ RULE_SOURCES = (
 RULES_STALE_DAYS = 7
 
 
+def other_harness_homes():
+    """Non-Claude harnesses whose home directory exists on this machine.
+
+    `rules` and the `effect` date list read Claude-side configuration only.
+    Naming the other harnesses present keeps that scope in the output rather
+    than letting a clean table read as covering every instruction source.
+    """
+    homes = (("codex", codex_home_dir()), ("antigravity", antigravity_home_dir()))
+    return [name for name, home in homes if home.is_dir()]
+
+
+def print_rule_scope():
+    others = other_harness_homes()
+    if others:
+        print("not inspected: " + ", ".join(others)
+              + " - only Claude-side configuration is read here\n")
+
+
 def _git(repo, *args):
     import subprocess
     try:
@@ -2606,6 +2638,7 @@ def cmd_rules(args):
     compares against is never recorded.
     """
     print("# Rule sources\n")
+    print_rule_scope()
     print("| source | in a repo | uncommitted | last change |")
     print("|---|---|---|---|")
     problems = []
@@ -2692,6 +2725,7 @@ def print_candidates():
     """No date given: show the ones the machine knows about."""
     dates = rule_change_dates()
     print("# Dates something was deliberately changed\n")
+    print_rule_scope()
     if not dates:
         print(f"No history found under {CLAUDE_DIR}. Either it is not a git "
               "repository, or the rule files have never been committed there.\n"
@@ -2732,6 +2766,14 @@ def cmd_effect(args):
         print(f"not a date: {args.since} - use YYYY-MM-DD", file=sys.stderr)
         return EXIT_CANNOT_RUN
 
+    if args.harness == "antigravity":
+        # Recorded in docs/plans/2026-09-24-antigravity-history-ingestion.md:
+        # the export provides no authoritative parent/main classification, so
+        # there is no main-session cohort to compare on either side.
+        print("cannot compare: antigravity exports do not say whether a session "
+              "was a main session or a child, and this comparison is over main "
+              "sessions only", file=sys.stderr)
+        return EXIT_CANNOT_RUN
     rows = [r for r in load_rows() if r.get("date")]
     if args.days:
         lo = (cut - timedelta(days=args.days)).isoformat()
