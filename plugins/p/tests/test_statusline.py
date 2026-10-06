@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest import mock
 
@@ -33,55 +32,6 @@ class StatuslineUnitTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ctl = load_ctl()
-
-    def test_percent_left_clamps_and_handles_missing_values(self):
-        self.assertEqual(self.ctl.percent_left(23.5), 76.5)
-        self.assertEqual(self.ctl.percent_left(-4), 100)
-        self.assertEqual(self.ctl.percent_left(140), 0)
-        self.assertIsNone(self.ctl.percent_left(None))
-
-    def test_render_uses_percent_left_for_context_and_all_quotas(self):
-        lines = self.ctl.render_claude(
-            {
-                "model": {"display_name": "Example Model"},
-                "effort": {"level": "high"},
-                "workspace": {"current_dir": "project", "git_branch": "main"},
-                "context_window": {"remaining_percentage": 72},
-                "rate_limits": {
-                    "five_hour": {"used_percentage": 36},
-                    "seven_day": {"used_percentage": 19},
-                },
-                "model_weekly": {"label": "model", "used_percentage": 12},
-            },
-            color=False,
-        )
-        self.assertEqual(len(lines), 2)
-        self.assertIn("Example Model | eff high | project | main |", lines[0])
-        self.assertIn("72% left", lines[0])
-        self.assertIn("5h", lines[1])
-        self.assertIn("64% left", lines[1])
-        self.assertIn("wk", lines[1])
-        self.assertIn("81% left", lines[1])
-        self.assertIn("model", lines[1])
-        self.assertIn("88% left", lines[1])
-        self.assertIn("p:h", lines[0])
-
-    def test_render_tolerates_missing_optional_fields(self):
-        lines = self.ctl.render_claude({}, color=False)
-        self.assertEqual(lines, ["p:h"])
-
-    def test_codex_footer_order_matches_the_contract(self):
-        self.assertEqual(
-            list(self.ctl.CODEX_STATUS_LINE),
-            [
-                "model-with-reasoning",
-                "current-dir",
-                "git-branch",
-                "context-remaining",
-                "five-hour-limit",
-                "weekly-limit",
-            ],
-        )
 
     def test_claude_provider_recognizes_earlier_p_renderer_commands_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -721,6 +671,70 @@ class StatuslineCliTests(unittest.TestCase):
         for part in ("bin", "lib", "profiles", "renderer"):
             shutil.copytree(PLUGIN_ROOT / part, copy / part)
         return copy
+
+    def preview_env(self, root):
+        env = self.make_env(root)
+        stub = root / "stub"
+        stub.mkdir()
+        (root / "profile-marker").mkdir()
+        security = stub / "security"
+        security.write_text(
+            "#!/bin/sh\necho called >> \"" + (root / "keychain.log").as_posix() + "\"\nexit 44\n",
+            encoding="utf-8",
+        )
+        security.chmod(0o755)
+        env["PATH"] = str(stub) + os.pathsep + env.get("PATH", "")
+        env["TMPDIR"] = str(root / "tmp")
+        (root / "tmp").mkdir()
+        env["XDG_CACHE_HOME"] = str(root / "cache")
+        env["LOCALAPPDATA"] = str(root / "cache")
+        env["P_STATUSLINE_NOW_MS"] = "1800000000000"
+        env.pop("P_STATUSLINE_NO_REFRESH", None)
+        return env
+
+    def test_preview_renders_through_the_shipped_renderer_and_profile_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.preview_env(root)
+            copy = self.copy_plugin(root)
+            renderer = copy / "renderer" / "claude-statusline.py"
+            renderer.write_text(
+                renderer.read_text("utf-8").replace('+ "% left"', '+ "% spare"'), "utf-8"
+            )
+            profile_path = copy / "profiles" / "aligned-v1.json"
+            profile = json.loads(profile_path.read_text("utf-8"))
+            profile["codexStatusLine"] = ["git-branch", "model-with-reasoning"]
+            profile_path.write_text(json.dumps(profile), "utf-8")
+            result = subprocess.run(
+                [sys.executable, str(copy / "bin" / "statusline-ctl"), "preview"],
+                text=True, encoding="utf-8", capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = result.stdout.splitlines()
+            claude = lines[1:lines.index("Codex (native footer)")]
+            self.assertEqual(len(claude), 2)
+            self.assertIn("~/project", claude[0])
+            self.assertIn("56k/200k", claude[0])
+            self.assertIn("72% spare", claude[0])
+            self.assertIn("model-week", claude[1])
+            codex = lines[lines.index("Codex (native footer)") + 1]
+            self.assertEqual(codex, "main | model high")
+
+    def test_preview_starts_no_usage_refresh_and_never_reaches_the_keychain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.preview_env(root)
+            before = {p for p in root.rglob("*") if p.name != "stub" and p.parent.name != "stub"}
+            result = subprocess.run(
+                [sys.executable, str(CTL_PATH), "preview"],
+                text=True, encoding="utf-8", capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((root / "keychain.log").exists())
+            after = {p for p in root.rglob("*") if p.name != "stub" and p.parent.name != "stub"}
+            self.assertEqual(after, before)
+            for name in ("usage-cache.json", "usage-attempt.txt", "usage-refresh.lock"):
+                self.assertEqual(list(root.rglob(name)), [])
 
     def test_apply_installs_the_renderer_the_profile_names(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -84,86 +84,6 @@ def renderer_source():
     return RENDERER_SOURCE_PS1 if IS_WINDOWS else RENDERER_SOURCE_PY
 
 
-def percent_left(used):
-    if used is None:
-        return None
-    return 100 - max(0, min(100, float(used)))
-
-
-def _display_percent(value):
-    value = float(value)
-    return str(int(round(value))) if value == round(value) else ("%.1f" % value).rstrip("0").rstrip(".")
-
-
-def _bar(left, color):
-    slots = 10
-    filled = int(round(max(0, min(100, float(left))) / 100 * slots))
-    body = "█" * filled + "░" * (slots - filled)
-    if not color:
-        return body
-    used = 100 - float(left)
-    tone = "\x1b[31m" if used >= 80 else "\x1b[33m" if used >= 60 else "\x1b[32m"
-    return tone + body + "\x1b[0m"
-
-
-def render_claude(data, *, color=True, profile_label="p:h"):
-    """Pure renderer used by preview/tests; the installed PowerShell matches it."""
-    esc = "\x1b["
-    reset = esc + "0m" if color else ""
-    dim = esc + "2m" if color else ""
-    cyan = esc + "2;36m" if color else ""
-    yellow = esc + "2;33m" if color else ""
-    magenta = esc + "35m" if color else ""
-
-    model = ((data.get("model") or {}).get("display_name") or "").strip()
-    effort = ((data.get("effort") or {}).get("level") or "").strip()
-    workspace = data.get("workspace") or {}
-    cwd = (workspace.get("current_dir") or data.get("cwd") or "").strip()
-    branch = (workspace.get("git_branch") or "").strip()
-    remaining = (data.get("context_window") or {}).get("remaining_percentage")
-
-    parts = []
-    if model:
-        parts.append(cyan + model + reset)
-    if effort:
-        parts.append(dim + "eff" + reset + " " + magenta + effort + reset)
-    if cwd:
-        parts.append(dim + cwd + reset)
-    if branch:
-        parts.append(yellow + branch + reset)
-    if remaining is not None:
-        left = max(0, min(100, float(remaining)))
-        parts.append(_bar(left, color) + " " + _display_percent(left) + "% left")
-    parts.append(dim + profile_label + reset)
-
-    limits = []
-    rate_limits = data.get("rate_limits") or {}
-    for label, key in (("5h", "five_hour"), ("wk", "seven_day")):
-        used = (rate_limits.get(key) or {}).get("used_percentage")
-        left = percent_left(used)
-        if left is not None:
-            limits.append(
-                dim + label + reset + " " + _bar(left, color) + " "
-                + _display_percent(left) + "% left"
-            )
-    scoped = data.get("model_weekly") or {}
-    scoped_left = percent_left(scoped.get("used_percentage"))
-    scoped_label = str(scoped.get("label") or "").strip()
-    if scoped_label and scoped_left is not None:
-        limits.append(
-            dim + scoped_label + reset + " " + _bar(scoped_left, color) + " "
-            + _display_percent(scoped_left) + "% left"
-        )
-
-    sep = " " + dim + "|" + reset + " "
-    lines = []
-    if parts:
-        lines.append(sep.join(parts))
-    if limits:
-        lines.append(sep.join(limits))
-    return lines
-
-
 def _default_state_dir():
     if os.environ.get("STATUSLINE_STATE_DIR"):
         return Path(os.environ["STATUSLINE_STATE_DIR"])
@@ -1016,23 +936,67 @@ def restore_config():
         return 2
 
 
-def preview():
-    sample = {
-        "model": {"display_name": "model"},
-        "effort": {"level": "high"},
-        "workspace": {"current_dir": "project", "git_branch": "main"},
-        "context_window": {"remaining_percentage": 72},
-        "rate_limits": {
-            "five_hour": {"used_percentage": 36},
-            "seven_day": {"used_percentage": 19},
-        },
-        "model_weekly": {"label": "model-week", "used_percentage": 12},
+PREVIEW_HOME = "/preview-home"
+PREVIEW_SAMPLE = {
+    "model": {"display_name": "model"},
+    "effort": {"level": "high"},
+    "workspace": {"current_dir": PREVIEW_HOME + "/project", "git_branch": "main"},
+    "context_window": {
+        "remaining_percentage": 72,
+        "context_window_size": 200000,
+        "total_input_tokens": 56000,
+    },
+    "rate_limits": {
+        "five_hour": {"used_percentage": 36},
+        "seven_day": {"used_percentage": 19},
+    },
+}
+PREVIEW_SCOPED = ("gauge", "model-week", 12)
+
+
+def load_renderer():
+    """Import the shipped renderer so preview shows exactly what it prints."""
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("claude_statusline", str(RENDERER_SOURCE_PY))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def codex_preview(renderer):
+    data = PREVIEW_SAMPLE
+    context = data["context_window"]["remaining_percentage"]
+    limits = data["rate_limits"]
+    values = {
+        "model-with-reasoning": data["model"]["display_name"] + " " + data["effort"]["level"],
+        "current-dir": renderer.shorten_home(data["workspace"]["current_dir"], PREVIEW_HOME),
+        "git-branch": data["workspace"]["git_branch"],
+        "context-remaining": renderer.percent_text(context),
+        "five-hour-limit": renderer.percent_text(100 - limits["five_hour"]["used_percentage"]),
+        "weekly-limit": renderer.percent_text(100 - limits["seven_day"]["used_percentage"]),
     }
+    return " | ".join(values.get(item, "<" + item + ">") for item in CODEX_STATUS_LINE)
+
+
+def preview():
+    # A preview is fixed sample input: it never starts the renderer's background
+    # usage refresh, and so never reaches the keychain or the network.
+    os.environ["P_STATUSLINE_NO_REFRESH"] = "1"
+    renderer = load_renderer()
     print("Claude (two lines)")
-    for line in render_claude(sample, color=sys.stdout.isatty()):
+    for line in renderer.render_lines(
+        PREVIEW_SAMPLE,
+        profile_label="p:h",
+        scoped=PREVIEW_SCOPED,
+        home=PREVIEW_HOME,
+        color=sys.stdout.isatty(),
+    ):
         print(line)
     print("Codex (native footer)")
-    print("model high | project | main | 72% left | 64% left | 81% left")
+    print(codex_preview(renderer))
     print("Codex identifiers: " + ", ".join(CODEX_STATUS_LINE))
     return 0
 
