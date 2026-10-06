@@ -62,6 +62,14 @@ class AntigravityStatuslineTests(unittest.TestCase):
         self.assertEqual(0, completed.returncode, completed.stderr)
         return completed.stdout.splitlines()
 
+    def test_deeply_nested_input_gives_the_fallback_line_and_exit_zero(self):
+        completed = subprocess.run(
+            [sys.executable, "-B", str(RENDERER)], input="[" * 200000,
+            text=True, encoding="utf-8", capture_output=True, env=self.env)
+        self.assertEqual(0, completed.returncode, completed.stderr[-300:])
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertEqual(1, len(completed.stdout.splitlines()))
+
     def ctl(self):
         return subprocess.run(
             [sys.executable, "-B", str(CTL), "antigravity"], text=True,

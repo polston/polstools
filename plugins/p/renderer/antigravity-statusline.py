@@ -84,7 +84,7 @@ def main():
         data = json.load(sys.stdin)
         if not isinstance(data, dict):
             data = {}
-    except (ValueError, OSError, UnicodeError):
+    except (ValueError, OSError, UnicodeError, RecursionError):
         data = {}
     try:
         renderer = load_claude_renderer()
