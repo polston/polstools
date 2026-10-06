@@ -12,6 +12,10 @@ If it exits 1 or 2, stop before discovering evidence or opening the workspace.
 whose directory is `<plugin-root>/skills/reviewing-evaluation-taxonomies`; take
 it from this file's own path, never from the working directory or an
 environment variable. `<python>` is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 Use the plugin's `bin/retro-eval-review` as the single entrypoint, run as
 `<python> <plugin-root>/bin/retro-eval-review <command>`.

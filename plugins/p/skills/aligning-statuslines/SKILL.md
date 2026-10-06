@@ -12,6 +12,10 @@ path two directories above this `SKILL.md`, whose directory is
 `<plugin-root>/skills/aligning-statuslines`; take it from this file's own path,
 never from the working directory or an environment variable. `<python>` is `sh
 <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 Use the plugin's `bin/statusline-ctl`; never edit a user's whole settings file
 or replace unrelated plugin configuration. Inspect only Claude's `statusLine`

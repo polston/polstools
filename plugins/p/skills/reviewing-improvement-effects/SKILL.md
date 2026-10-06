@@ -12,6 +12,10 @@ path two directories above this `SKILL.md`, whose directory is
 `<plugin-root>/skills/reviewing-improvement-effects`; take it from this file's
 own path, never from the working directory or an environment variable.
 `<python>` is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 Follow one existing proposal into use. Shipping a skill, completing a response,
 or recording an experiment does not establish that the work improved. This

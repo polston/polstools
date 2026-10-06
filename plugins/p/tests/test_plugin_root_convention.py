@@ -36,6 +36,21 @@ class PluginRootConventionTests(unittest.TestCase):
                 self.assertEqual(
                     [path.parent.relative_to(PLUGIN_ROOT).as_posix()], stated)
 
+    def test_each_skill_preamble_gives_the_windows_and_harness_clauses(self):
+        quoting = re.compile(
+            r"Quote\s+both\s+paths\s+and\s+write\s+them\s+with\s+forward\s+"
+            r"slashes,\s+also\s+on\s+Windows\.")
+        rerun = re.compile(
+            r"If\s+the\s+check\s+exits\s+2\s+because\s+session\s+variables\s+"
+            r"of\s+two\s+harnesses\s+are\s+set,\s+rerun\s+it\s+once\s+with\s+"
+            r"`P_SKILL_HARNESS`\s+set\s+to\s+this\s+session's\s+harness\s+"
+            r"\(`claude`,\s+`codex`,\s+or\s+`antigravity`\)\.")
+        for path in skill_files():
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(skill=path.parent.name):
+                self.assertEqual(1, len(quoting.findall(text)))
+                self.assertEqual(1, len(rerun.findall(text)))
+
     def test_no_skill_depends_on_a_claude_only_root(self):
         for path in skill_files():
             with self.subTest(skill=path.parent.name):

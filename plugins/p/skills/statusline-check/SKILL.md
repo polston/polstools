@@ -16,6 +16,10 @@ two directories above this `SKILL.md`, whose directory is
 `<plugin-root>/skills/statusline-check`; take it from this file's own path,
 never from the working directory or an environment variable. `<python>` is `sh
 <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 Run `<python> <plugin-root>/bin/statusline-ctl check`. Report its one-line result and exit
 code. For ccstatusline, `compatible` confirms provider preservation, Codex

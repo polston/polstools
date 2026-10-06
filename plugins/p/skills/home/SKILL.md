@@ -12,6 +12,10 @@ description: Use only when the operator asks to select the p home skill profile,
    `<plugin-root>/skills/home`; take it from this file's own path, never from
    the working directory or an environment variable. `<python>` is `sh
    <plugin-root>/bin/python-launcher`.
+   Quote both paths and write them with forward slashes, also on Windows. If
+   the check exits 2 because session variables of two harnesses are set, rerun
+   it once with `P_SKILL_HARNESS` set to this session's harness (`claude`,
+   `codex`, or `antigravity`).
 2. Resolve `scripts/toggle.py` relative to the directory containing this
    `SKILL.md`; do not resolve it from the current working directory or depend
    on a plugin-root environment variable.

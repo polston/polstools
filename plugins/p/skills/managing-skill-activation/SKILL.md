@@ -12,6 +12,10 @@ path two directories above this `SKILL.md`, whose directory is
 `<plugin-root>/skills/managing-skill-activation`; take it from this file's own
 path, never from the working directory or an environment variable. `<python>`
 is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 Activation is advisory on every harness. Each governed skill and command runs
 that check first and stops when it exits 1 or 2, but no harness blocks a skill

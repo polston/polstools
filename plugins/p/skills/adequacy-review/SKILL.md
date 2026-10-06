@@ -12,6 +12,10 @@ two directories above this `SKILL.md`, whose directory is
 `<plugin-root>/skills/adequacy-review`; take it from this file's own path,
 never from the working directory or an environment variable. `<python>` is `sh
 <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 The canonical policy is `<skill-root>/contract-v1.json`; the deterministic
 renderer and distiller is `<skill-root>/scripts/adequacy_review.py`. Do not
