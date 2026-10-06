@@ -65,7 +65,9 @@ def quota_buckets(data):
 
 def render_lines(data, renderer, *, profile_label, home="", color=True):
     columns = data.get("terminal_width")
-    columns = columns if isinstance(columns, int) and columns > 0 else None
+    columns = (
+        columns if isinstance(columns, int) and not isinstance(columns, bool) and columns > 0 else None
+    )
     lines = renderer.render_lines(
         to_claude_shape(data), profile_label=profile_label, home=home,
         windows=os.name == "nt", columns=columns, color=color)
@@ -87,7 +89,12 @@ def main():
     try:
         renderer = load_claude_renderer()
         home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or ""
-        label = renderer.profile_label(data.get("conversation_id") or data.get("session_id"))
+        session_id = next(
+            (value for value in (data.get("conversation_id"), data.get("session_id"))
+             if isinstance(value, str) and value),
+            None,
+        )
+        label = renderer.profile_label(session_id)
         lines = render_lines(data, renderer, profile_label=label, home=home,
                              color="NO_COLOR" not in os.environ)
         sys.stdout.write("\n".join(lines) + "\n")

@@ -92,6 +92,16 @@ class AntigravityStatuslineTests(unittest.TestCase):
             text=True, encoding="utf-8", capture_output=True, env=env)
         self.assertIn("\x1b[", completed.stdout)
 
+    def test_wrongly_typed_session_id_and_width_are_ignored(self):
+        expected = self.render(SAMPLE)
+        for extra in (
+            {"conversation_id": 7},
+            {"conversation_id": {"id": "x"}, "session_id": ["y"]},
+            {"terminal_width": True},
+        ):
+            with self.subTest(extra=extra):
+                self.assertEqual(expected, self.render(dict(SAMPLE, **extra)))
+
     def test_sparse_or_broken_payloads_still_render(self):
         self.assertEqual(["p:h"], [p.strip() for p in self.render({})[0].split("|")])
         completed = subprocess.run(
