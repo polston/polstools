@@ -686,6 +686,38 @@ def statusline_checks(plugin_root=PLUGIN_ROOT, runner=subprocess.run):
     return [Check("statusline", "ERROR", "the statusline bundle could not be checked")]
 
 
+def python_checks(roots, runner=subprocess.run):
+    """Ask each installed copy's launcher whether it finds an adequate Python.
+
+    The launcher exits 0 when an interpreter at or above its floor is found and
+    2 otherwise. This runs from the doctor's own environment; a hook started by
+    a harness may see a different PATH.
+    """
+    checks = []
+    for harness, (_, root) in sorted(roots.items()):
+        label = HARNESS_LABELS[harness]
+        code = _run_plugin_tool(
+            ["sh", str(Path(root) / "bin" / "python-launcher"), "-c", "pass"], runner
+        )
+        if code == 0:
+            checks.append(Check(
+                harness + ".python", "PASS",
+                "%s copy's launcher finds an adequate Python from the doctor's environment" % label,
+            ))
+        elif code == 2:
+            checks.append(Check(
+                harness + ".python", "FAIL",
+                "%s copy's launcher finds no adequate Python from the doctor's environment" % label,
+                "Install a supported Python 3 or set POLSTOOLS_PYTHON to one executable path.",
+            ))
+        else:
+            checks.append(Check(
+                harness + ".python", "ERROR",
+                "%s copy's launcher could not be run" % label,
+            ))
+    return checks
+
+
 def activation_checks(plugin_root=PLUGIN_ROOT, runner=subprocess.run):
     code = _run_plugin_tool(
         [sys.executable, "-B", str(Path(plugin_root) / "bin" / "skill-profile-ctl"), "validate"], runner
@@ -845,6 +877,7 @@ def collect(repo_root=None):
     }
     if roots:
         checks.extend(content_checks(roots, repo_root))
+        checks.extend(python_checks(roots))
     checks.extend(activation_checks())
     checks.extend(statusline_checks())
     return override_version or self_version, checks

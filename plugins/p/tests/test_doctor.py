@@ -322,6 +322,7 @@ class FakeHarnessDoctorTests(unittest.TestCase):
         self.doctor.RUN = self.fake
         self.doctor.statusline_checks = lambda *a, **k: []
         self.doctor.activation_checks = lambda *a, **k: []
+        self.doctor.python_checks = lambda *a, **k: []
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -410,6 +411,7 @@ class CodexInstalledRootTests(unittest.TestCase):
         self.doctor.RUN = self.fake
         self.doctor.statusline_checks = lambda *a, **k: []
         self.doctor.activation_checks = lambda *a, **k: []
+        self.doctor.python_checks = lambda *a, **k: []
         self.version = self.doctor._manifest_version()
         self.source = Path(self._tmp.name) / "source" / "p"
         self._tree(self.source, "payload\n", self.GATE_SOURCE)
@@ -570,6 +572,18 @@ class ContentAndConfigTests(unittest.TestCase):
             with self.subTest(code=code):
                 checks = self.doctor.statusline_checks(runner=lambda *a, **k: Result(code))
                 self.assertEqual([status], [check.status for check in checks])
+
+    def test_python_adequacy_follows_each_copys_launcher_exit_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = {}
+            for harness, code in (("claude", 0), ("codex", 2)):
+                root = write_plugin(Path(tmp) / harness, "2.0.0", {
+                    "bin/python-launcher": "#!/bin/sh\nexit %d\n" % code,
+                })
+                roots[harness] = ("2.0.0", root)
+            checks = self.doctor.python_checks(roots)
+        found = {check.key: check.status for check in checks}
+        self.assertEqual({"claude.python": "PASS", "codex.python": "FAIL"}, found)
 
     def test_a_third_harness_hook_contract_plugs_into_the_probe(self):
         captured = []
