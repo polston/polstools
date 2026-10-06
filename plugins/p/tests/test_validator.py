@@ -1,12 +1,14 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 
 
@@ -232,11 +234,50 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(0, raised.exception.code)
         self.assertEqual([], called)
 
-    def test_unknown_base_revision_exits_2_not_1(self):
+    def _stub_checks(self):
+        ran = []
+        for name in ("validate_repository", "smoke_relocated_copy", "antigravity_validate"):
+            patcher = mock.patch.object(
+                self.validator, name, lambda *a, _n=name, **k: ran.append(_n) or [])
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return ran
+
+    def _run_main(self, *argv):
         stderr = io.StringIO()
         with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
-            code = self.validator.main(["--base", "no-such-revision-for-p-validate"])
+            code = self.validator.main(list(argv))
+        return code, stderr.getvalue()
+
+    def test_unknown_base_revision_exits_2_and_says_why_before_any_check(self):
+        ran = self._stub_checks()
+        code, err = self._run_main("--base", "no-such-revision-for-p-validate")
         self.assertEqual(2, code)
+        self.assertIn("base revision no-such-revision-for-p-validate", err)
+        self.assertEqual([], ran)
+
+    def test_base_that_exists_only_as_a_remote_branch_says_so(self):
+        self._stub_checks()
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / "clone"
+            clone.mkdir()
+            env = {"HOME": str(Path(tmp)), "PATH": os.environ.get("PATH", ""),
+                   "GIT_CONFIG_NOSYSTEM": "1"}
+            for args in (
+                ["init", "-q", "-b", "trunk"],
+                ["-c", "user.name=t", "-c", "user.email=" + "t" + chr(64) + "example.invalid",
+                 "commit", "-q", "--allow-empty", "-m", "base"],
+                ["update-ref", "refs/remotes/origin/main", "HEAD"],
+                ["checkout", "-q", "--detach"],
+                ["branch", "-q", "-D", "trunk"],
+            ):
+                subprocess.run(["git", "-C", str(clone), *args], env=env,
+                               capture_output=True, check=True)
+            with mock.patch.object(self.validator, "REPO_ROOT", clone):
+                code, err = self._run_main("--base", "main")
+        self.assertEqual(2, code)
+        self.assertIn("base revision main is not a commit", err)
+        self.assertNotIn("RuntimeError", err)
 
     def test_unexpected_exception_exits_2_not_1(self):
         def explode(*args, **kwargs):

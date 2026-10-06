@@ -548,6 +548,19 @@ def _semver_key(version):
     return tuple(int(part) for part in match.groups()) if match else None
 
 
+def resolve_base(repo_root, base):
+    """Return the commit id for base, or raise RuntimeError saying why not."""
+    commit = None
+    if not base.startswith("-"):
+        commit = _git(repo_root, "rev-parse", "--verify", "--quiet", base + "^{commit}")
+    if not commit or not commit.strip():
+        raise RuntimeError(
+            "base revision %s is not a commit in this clone; fetch it first "
+            "(a shallow or detached clone may lack it)" % base
+        )
+    return commit.strip()
+
+
 def validate_version_bump(repo_root, base):
     """Flag plugin content that changed since base without a version increase."""
     errors = []
@@ -665,6 +678,8 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
+        if args.base:
+            resolve_base(REPO_ROOT, args.base)
         checks = [
             _report("source package", validate_repository()),
             _report("relocated copy", smoke_relocated_copy(PLUGIN_ROOT)),
@@ -676,8 +691,10 @@ def main(argv=None):
                 validate_version_bump(REPO_ROOT, args.base),
             ))
     except Exception as error:  # exit 2 is the contract for "could not run"
-        print("ERROR plugin validation could not run: %s" % type(error).__name__,
-              file=sys.stderr)
+        # A RuntimeError here is one of this module's own messages, which name
+        # revisions and never paths; any other exception is reported by class.
+        detail = str(error) if type(error) is RuntimeError else type(error).__name__
+        print("ERROR plugin validation could not run: %s" % detail, file=sys.stderr)
         return 2
     passed = sum(checks)
     print("RESULT: %d passed, %d failed" % (passed, len(checks) - passed))
