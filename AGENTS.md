@@ -48,9 +48,14 @@ substitution is silent, and nobody re-reads metadata.
   stay in step across all three and the marketplace entries.
 - `plugins/p/skills/<skill>/SKILL.md` — one directory per canonical skill.
 - `plugins/p/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
-  dependencies, no compiled artifacts.
-- `plugins/p/hooks/hooks.json` — hook wiring for session events;
-  commands reference plugin files via `${CLAUDE_PLUGIN_ROOT}`.
+  dependencies, no compiled artifacts. A tracked file is executable in the git
+  index exactly when it starts with a shebang; `p-validate` enforces that.
+  `format-gate` and `agy-format-hook` are shell on purpose: a hook must still
+  run, and report failure as exit 1, when no Python is installed.
+- `plugins/p/hooks/hooks.json` — hook wiring for Claude Code and Codex session
+  events; both events enter through `bin/format-gate`, and commands reference
+  plugin files via `${CLAUDE_PLUGIN_ROOT}`. Antigravity reads hooks only from
+  `plugins/p/hooks.json`, a separate file with its own events.
 - `plugins/p/style/` — the response-format payloads the format hooks print.
 - `plugins/p/lib/` — Python modules shared by several `bin/` scripts and copied
   beside the bundled status line renderers.
@@ -61,14 +66,21 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/p/retro_eval/`, `plugins/p/rubrics/`, `plugins/p/ui/` — the optional
   local evaluation layer (package, versioned rubric data, annotation page),
   described in `plugins/p/EVALUATION.md`. Only this layer may use the optional
-  dependencies in `plugins/p/requirements-eval.txt`.
+  dependencies in `plugins/p/requirements-eval.txt`. Dependencies run one way:
+  `bin/retro.py` imports the package (the redaction and user-turn rules both
+  share live in `retro_eval/text_rules.py`), and the package never executes a
+  script.
 - `plugins/p/commands/<command>.md` — Claude compatibility adapters,
   namespaced as `/p:<command>`, which forward to matching canonical skills.
   Only the seven behaviours that began as slash commands have one; a new skill
   needs none, because Claude Code already lists every skill as `/p:<skill>`.
   `p-validate` checks that each adapter forwards to its skill with
-  `$ARGUMENTS`. Refer to plugin files as `${CLAUDE_PLUGIN_ROOT}/…`, never by a
-  path under the author's home directory.
+  `$ARGUMENTS`. In a command adapter or a hook command, refer to plugin files
+  as `${CLAUDE_PLUGIN_ROOT}/…`. In a `SKILL.md`, `<plugin-root>` is the absolute
+  path two directories above that file and every program runs as
+  `sh <plugin-root>/bin/python-launcher <plugin-root>/bin/<program>`, because
+  only Claude Code substitutes the variable. Never write a path under the
+  author's home directory.
 - Complex cross-harness skills keep canonical policy beside `SKILL.md` in a
   versioned contract. Thin files under `references/` own harness transport;
   helpers under `scripts/` own deterministic computation without duplicating
@@ -76,6 +88,11 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/p/tests/` — stdlib `unittest`, no runner or dependency. Run with
   `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests`.
 - `docs/plans/` — design documents, filename dated.
+- A change under `plugins/p` ships with a version bump, equal across the three
+  manifests and the marketplace entry, and a `CHANGELOG.md` entry under that
+  version; `p-validate --base <revision>` fails a pull request without the
+  bump. The author tags a release (`vX.Y.Z`) and publishes it; do neither
+  unasked.
 
 Scripts in any `bin/` share one exit-code convention: `0` ran clean and flagged
 nothing, `1` ran clean and flagged something, `2` could not run.
