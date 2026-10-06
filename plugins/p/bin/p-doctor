@@ -678,6 +678,8 @@ def _run_json(executable, args):
         completed = _run_json_once(executable, args)
     except subprocess.TimeoutExpired as error:
         raise RuntimeError("command did not finish within %d seconds" % QUERY_TIMEOUT) from error
+    except UnicodeError as error:
+        raise RuntimeError("command output is not valid UTF-8") from error
     return completed
 
 
@@ -948,6 +950,8 @@ def query_agy(executable, runner=None):
     except subprocess.TimeoutExpired as error:
         raise RuntimeError("agy plugin list did not finish within %d seconds"
                            % QUERY_TIMEOUT) from error
+    except UnicodeError as error:
+        raise RuntimeError("agy plugin list output is not valid UTF-8") from error
     if completed.returncode != 0:
         raise RuntimeError("agy plugin list exited %d" % completed.returncode)
     out = (completed.stdout or "").strip()

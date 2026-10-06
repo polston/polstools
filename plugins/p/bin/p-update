@@ -53,6 +53,8 @@ def run_checked(argv):
         raise UpdateError(
             "%s did not finish within %d seconds" % (_command_label(argv), COMMAND_TIMEOUT)
         ) from error
+    except UnicodeError as error:
+        raise UpdateError("%s output is not valid UTF-8" % _command_label(argv)) from error
 
 
 def _run_checked(argv):
@@ -344,13 +346,16 @@ def _versions(doctor, state):
 
 def run_doctor(plugin_root, runner=subprocess.run, stream=None):
     stream = sys.stdout if stream is None else stream
-    completed = runner(
-        [sys.executable, str(Path(plugin_root) / "bin" / "p-doctor")],
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-        check=False,
-    )
+    try:
+        completed = runner(
+            [sys.executable, str(Path(plugin_root) / "bin" / "p-doctor")],
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+    except UnicodeError:
+        return 2
     if completed.stdout:
         stream.write(completed.stdout)
     return completed.returncode if completed.returncode in {0, 1, 2} else 2
@@ -366,7 +371,7 @@ def sync_status_indicator(plugin_root, runner=subprocess.run):
             [sys.executable, "-B", str(Path(plugin_root) / "bin" / "statusline-ctl"), "profile-sync"],
             text=True, encoding="utf-8", capture_output=True, check=False,
         )
-    except OSError:
+    except (OSError, UnicodeError):
         return 2
     return completed.returncode if completed.returncode in {0, 1} else 2
 
@@ -397,7 +402,7 @@ def resync_native(plugin_root, runner=subprocess.run):
             [sys.executable, "-B", str(Path(plugin_root) / "bin" / "skill-profile-ctl"), "sync-native"],
             text=True, encoding="utf-8", capture_output=True, check=False,
         )
-    except OSError:
+    except (OSError, UnicodeError):
         return 2
     return completed.returncode
 

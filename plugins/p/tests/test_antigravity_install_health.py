@@ -148,6 +148,25 @@ class AntigravityInstallHealthTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "did not finish"):
             self.doctor.query_agy("agy", runner=hangs)
 
+    def _garbled_cli(self):
+        path = Path(self.tmp.name) / "garbled-cli"
+        path.write_text("#!/bin/sh\nprintf '\\377\\376 not utf-8\\n'\n", encoding="utf-8")
+        path.chmod(0o755)
+        return str(path)
+
+    def test_non_utf8_harness_output_is_a_query_failure_not_a_traceback(self):
+        cli = self._garbled_cli()
+        with self.assertRaisesRegex(RuntimeError, "UTF-8"):
+            self.doctor._run_json(cli, ["plugin", "list", "--json"])
+        with self.assertRaisesRegex(RuntimeError, "UTF-8"):
+            self.doctor.query_agy(cli)
+        with mock.patch.object(self.doctor, "_find_executable", lambda name: cli), \
+                mock.patch.object(self.doctor, "package_metadata_checks", lambda: []):
+            _, checks = self.doctor.collect()
+        queries = [c for c in checks if c.key.endswith(".query")]
+        self.assertEqual(3, len(queries))
+        self.assertTrue(all(c.status == "ERROR" for c in queries))
+
     def test_doctor_probe_flags_a_hook_that_does_not_inject(self):
         root = copy_plugin(Path(self.tmp.name) / "p")
         (root / "bin" / "agy-format-hook").write_text(

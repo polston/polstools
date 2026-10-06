@@ -5,6 +5,7 @@ import json
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -360,7 +361,8 @@ class FakeHarnessUpdateTests(unittest.TestCase):
     def _interrupted_codex(self, add_result):
         self._claude_with_p()
         self._codex_without_p()
-        marker = self.fake.home / ".codex" / "p-update" / "codex-readd-pending"
+        with patched_env(self.fake.env("P_UPDATE_", ["claude", "codex"])):
+            marker = self.update.codex_readd_marker()
         marker.parent.mkdir(parents=True)
         marker.write_text("pending\n", encoding="utf-8")
         self.fake.on("codex", ["plugin", "add", "p@polstools"], add_result)
@@ -380,6 +382,14 @@ class FakeHarnessUpdateTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn("codex plugin add p@polstools", err)
         self.assertTrue(marker.exists())
+
+    def test_non_utf8_cli_output_is_an_update_error(self):
+        self.update.RUN = subprocess.run
+        cli = self.root / "garbled-cli"
+        cli.write_text("#!/bin/sh\nprintf '\\377\\376 not utf-8\\n'\n", encoding="utf-8")
+        cli.chmod(0o755)
+        with self.assertRaisesRegex(self.update.UpdateError, "UTF-8"):
+            self.update.run_json(str(cli), ["plugin", "list", "--json"])
 
     def test_unreadable_harness_stops_before_any_change(self):
         self._claude_with_p()
