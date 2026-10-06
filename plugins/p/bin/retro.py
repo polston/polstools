@@ -2005,6 +2005,15 @@ def concentration(rows, key):
     return by_project.most_common(1)[0][1] / total * 100
 
 
+# The same table format-ctl and lib/skill_activation.py read; adding a
+# harness or a variable means editing all three.
+HARNESS_SESSION_VARS = (
+    ("claude", ("CLAUDE_CODE_SESSION_ID",)),
+    ("codex", ("CODEX_SESSION_ID", "CODEX_THREAD_ID")),
+    ("antigravity", ("ANTIGRAVITY_CONVERSATION_ID",)),
+)
+
+
 def reporting_session_ids(extra):
     """Session ids whose rows this report must not count.
 
@@ -2016,15 +2025,11 @@ def reporting_session_ids(extra):
     dispatched. The ids are read, matched and discarded - never printed.
     """
     ids = {value for value in (extra or []) if value}
-    current = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
-    if current:
-        ids.add(current)
-    # The same tuple format-ctl reads (plugins/p/bin/format-ctl); adding a
-    # harness means editing both.
-    for name in ("CODEX_SESSION_ID", "CODEX_THREAD_ID"):
-        value = os.environ.get(name) or ""
-        if value:
-            ids.add(value)
+    for _, names in HARNESS_SESSION_VARS:
+        for name in names:
+            value = os.environ.get(name) or ""
+            if value:
+                ids.add(value)
     return ids
 
 

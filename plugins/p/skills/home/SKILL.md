@@ -14,3 +14,9 @@ description: Select the p home skill profile for the current Claude Code or Code
 3. Run the script now with no arguments.
 4. If it exits 0, confirm in one line that the home profile (`p:h`) is active
    for this session.
+5. If it refuses because session variables of two harnesses are set,
+   rerun it once with `P_SKILL_HARNESS` set to the harness this session runs in
+   (`claude`, `codex`, or `antigravity`).
+6. On Antigravity, if it exits 2 because no session id reached the agent's
+   shell, say so in one line and offer `use home --global`, which applies to
+   every session.

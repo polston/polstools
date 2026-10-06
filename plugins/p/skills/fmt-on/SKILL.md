@@ -19,3 +19,9 @@ Before any other action, resolve the plugin root from this `SKILL.md` and run
 3. If it exits 0, confirm in one line what its output says changed — the
    session state or the written default — and resume the response format with
    that reply when this session's format is on.
+4. If it refuses because session variables of two harnesses are set,
+   rerun it once with `P_FORMAT_HARNESS` set to the harness this session runs in
+   (`claude`, `codex`, or `antigravity`).
+5. On Antigravity, if it exits 2 because no session id reached the agent's
+   shell, say so in one line and offer `default antigravity`, which applies to
+   every Antigravity session.

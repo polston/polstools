@@ -20,8 +20,7 @@ REFRESH_SECONDS = 24 * 3600
 HARNESS_SESSION_VARS = (
     ("claude", ("CLAUDE_CODE_SESSION_ID",)),
     ("codex", ("CODEX_SESSION_ID", "CODEX_THREAD_ID")),
-    ("antigravity", ("ANTIGRAVITY_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID",
-                     "AGY_SESSION_ID", "AGY_CONVERSATION_ID")),
+    ("antigravity", ("ANTIGRAVITY_CONVERSATION_ID",)),
 )
 SESSION_ENV_VARS = tuple(name for _, names in HARNESS_SESSION_VARS for name in names)
 IDENTIFIER_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
