@@ -21,12 +21,14 @@
     "ccstatusline",
     "claude-code",
     "codex",
+    "antigravity",
+    "agy",
     "windows"
   ],
   "interface": {
     "displayName": "p",
     "shortDescription": "Cross-harness workflow and repository tools.",
-    "longDescription": "Skills and portable scripts for repository safety, workflow evidence, goal design, evaluation, response formatting, and aligned status information across Claude Code and Codex.",
+    "longDescription": "Skills and portable scripts for Claude Code, Codex, and Antigravity: repository safety, workflow evidence, goal design, evaluation, response formatting, and status lines aligned between Claude Code and Codex.",
     "developerName": "polston",
     "category": "Productivity",
     "capabilities": [

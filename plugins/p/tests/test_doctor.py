@@ -281,33 +281,6 @@ class SchemaAndPackagingTests(unittest.TestCase):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/p-doctor", skill)
         self.assertIn("exit code", skill)
 
-    def test_release_metadata_uses_feature_version(self):
-        marketplace = json.loads(
-            (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        manifest = json.loads(
-            (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        codex_manifest = json.loads(
-            (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        antigravity_manifest = json.loads(
-            (PLUGIN_ROOT / "plugin.json").read_text(encoding="utf-8")
-        )
-        entry = next(item for item in marketplace["plugins"] if item["name"] == "p")
-        self.assertEqual("1.10.1", entry["version"])
-        self.assertEqual("1.10.1", manifest["version"])
-        self.assertEqual("1.10.1", codex_manifest["version"])
-        self.assertEqual("1.10.1", antigravity_manifest["version"])
-        self.assertEqual(manifest["description"], codex_manifest["description"])
-        self.assertEqual(manifest["description"], antigravity_manifest["description"])
-
 
 if __name__ == "__main__":
     unittest.main()

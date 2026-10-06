@@ -27,7 +27,6 @@ class UniversalMetadataTests(unittest.TestCase):
     def test_codex_manifest_uses_the_accepted_skill_only_surface(self):
         manifest = load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json")
         self.assertEqual("p", manifest["name"])
-        self.assertEqual("1.10.1", manifest["version"])
         self.assertEqual("./skills/", manifest["skills"])
         self.assertEqual("polston", manifest["author"]["name"])
         self.assertNotIn("hooks", manifest)
@@ -61,23 +60,23 @@ class UniversalMetadataTests(unittest.TestCase):
             marketplace["plugins"],
         )
 
-    def test_release_metadata_is_synchronized_at_1_10_0(self):
-        claude_manifest = load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")
-        codex_manifest = load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json")
+    def test_release_metadata_agrees_across_every_manifest_and_marketplace(self):
+        manifests = {
+            "Claude": load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json"),
+            "Codex": load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json"),
+            "Antigravity": load_json(PLUGIN_ROOT / "plugin.json"),
+        }
         claude_marketplace = load_json(REPO_ROOT / ".claude-plugin" / "marketplace.json")
-        claude_entry = next(
+        manifests["Claude marketplace"] = next(
             item for item in claude_marketplace["plugins"] if item["name"] == "p"
         )
-        self.assertEqual(
-            {"1.10.1"},
-            {
-                claude_manifest["version"],
-                codex_manifest["version"],
-                claude_entry["version"],
-            },
-        )
-        self.assertEqual(claude_manifest["description"], codex_manifest["description"])
-        self.assertEqual(claude_manifest["description"], claude_entry["description"])
+        for field in ("version", "description", "keywords"):
+            with self.subTest(field=field):
+                values = {label: value.get(field) for label, value in manifests.items()}
+                self.assertEqual(1, len({json.dumps(v) for v in values.values()}), values)
+        universal = load_json(REPO_ROOT / ".agents" / "plugins" / "marketplace.json")
+        entry = next(item for item in universal["plugins"] if item["name"] == "p")
+        self.assertTrue((REPO_ROOT / entry["source"]["path"] / ".codex-plugin" / "plugin.json").is_file())
 
 
 class CanonicalSkillAdapterTests(unittest.TestCase):
