@@ -653,6 +653,30 @@ class ControlCharacterTests(unittest.TestCase):
         for word in ("Mod", "hi", "dir", "br"):
             self.assertIn(word, plain)
 
+    BIDI = "‎‏‪‫‬‭‮⁦⁧⁨⁩"
+
+    def check_bidi_removed(self, runner):
+        sample = {
+            "model": {"display_name": "Mo" + self.BIDI + "del"},
+            "workspace": {"current_dir": "di" + self.BIDI + "r", "git_branch": "br" + self.BIDI + "x"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            result = runner(json.dumps(sample), FakeHome(tmp).env(no_refresh=True))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for char in self.BIDI:
+            self.assertNotIn(char, result.stdout, "U+%04X reached the terminal" % ord(char))
+        plain = ANSI.sub("", result.stdout)
+        for word in ("Model", "dir", "brx"):
+            self.assertIn(word, plain)
+
+    def test_python_renderer_drops_bidirectional_controls(self):
+        self.check_bidi_removed(run_python)
+
+    def test_powershell_renderer_drops_bidirectional_controls(self):
+        if not powershell():
+            self.skipTest("PowerShell is unavailable on this machine")
+        self.check_bidi_removed(run_powershell)
+
     def test_git_branch_home_and_labels_are_stripped(self):
         renderer = load_renderer()
         branch = self.hostile("feature")

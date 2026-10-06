@@ -28,8 +28,8 @@ function Get-Field($obj, [string]$name) {
     return $null
 }
 
-# C0 controls, DEL and C1 controls never reach the terminal from outside input.
-function Remove-Controls([string]$text) { return [regex]::Replace($text, '[\u0000-\u001F\u007F-\u009F]', '') }
+# C0 controls, DEL, C1 controls and bidirectional format controls never reach the terminal from outside input.
+function Remove-Controls([string]$text) { return [regex]::Replace($text, '[\u0000-\u001F\u007F-\u009F‎‏‪-‮⁦-⁩]', '') }
 function Get-Text($value) { if ($value -is [string]) { return (Remove-Controls $value).Trim() } return '' }
 
 function Get-Num($value) {

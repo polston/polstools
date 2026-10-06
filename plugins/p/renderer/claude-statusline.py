@@ -54,10 +54,19 @@ def as_object(value):
     return value if isinstance(value, dict) else {}
 
 
+BIDI_CONTROLS = frozenset(
+    [0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)]
+)
+
+
 def strip_controls(text):
-    """Remove C0 controls, DEL and C1 controls: nothing from outside the
-    renderer may reach the terminal as an escape sequence."""
-    return "".join(ch for ch in text if not (ord(ch) < 32 or 127 <= ord(ch) <= 159))
+    """Remove C0 controls, DEL, C1 controls and bidirectional format controls:
+    nothing from outside the renderer may reach the terminal as an escape
+    sequence or reorder the line it is shown in."""
+    return "".join(
+        ch for ch in text
+        if not (ord(ch) < 32 or 127 <= ord(ch) <= 159 or ord(ch) in BIDI_CONTROLS)
+    )
 
 
 def as_text(value):
