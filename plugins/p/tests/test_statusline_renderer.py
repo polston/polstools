@@ -80,6 +80,7 @@ class FakeHome:
                 "P_SKILL_CONFIG_FILE": str(self.root / "skill-global.json"),
                 "P_SKILL_STATE_DIR": str(self.root / "skill-sessions"),
                 "PATH": str(self.stub) + os.pathsep + env.get("PATH", ""),
+                "PYTHONDONTWRITEBYTECODE": "1",
             }
         )
         if os.name == "nt":

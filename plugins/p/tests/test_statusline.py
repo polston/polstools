@@ -108,6 +108,7 @@ class StatuslineCliTests(unittest.TestCase):
                 "STATUSLINE_CCSTATUSLINE_CONFIG": str(root / "ccstatusline.json"),
                 "USERPROFILE": str(root / "profile-marker"),
                 "HOME": str(root / "profile-marker"),
+                "PYTHONDONTWRITEBYTECODE": "1",
             }
         )
         return env
