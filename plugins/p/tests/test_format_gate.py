@@ -17,14 +17,17 @@ SESSION_VARS = (
     "AGY_SESSION_ID", "AGY_CONVERSATION_ID",
 )
 FORMAT_VARS = (
-    "P_FORMAT_DEFAULT", "P_FORMAT_HARNESS", "P_FORMAT_STATE_DIR",
-    "P_FORMAT_CONFIG_FILE", "RETRO_HOME", "XDG_RUNTIME_DIR",
+    "RETRO_HOME", "XDG_RUNTIME_DIR", "POLSTOOLS_PYTHON", "POLSTOOLS_SINGLE_START",
 )
+FORMAT_PREFIXES = ("P_FORMAT_", "P_SKILL_", "P_STATUSLINE_")
 
 
 def hermetic_env(root, **extra):
+    """The caller's environment minus everything that changes gate behaviour
+    (notably RETRO_HOME, which turns on telemetry writes)."""
     env = {k: v for k, v in os.environ.items()
-           if k not in SESSION_VARS + FORMAT_VARS}
+           if k not in SESSION_VARS + FORMAT_VARS
+           and not k.startswith(FORMAT_PREFIXES)}
     env["P_FORMAT_STATE_DIR"] = str(Path(root) / "state")
     env["P_FORMAT_CONFIG_FILE"] = str(Path(root) / "format.json")
     env.update(extra)
@@ -407,6 +410,29 @@ class HookEntryTests(unittest.TestCase):
         env = hermetic_env(self.root, P_FORMAT_DEFAULT="on")
         result = run_hook(env, "{}", self.payload, "--hook-id")
         self.assertEqual(result.returncode, 1)
+
+
+class FormatE2eHermeticTests(unittest.TestCase):
+    """format-e2e must give the same result whatever the caller's shell holds,
+    and must never write into a RETRO_HOME it did not create."""
+
+    def run_e2e(self, **extra):
+        with tempfile.TemporaryDirectory() as retro_home:
+            env = dict(os.environ, RETRO_HOME=retro_home, **extra)
+            result = subprocess.run(
+                [sys.executable, "-B", str(PLUGIN_ROOT / "bin" / "format-e2e")],
+                text=True, encoding="utf-8", capture_output=True, env=env)
+            leftover = os.listdir(retro_home)
+        last = result.stdout.strip().splitlines()[-1]
+        passed, total = last.split()[0].split("/")
+        self.assertEqual((result.returncode, passed), (0, total), result.stdout[-600:])
+        self.assertEqual(leftover, [])
+
+    def test_passes_with_retro_home_set_and_leaves_it_empty(self):
+        self.run_e2e()
+
+    def test_passes_with_a_forced_default_and_a_stray_session(self):
+        self.run_e2e(P_FORMAT_DEFAULT="on", CLAUDE_CODE_SESSION_ID="stray-session")
 
 
 if __name__ == "__main__":

@@ -43,8 +43,26 @@ def check(name, ok, detail=""):
     results.append((name, ok, detail))
 
 
+# Every case starts from the caller's environment minus anything that changes
+# gate behaviour, so the result does not depend on the caller's shell. Each
+# case then adds exactly what it exercises. RETRO_HOME is among them: when it
+# is set the gate writes hook telemetry, which needs Python by design, and a
+# check must never write into a RETRO_HOME it did not create.
+CONTROLLED_PREFIXES = ("P_FORMAT_", "P_SKILL_", "P_STATUSLINE_")
+CONTROLLED_NAMES = frozenset((
+    "RETRO_HOME", "POLSTOOLS_PYTHON", "POLSTOOLS_SINGLE_START",
+    "XDG_RUNTIME_DIR",
+)) | frozenset(FMT_REMOVE)
+
+
+def controlled_base():
+    return {k: v for k, v in os.environ.items()
+            if k not in CONTROLLED_NAMES
+            and not k.startswith(CONTROLLED_PREFIXES)}
+
+
 def run(cmd, stdin_text=None, env_extra=None, env_remove=(), binary=False):
-    env = dict(os.environ)
+    env = controlled_base()
     for name in env_remove:
         env.pop(name, None)
     if env_extra:
@@ -452,6 +470,37 @@ with tempfile.TemporaryDirectory() as native_home:
           "p-skill-activation begin" in synced, str(steps))
     check("sync-native restores the original bytes under home",
           steps == [0, 0, 0, 0] and restored == original, str(steps))
+
+# 19. Hook telemetry is explicit: with RETRO_HOME set the gate always runs in
+#     Python (it records an event), so the shell cannot settle the off case
+with tempfile.TemporaryDirectory() as retro_home:
+    events_file = os.path.join(retro_home, "telemetry", "owned-hook-events.jsonl")
+    r = gate("UserPromptSubmit", sid="e2e-telemetry",
+             env={"RETRO_HOME": retro_home})
+    try:
+        logged = [json.loads(line) for line in
+                  open(events_file, encoding="utf-8").read().splitlines()]
+    except (OSError, ValueError):
+        logged = []
+    # One hook invocation records opportunity, start and end under one id.
+    check("format off with RETRO_HOME prints nothing, exits 0, logs one invocation",
+          r.returncode == 0 and r.stdout == ""
+          and [e.get("event") for e in logged] == ["opportunity", "start", "end"]
+          and len({e.get("invocation_id") for e in logged}) == 1,
+          "rc=%d events=%s" % (r.returncode, [e.get("event") for e in logged]))
+with tempfile.TemporaryDirectory() as retro_home, \
+        tempfile.TemporaryDirectory() as bare:
+    sh_wrapper = os.path.join(bare, "sh")
+    with open(sh_wrapper, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write('#!/bin/sh\nexec "%s" "$@"\n'
+                     % shutil.which("sh").replace("\\", "/"))
+    os.chmod(sh_wrapper, 0o755)
+    r = gate("UserPromptSubmit", sid="e2e-telemetry-bare",
+             env={"PATH": bare, "POLSTOOLS_PYTHON": "",
+                  "RETRO_HOME": retro_home})
+    check("format off with RETRO_HOME and no Python exits 1, logs nothing",
+          r.returncode == 1 and r.stdout == "" and not os.listdir(retro_home),
+          "rc=%d" % r.returncode)
 
 shutil.rmtree(FMT_HOME, ignore_errors=True)
 
