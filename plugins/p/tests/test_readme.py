@@ -9,6 +9,8 @@ PLUGIN_ROOT = REPO_ROOT / "plugins" / "p"
 README_PATH = REPO_ROOT / "README.md"
 AGENTS_PATH = REPO_ROOT / "AGENTS.md"
 CLAUDE_PATH = REPO_ROOT / "CLAUDE.md"
+LICENSE_PATH = REPO_ROOT / "LICENSE"
+CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
 HARNESSES = ("Claude Code", "Codex", "Antigravity")
 
 
@@ -111,6 +113,18 @@ class RepositoryDocumentTests(unittest.TestCase):
         while claude and not claude[-1]:
             claude.pop()
         self.assertEqual(claude, agents)
+
+    def test_licence_file_is_present(self):
+        text = LICENSE_PATH.read_text(encoding="utf-8")
+        self.assertGreater(len(text.strip()), 200)
+
+    def test_changelog_has_an_entry_for_the_released_version(self):
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        headings = re.findall(r"(?m)^## \[?(\d+\.\d+\.\d+|Unreleased)\]?", CHANGELOG_PATH.read_text(encoding="utf-8"))
+        self.assertIn(manifest["version"], headings)
+        self.assertEqual(len(headings), len(set(headings)))
 
 
 if __name__ == "__main__":
