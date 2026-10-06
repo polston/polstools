@@ -24,7 +24,16 @@ class AdapterResult:
     skills: tuple[str, ...] = ()
 
 
+class SourceUnreadable(OSError):
+    """A source file could not be read; distinct from one holding no records."""
+
+
 def iter_jsonl(path: Path):
+    """Yield (line number, record) for dict records, skipping partial lines.
+
+    Raises SourceUnreadable when the file cannot be opened or read, so a read
+    failure is never reported as a file without a direct-human prompt.
+    """
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             for line_no, line in enumerate(handle, 1):
@@ -34,17 +43,19 @@ def iter_jsonl(path: Path):
                     continue
                 if isinstance(record, dict):
                     yield line_no, record
-    except OSError:
-        return
+    except OSError as exc:
+        raise SourceUnreadable(str(path)) from exc
 
 
 def parse_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO-8601 source timestamp; naive values have no known zone."""
     if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed if parsed.utcoffset() is not None else None
 
 
 class AdapterBase:

@@ -37,6 +37,14 @@
       "glob": "rollout-*.jsonl",
       "options": {
         "handoff_tools": ["spawn_agent", "followup_task", "send_message", "interrupt_agent"],
+        "machine_prompt_openers": [
+          "<task-notification>", "<system-reminder>", "<command-name>",
+          "<local-command-stdout>", "Base directory for this skill:",
+          "This session is being continued", "Caveat: The messages below were generated",
+          "<environment_context>", "<recommended_plugins>", "<skill>",
+          "<turn_aborted>", "<codex_delegation>",
+          "<codex_internal_context", "<in-app-browser-context", "<image"
+        ],
         "capabilities": {
           "human_provenance": {"state": "available"},
           "subagent_identity": {"state": "available"},

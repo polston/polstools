@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .cli import command
+from .adapters.base import SourceUnreadable
 from .adapters.registry import AdapterRegistry, default_registry
 from .instruction_manifest import load_instruction_manifest
 from .storage import JsonlTraceStore
@@ -156,7 +157,12 @@ class EvaluationPipeline:
                     source_hashes.append(_file_sha256(path))
                 except OSError:
                     source_fingerprint_failures += 1
-                result = adapter.read(path, root)
+                try:
+                    result = adapter.read(path, root)
+                except SourceUnreadable:
+                    excluded_count += 1
+                    excluded["unreadable"] += 1
+                    continue
                 if result.included:
                     included += 1
                     main += not result.is_subagent

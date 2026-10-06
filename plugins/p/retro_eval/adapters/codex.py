@@ -23,18 +23,33 @@ def _message_text(payload):
         and str(block.get("text") or "").strip())
 
 
+def _canonical_arguments(raw):
+    """Serialize call input so equivalent JSON argument strings sign alike."""
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            pass
+    return json.dumps(raw, sort_keys=True, default=str)
+
+
 class CodexAdapter(AdapterBase):
     source = "codex"
-    adapter_version = 2
+    adapter_version = 3
 
     def __init__(self, id_salt: bytes, excluded_session_ids=None,
-                 handoff_tools=None, capabilities=None):
+                 handoff_tools=None, capabilities=None,
+                 machine_prompt_openers=None):
         super().__init__(id_salt)
-        if handoff_tools is None or capabilities is None:
+        if handoff_tools is None or capabilities is None \
+                or machine_prompt_openers is None:
             from .registry import default_options_for
             defaults = default_options_for(self.source)
             handoff_tools = defaults["handoff_tools"] if handoff_tools is None else handoff_tools
             capabilities = defaults["capabilities"] if capabilities is None else capabilities
+            if machine_prompt_openers is None:
+                machine_prompt_openers = defaults["machine_prompt_openers"]
+        self.machine_prompt_openers = tuple(str(v) for v in machine_prompt_openers)
         self.excluded_session_ids = {
             str(value).lower() for value in (excluded_session_ids or ())
         }
@@ -103,6 +118,9 @@ class CodexAdapter(AdapterBase):
                 continue
             item_type = payload.get("type")
             if item_type == "message" and payload.get("role") == "user":
+                body = _message_text(payload)
+                if not body or body.startswith(self.machine_prompt_openers):
+                    continue
                 human_prompts += 1
                 records.append(self._span(trace_id, sequence, SpanKind.PROMPT,
                                           record, source_version, "human"))
@@ -113,7 +131,7 @@ class CodexAdapter(AdapterBase):
                 tool_calls += 1
                 tool = str(payload.get("name") or payload.get("tool_name") or "")
                 raw = payload.get("arguments") or payload.get("input") or ""
-                signature = self.ids.make(tool, json.dumps(raw, sort_keys=True, default=str))
+                signature = self.ids.make(tool, _canonical_arguments(raw))
                 kind = SpanKind.HANDOFF if tool in self.handoff_tools else SpanKind.TOOL
                 records.append(self._span(trace_id, sequence, kind,
                                           record, source_version, "agent", tool, signature))
