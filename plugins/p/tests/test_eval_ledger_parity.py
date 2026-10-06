@@ -108,6 +108,40 @@ class ClaudeHumanPromptParity(_Corpus):
                 self.assertEqual(expected, self.counts(record))
 
 
+class ClaudeSkillRunParity(_Corpus):
+    def stamped(self, skill, minutes, message=None):
+        record = claude_assistant("working", T0 + timedelta(minutes=minutes))
+        if skill is not None:
+            record["attributionSkill"] = skill
+        if message is not None:
+            record["message"] = message
+        return record
+
+    def counts(self, records):
+        path = self.write("proj/session.jsonl",
+                          [claude_user("start", T0)] + records)
+        ledger = retro.measure(path, "claude", self.root)["skill_runs"]
+        result = ClaudeAdapter(SALT).read(path, self.root)
+        adapter = sum(1 for r in result.records
+                      if "start_basis" in r.attributes)
+        return ledger, adapter
+
+    def test_agreeing_and_edge_inputs(self):
+        cases = {
+            "one_run": ([self.stamped("a", 1), self.stamped("a", 2)], 1),
+            "two_skills": ([self.stamped("a", 1), self.stamped("b", 2)], 2),
+            "gap_ends_a_run": ([self.stamped("a", 1), self.stamped(None, 2),
+                                self.stamped("a", 3)], 2),
+            "stamp_type_differs": ([self.stamped(7, 1), self.stamped("7", 2)], 1),
+            "non_dict_message_is_ignored": (
+                [self.stamped("a", 1), self.stamped("b", 2, message="text"),
+                 self.stamped("a", 3)], 1),
+        }
+        for name, (records, expected) in cases.items():
+            with self.subTest(name):
+                self.assertEqual((expected, expected), self.counts(records))
+
+
 class CodexHumanPromptParity(_Corpus):
     def test_profile_openers_equal_ledger_openers(self):
         self.assertEqual(retro.MACHINE_PROMPT_OPENERS,

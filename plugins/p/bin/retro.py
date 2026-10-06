@@ -676,7 +676,7 @@ def measure(path, harness="claude", root=None):
     conversation = 0
     tokens_in = tokens_out = cache_read = 0
     prev_mode = None
-    prev_skill = None
+    prev_skill = ""
     tool_by_id = {}
     tools_used = set()
     open_tool_ids = set()
@@ -716,10 +716,13 @@ def measure(path, harness="claude", root=None):
         skill = rec.get("attributionSkill")
         if skill:
             skills.add(str(skill))
-        if rtype == "assistant":
-            if skill and skill != prev_skill:
+        # The evaluation adapter ignores a record whose message is not an
+        # object and compares the stamp as text; the run count matches it.
+        if rtype == "assistant" and isinstance(rec.get("message"), dict):
+            stamp = str(skill or "")
+            if stamp and stamp != prev_skill:
                 m["skill_runs"] += 1
-            prev_skill = skill
+            prev_skill = stamp
 
         if rtype == "permission-mode":
             # These records are a repeated snapshot of the current mode, not a

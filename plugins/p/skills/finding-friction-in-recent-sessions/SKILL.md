@@ -124,7 +124,8 @@ reading does not silently promote the rubric into decision support.
 Two of these carry a known measurement caveat. `skill_runs` counts contiguous
 stretches of assistant turns attributed to the same skill, which is not the same
 as the number of times it was deliberately invoked, and the field it derives
-from is absent from transcripts written by older CLI versions. `tool_errors` counts records carrying
+from is absent from transcripts written by older CLI versions. For Codex rows
+`skill_runs` counts injected skill messages instead, one per message. `tool_errors` counts records carrying
 a failure marker, which includes failures that were expected and handled. On a
 mixed corpus, `tool_errors`, `queued_prompts`, and `permission_mode_changes` are
 not observable for Codex rows; the pack marks those lines with the observable
