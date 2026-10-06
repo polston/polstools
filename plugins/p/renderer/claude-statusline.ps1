@@ -249,6 +249,8 @@ function Get-ScopedState($python) {
     $dir = Get-TrustedCacheDir $true
     if (-not $dir) { return $null }
     $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $pinned = 0L
+    if ([long]::TryParse([string]$env:P_STATUSLINE_NOW_MS, [ref]$pinned)) { $nowMs = $pinned }
     $cache = $null
     $cachePath = Join-Path $dir 'usage-cache.json'
     if (Test-PlainFileOrAbsent $cachePath) {
@@ -262,12 +264,12 @@ function Get-ScopedState($python) {
         if ($label -and $null -ne $percent) { $state = @('gauge', $label, $percent) }
         elseif (-not $label) { $state = $null }
     }
-    if ($null -eq $at -or ($nowMs - $at) -gt 60000) {
+    if (-not $env:P_STATUSLINE_NO_REFRESH -and ($null -eq $at -or ($nowMs - $at) -gt 60000)) {
         $attemptPath = Join-Path $dir 'usage-attempt.txt'
         if (Test-PlainFileOrAbsent $attemptPath) {
             $last = 0
             try { $last = [long]((Get-Content -LiteralPath $attemptPath -Raw).Trim()) } catch {}
-            if (($nowMs - $last) -gt 30000) {
+            if (($nowMs - $last) -gt 30000 -or ($nowMs - $last) -lt 0) {
                 try {
                     [System.IO.File]::WriteAllText($attemptPath, [string]$nowMs)
                     Start-Refresh $python

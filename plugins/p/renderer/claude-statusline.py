@@ -343,7 +343,21 @@ def scoped_state(cache, now_ms):
     return ("unavailable", label), refresh_due
 
 
+def _now_ms():
+    """Wall-clock milliseconds; P_STATUSLINE_NOW_MS pins it (tests, replay)."""
+    try:
+        return int(os.environ["P_STATUSLINE_NOW_MS"])
+    except (KeyError, ValueError):
+        return int(time.time() * 1000)
+
+
 def _schedule_refresh(directory, now_ms):
+    """Start the detached usage refresh unless one was attempted recently.
+
+    P_STATUSLINE_NO_REFRESH=1 (any non-empty value) disables the refresh.
+    """
+    if os.environ.get("P_STATUSLINE_NO_REFRESH"):
+        return False
     attempt = directory / "usage-attempt.txt"
     try:
         fd = os.open(str(attempt), os.O_RDONLY | NOFOLLOW)
@@ -351,7 +365,8 @@ def _schedule_refresh(directory, now_ms):
             last = int(handle.read().strip())
     except (OSError, ValueError, UnicodeError):
         last = 0
-    if now_ms - last <= ATTEMPT_MS:
+    # An attempt stamped in the future (clock change) must not suppress refreshes.
+    if 0 <= now_ms - last <= ATTEMPT_MS:
         return False
     try:
         _write_private(attempt, str(now_ms))
@@ -409,7 +424,7 @@ def render(raw, now_ms=None):
     except ValueError:
         data = {}
     data = as_object(data)
-    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    now_ms = _now_ms() if now_ms is None else now_ms
     workspace = as_object(data.get("workspace"))
     cwd = as_text(workspace.get("current_dir")) or as_text(data.get("cwd"))
     branch = "" if as_text(workspace.get("git_branch")) else _git_branch(cwd)

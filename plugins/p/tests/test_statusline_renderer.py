@@ -64,7 +64,11 @@ class FakeHome:
         )
         security.chmod(0o755)
 
-    def env(self, columns=None):
+    # Renderers run with this pinned clock (P_STATUSLINE_NOW_MS), so no test
+    # outcome depends on how much wall-clock time passes during a run.
+    NOW = 1_800_000_000_000
+
+    def env(self, columns=None, no_refresh=False):
         env = dict(os.environ)
         for name in SESSION_VARS + ("COLUMNS", "USERPROFILE", "CLAUDE_CONFIG_DIR"):
             env.pop(name, None)
@@ -80,15 +84,20 @@ class FakeHome:
         )
         if os.name == "nt":
             env["USERPROFILE"] = str(self.home)
+        env["P_STATUSLINE_NOW_MS"] = str(self.NOW)
+        if no_refresh:
+            env["P_STATUSLINE_NO_REFRESH"] = "1"
+        else:
+            env.pop("P_STATUSLINE_NO_REFRESH", None)
         if columns is not None:
             env["COLUMNS"] = str(columns)
         return env
 
-    def write_cache(self, cache):
-        """Install the case's cache and mark a refresh as just attempted."""
+    def write_cache(self, cache, attempt_age_ms=0):
+        """Install the case's cache and an attempt marker attempt_age_ms old."""
         self.cache.mkdir(parents=True, exist_ok=True, mode=0o700)
-        now = int(time.time() * 1000)
-        (self.cache / "usage-attempt.txt").write_text(str(now), encoding="utf-8")
+        now = self.NOW
+        (self.cache / "usage-attempt.txt").write_text(str(now - attempt_age_ms), encoding="utf-8")
         target = self.cache / "usage-cache.json"
         if cache is None:
             if target.exists():
@@ -121,12 +130,13 @@ def run_powershell(stdin, env):
 
 
 class RendererContractTests(unittest.TestCase):
-    def check_contract(self, runner, fake):
+    def check_contract(self, runner, fake, attempt_age_ms=0):
         outputs = {}
         for case in CONTRACT["cases"]:
             with self.subTest(case=case["name"]):
-                fake.write_cache(case.get("cache"))
-                result = runner(case_input(case, fake.home), fake.env(case.get("columns")))
+                fake.write_cache(case.get("cache"), attempt_age_ms)
+                env = fake.env(case.get("columns"), no_refresh=True)
+                result = runner(case_input(case, fake.home), env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 expected = [line.replace("{home}", fake.home.as_posix()) for line in case["expect"]]
                 self.assertEqual(ANSI.sub("", result.stdout).splitlines(), expected)
@@ -152,6 +162,11 @@ class RendererContractTests(unittest.TestCase):
         for name, stdout in expected.items():
             with self.subTest(case=name):
                 self.assertEqual(actual[name], stdout)
+
+    def test_contract_stays_quiet_when_the_attempt_marker_is_old(self):
+        # Elapsed time is simulated by an old marker, never by waiting.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.check_contract(run_python, FakeHome(tmp), attempt_age_ms=3_600_000)
 
     def test_unreadable_session_state_shows_the_unknown_profile_label(self):
         activation = load_activation()
@@ -202,7 +217,7 @@ class RendererProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fake = FakeHome(tmp)
             fake.cache.mkdir(parents=True, mode=0o700)
-            now = int(time.time() * 1000)
+            now = FakeHome.NOW
             (fake.cache / "usage-cache.json").write_text(
                 json.dumps({"at": now, "label": "model-week", "percent": 30}), "utf-8"
             )
@@ -390,7 +405,7 @@ def snapshot(root):
 
 
 def fresh_cache_bytes():
-    body = {"at": int(time.time() * 1000), **FRESH_SCOPED}
+    body = {"at": FakeHome.NOW, **FRESH_SCOPED}
     return json.dumps(body).encode("utf-8")
 
 
@@ -541,6 +556,33 @@ class PerUserCacheNameTests(unittest.TestCase):
             created = sorted(path.name for path in scratch.iterdir() if path.name.startswith("claude-statusline"))
             self.assertEqual(created, ["claude-statusline-" + str(os.getuid())])
             self.assertEqual(os.stat(scratch / created[0]).st_mode & 0o777, 0o700)
+
+
+class FutureAttemptMarkerTests(unittest.TestCase):
+    """An attempt stamped in the future (a clock change) must not suppress refreshes."""
+
+    def check(self, runner):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeHome(tmp)
+            fake.write_cache(None)
+            marker = fake.cache / "usage-attempt.txt"
+            marker.write_text(str(FakeHome.NOW + 3_600_000), encoding="utf-8")
+            result = runner(json.dumps(RATE_LIMITS), fake.env())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(marker.read_text(encoding="utf-8"), str(FakeHome.NOW))
+            time.sleep(0.5)  # let the stub-backed refresh child finish before cleanup
+
+    def setUp(self):
+        if os.name == "nt":
+            self.skipTest("POSIX file modes")
+
+    def test_python_renderer_retries(self):
+        self.check(run_python)
+
+    def test_powershell_renderer_retries(self):
+        if not powershell():
+            self.skipTest("PowerShell is unavailable on this machine")
+        self.check(run_powershell)
 
 
 class ControlCharacterTests(unittest.TestCase):
