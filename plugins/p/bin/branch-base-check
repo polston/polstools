@@ -71,8 +71,8 @@ fi
 # Default base = the remote's HEAD as last fetched, else as the remote reports
 # it now, else main, else master.
 if [ -z "$BASE" ]; then
-  BASE=$(git -C "$REPO" symbolic-ref --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null \
-         | sed "s|^$REMOTE/||" || true)
+  BASE=$(git -C "$REPO" symbolic-ref --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null || true)
+  BASE=${BASE#"$REMOTE"/}
   if [ -z "$BASE" ] && [ "$FETCH" -eq 1 ]; then
     BASE=$(git -C "$REPO" ls-remote --symref "$REMOTE" HEAD 2>/dev/null \
            | sed -n 's|^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$|\1|p' \

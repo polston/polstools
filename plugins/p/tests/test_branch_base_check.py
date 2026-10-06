@@ -108,6 +108,19 @@ class BranchBaseCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("remote: upstream/main", result.stdout)
 
+    def test_a_remote_name_with_sed_metacharacters_is_taken_literally(self):
+        name = "x|y|e;s|z"
+        self.git(self.local, "remote", "rename", "origin", name)
+        self.git(self.local, "push", "-q", name, "main:trunk")
+        self.git(self.local, "fetch", "-q", name)
+        self.git(self.local, "remote", "set-head", name, "trunk")
+        self.git(self.local, "branch", "trunk")
+
+        result = self.check("-r", name)
+
+        self.assertIn("remote: " + name + "/trunk", result.stdout,
+                      result.stdout + result.stderr)
+
     def test_several_remotes_and_no_origin_exit_2(self):
         self.git(self.local, "remote", "rename", "origin", "upstream")
         self.git(self.local, "remote", "add", "fork", str(self.upstream))
