@@ -114,6 +114,21 @@ class RepositoryDocumentTests(unittest.TestCase):
             claude.pop()
         self.assertEqual(claude, agents)
 
+    def test_layout_section_names_every_plugin_directory(self):
+        layout = CLAUDE_PATH.read_text(encoding="utf-8").split("## Layout and conventions", 1)[1]
+        directories = [
+            path.name
+            for path in PLUGIN_ROOT.iterdir()
+            if path.is_dir() and not path.name.startswith(".") and path.name != "__pycache__"
+        ]
+        self.assertTrue(directories)
+        for name in directories:
+            with self.subTest(directory=name):
+                self.assertTrue(
+                    "plugins/p/" + name + "/" in layout,
+                    "CLAUDE.md layout does not name plugins/p/" + name + "/",
+                )
+
     def test_licence_file_is_present(self):
         text = LICENSE_PATH.read_text(encoding="utf-8")
         self.assertGreater(len(text.strip()), 200)

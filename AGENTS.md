@@ -50,12 +50,25 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/p/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
   dependencies, no compiled artifacts.
 - `plugins/p/hooks/hooks.json` — hook wiring for session events;
-  commands reference plugin files via `${CLAUDE_PLUGIN_ROOT}` (the format hooks
-  print payload files kept under `style/`).
+  commands reference plugin files via `${CLAUDE_PLUGIN_ROOT}`.
+- `plugins/p/style/` — the response-format payloads the format hooks print.
+- `plugins/p/lib/` — Python modules shared by several `bin/` scripts and copied
+  beside the bundled status line renderers.
+- `plugins/p/renderer/` — the status line renderers `statusline-ctl` installs
+  into harness settings.
+- `plugins/p/profiles/` — JSON data read by scripts: skill-activation and
+  status line profiles, and the evaluation catalogues.
+- `plugins/p/retro_eval/`, `plugins/p/rubrics/`, `plugins/p/ui/` — the optional
+  local evaluation layer (package, versioned rubric data, annotation page),
+  described in `plugins/p/EVALUATION.md`. Only this layer may use the optional
+  dependencies in `plugins/p/requirements-eval.txt`.
 - `plugins/p/commands/<command>.md` — Claude compatibility adapters,
   namespaced as `/p:<command>`, which forward to matching canonical skills.
-  Refer to plugin files as `${CLAUDE_PLUGIN_ROOT}/…`, never by a path under
-  the author's home directory.
+  Only the seven behaviours that began as slash commands have one; a new skill
+  needs none, because Claude Code already lists every skill as `/p:<skill>`.
+  `p-validate` checks that each adapter forwards to its skill with
+  `$ARGUMENTS`. Refer to plugin files as `${CLAUDE_PLUGIN_ROOT}/…`, never by a
+  path under the author's home directory.
 - Complex cross-harness skills keep canonical policy beside `SKILL.md` in a
   versioned contract. Thin files under `references/` own harness transport;
   helpers under `scripts/` own deterministic computation without duplicating
