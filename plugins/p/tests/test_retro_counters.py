@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -99,6 +100,53 @@ class SkillRuns(unittest.TestCase):
                 mock.patch("sys.stderr", io.StringIO()):
             retro.load_rows()
         self.assertEqual(retro.EXIT_CANNOT_RUN, stop.exception.code)
+
+
+def summary_counts(text):
+    """The extract summary line as numbers: {"files": n, "measured": n, ...}."""
+    line = next(line for line in text.splitlines()
+                if line.startswith(("files:", "transcripts:")))
+    counts = {key: int(value)
+              for key, value in re.findall(r"([a-z-]+): (\d+)", line)}
+    if "transcripts" in counts:   # the label before this fix
+        counts["files"] = counts.pop("transcripts")
+    return counts
+
+class ExtractSummary(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        self.claude_home, self.work = base / "cc", base / "work"
+        root = self.claude_home / "projects"
+        build_corpus(root, [{"project": "p", "session": "s", "rows": [
+            claude_user("hello", T0), claude_assistant("hi", T0)]}])
+        sidecar = root / "p" / "sidecar.jsonl"
+        sidecar.write_text('{"type": "summary"}\n', encoding="utf-8")
+
+    def extract(self):
+        env = {"CLAUDE_CONFIG_DIR": str(self.claude_home),
+               "CODEX_HOME": str(self.work / "absent-cx"),
+               "RETRO_HOME": str(self.work),
+               "RETRO_ANTIGRAVITY_HOME": str(self.work / "absent-agy")}
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env), redirect_stdout(out):
+            retro = load_retro()
+            retro.cmd_extract(mock.Mock(rebuild=False))
+        return summary_counts(out.getvalue())
+
+    def test_not_transcripts_count_the_same_files_on_every_run(self):
+        first, second = self.extract(), self.extract()
+        self.assertEqual(1, first["not-transcripts"])
+        self.assertEqual(1, second["not-transcripts"])
+        self.assertEqual(0, second["measured"])
+        self.assertEqual(1, second["unchanged"])
+
+    def test_every_file_lands_in_exactly_one_bucket(self):
+        for counts in (self.extract(), self.extract()):
+            self.assertEqual(counts["files"],
+                             counts["measured"] + counts["unchanged"]
+                             + counts["not-transcripts"] + counts["unreadable"])
 
 
 if __name__ == "__main__":

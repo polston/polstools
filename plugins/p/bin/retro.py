@@ -1480,6 +1480,12 @@ def cmd_extract(args):
     stale = []
     unchanged = 0
     unreadable = 0
+    # Every file the walk found lands in exactly one bucket, on every run:
+    # files = measured + unchanged + not-transcripts + unreadable. A file
+    # fingerprinted earlier that has no ledger row was measured and held no
+    # conversation; it stays a not-transcript on later runs rather than
+    # moving into `unchanged`, so the count means the same thing each time.
+    not_transcripts = 0
     for path, harness, root in transcripts:
         try:
             stat = path.stat()
@@ -1490,11 +1496,21 @@ def cmd_extract(args):
             continue
         # A live session grows; re-measure when size or mtime moved.
         fingerprint = f"{stat.st_size}:{int(stat.st_mtime)}"
-        selected_row_exists = (harness != "antigravity" or
-                               (harness, path.relative_to(root).as_posix()) in rows)
-        if state.get(str(path)) == fingerprint and selected_row_exists:
-            unchanged += 1
-            continue
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            rel = path.name
+        # A rollout found under the Claude root is keyed as codex (measure_outcome).
+        has_row = (harness, rel) in rows or ("codex", rel) in rows
+        if state.get(str(path)) == fingerprint:
+            if has_row:
+                unchanged += 1
+                continue
+            if harness != "antigravity":
+                not_transcripts += 1
+                continue
+            # An Antigravity export with no row was displaced by its sibling
+            # export; re-measure it rather than retire it.
         stale.append((path, harness, root, fingerprint))
 
     # measure() shares no state, and the work is dominated by reading a
@@ -1502,7 +1518,7 @@ def cmd_extract(args):
     # concurrent I/O. Warm the redaction patterns first so the cache is not
     # raced by the workers.
     _redaction_patterns()
-    measured = not_transcripts = 0
+    measured = 0
     measured_by_harness = Counter()
     with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
         for (path, harness, root, fingerprint), (outcome, row) in zip(
@@ -1533,7 +1549,7 @@ def cmd_extract(args):
             fh.write(json.dumps(row) + "\n")
     STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
 
-    print(f"transcripts: {len(transcripts)}  measured: {measured}  "
+    print(f"files: {len(transcripts)}  measured: {measured}  "
           f"unchanged: {unchanged}  not-transcripts: {not_transcripts}  "
           f"unreadable: {unreadable}")
     for harness in HARNESSES:
