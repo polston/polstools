@@ -45,6 +45,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -1406,6 +1407,33 @@ def measure_outcome(path, harness, root):
     return (MEASURED, row) if row is not None else (NOT_TRANSCRIPT, None)
 
 
+# --- progress --------------------------------------------------------------
+
+# Read at call time, so a test can substitute a clock that moves faster.
+progress_clock = time.monotonic
+
+
+class Progress:
+    """A stderr line every `every` seconds once a walk has run past `after`
+    seconds. A short run prints nothing; a long one is visibly alive.
+
+    Stderr only, so a --json caller's stdout stays one parseable document.
+    Whole lines rather than carriage-return redraws, because the reader is as
+    often an agent reading the stream as text as it is a terminal.
+    """
+
+    def __init__(self, label, total, after=3.0, every=5.0):
+        self.label, self.total, self.every = label, total, every
+        self.next = progress_clock() + after
+
+    def step(self, done, verb="scanned"):
+        now = progress_clock()
+        if now >= self.next:
+            print(f"{self.label}: {verb} {done}/{self.total} files",
+                  file=sys.stderr, flush=True)
+            self.next = now + self.every
+
+
 # --- extract ---------------------------------------------------------------
 
 def load_state():
@@ -1522,11 +1550,13 @@ def cmd_extract(args):
     _redaction_patterns()
     measured = 0
     measured_by_harness = Counter()
+    progress = Progress("retro extract", len(stale))
     with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
-        for (path, harness, root, fingerprint), (outcome, row) in zip(
-                stale, pool.map(
+        for done, ((path, harness, root, fingerprint), (outcome, row)) in enumerate(
+                zip(stale, pool.map(
                     lambda item: measure_outcome(item[0], item[1], item[2]),
-                    stale)):
+                    stale)), 1):
+            progress.step(done, "measured")
             if outcome == UNREADABLE:
                 # Deliberately not fingerprinted. Recording one would retire
                 # the file until it changes, so a live transcript that was

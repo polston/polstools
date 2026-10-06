@@ -163,8 +163,20 @@ def _rows(path, main, skipped):
         skipped["unreadable_file"] += 1
 
 
-def collect(projects_dir):
+# A file last modified before the window cannot hold a record written inside
+# it: a record's timestamp is taken when it is appended, and appending moves
+# the file's mtime to at least that moment. The slack absorbs clock skew
+# between the writer and the filesystem. The argument fails only for a file
+# whose mtime was set backwards after writing, which no harness does.
+MTIME_SLACK_SECONDS = 86400.0
+
+
+def collect(projects_dir, not_before=None, census=None):
     """Walk every transcript and return globally deduplicated requests.
+
+    `not_before` (an aware datetime) skips files whose mtime is more than
+    MTIME_SLACK_SECONDS older than it; `census`, a Counter, receives
+    files_seen and files_skipped_before_window.
 
     Deduplication is global rather than per file. Resuming or forking a
     session copies recent rows, request id and usage intact, into the new
@@ -177,7 +189,20 @@ def collect(projects_dir):
     """
     requests = {}
     skipped = Counter()
-    for path in sorted(projects_dir.rglob("*.jsonl")):
+    census = Counter() if census is None else census
+    paths = sorted(projects_dir.rglob("*.jsonl"))
+    floor = (not_before.timestamp() - MTIME_SLACK_SECONDS) if not_before else None
+    progress = retro.Progress("cache_ttl", len(paths))
+    for done, path in enumerate(paths, 1):
+        progress.step(done)
+        census["files_seen"] += 1
+        if floor is not None:
+            try:
+                if path.stat().st_mtime < floor:
+                    census["files_skipped_before_window"] += 1
+                    continue
+            except OSError:
+                pass   # unreadable is _rows()' to tally
         main = is_main_thread(path, projects_dir)
         for record in _rows(path, main, skipped):
             rid = record["rid"]
@@ -490,8 +515,12 @@ def report(projects_dir, days, project, as_json, stream, now=None):
             "cannot run: no session directory at %s\n" % projects_dir.name,
             EXIT_CANNOT_RUN)
 
-    requests, skipped = collect(projects_dir)
-    if not requests and not skipped:
+    census = Counter()
+    not_before = None
+    if days is not None and days > 0:
+        not_before = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    requests, skipped = collect(projects_dir, not_before, census)
+    if not requests and not skipped and not census["files_skipped_before_window"]:
         return _early_result(
             stream, days, as_json, "no_readable_transcripts",
             "cannot run: no readable transcripts\n", EXIT_CANNOT_RUN)
@@ -659,6 +688,8 @@ def report(projects_dir, days, project, as_json, stream, now=None):
             "sensitivity_ratio_grouped_by_directory": round(dir_result["ratio"], 3),
             "sensitivity_openers_forced_to_miss": round(openers_forced, 2),
             "skipped": dict(skipped),
+            "files_seen": census["files_seen"],
+            "files_skipped_before_window": census["files_skipped_before_window"],
             "keep_current_ttl": None if insufficient else keep_current,
         }, stream, indent=2, sort_keys=True)
         stream.write("\n")
@@ -744,6 +775,9 @@ def report(projects_dir, days, project, as_json, stream, now=None):
             stream.write("  %-30s %6d requests %12d tokens\n"
                          % (model, count, unpriced_tokens[model]))
         stream.write("\n")
+    if census["files_skipped_before_window"]:
+        stream.write("files not read: %d of %d, last modified before the window\n\n"
+                     % (census["files_skipped_before_window"], census["files_seen"]))
     if skipped:
         stream.write("skipped rows: %s\n\n"
                      % ", ".join("%s=%d" % kv for kv in sorted(skipped.items())))

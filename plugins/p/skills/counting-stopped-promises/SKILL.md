@@ -98,6 +98,10 @@ not become supported by passing `--root`: unknown formats are counted as
 unsupported. A mixed corpus reports partial coverage; no supported transcripts
 in the window is a cannot-run result, never a clean zero.
 
+With `--since`, a file last modified more than a day before that date is not
+opened: it cannot hold a record inside the window. The census counts it under
+`files_outside_window` and `files_skipped_by_mtime`.
+
 A value that is empty or only whitespace counts as unset, so a misconfigured
 shell cannot redirect the walk. Both `.jsonl` and `.jsonl.gz` are read. The
 candidates file defaults into the system temporary directory and the tool

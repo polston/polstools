@@ -30,7 +30,9 @@ import os
 import re
 import sys
 import tempfile
+import time
 from collections import namedtuple
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
@@ -691,6 +693,48 @@ def _session_in_window(records, since, until):
     return True, first, last
 
 
+# --- Progress and the mtime prefilter --------------------------------------
+# Duplicated from the sibling rather than imported, for the reason recorded
+# in docs/plans/2026-08-19-stopped-promises.md ("Not importing the sibling
+# script"). Keep the two in step.
+
+# Read at call time, so a test can substitute a clock that moves faster.
+progress_clock = time.monotonic
+
+
+class Progress:
+    """A stderr line every `every` seconds once the walk has run past `after`
+    seconds. Stderr only, so --json stdout stays one parseable document;
+    whole lines, because an agent reads the stream as text."""
+
+    def __init__(self, label, total, after=3.0, every=5.0):
+        self.label, self.total, self.every = label, total, every
+        self.next = progress_clock() + after
+
+    def step(self, done):
+        now = progress_clock()
+        if now >= self.next:
+            print(f"{self.label}: scanned {done}/{self.total} files",
+                  file=sys.stderr, flush=True)
+            self.next = now + self.every
+
+
+# A file last modified before --since cannot hold a record dated inside the
+# window: a record's timestamp is taken when it is appended, and appending
+# moves the mtime to at least that moment. One day of slack absorbs clock
+# skew between writer and filesystem. Such a file is outside the window
+# exactly as a full read would have found it.
+MTIME_SLACK_SECONDS = 86400.0
+
+
+def _mtime_floor(since):
+    try:
+        start = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return start.timestamp() - MTIME_SLACK_SECONDS
+
+
 # The walk is serial on purpose, and this is measured rather than assumed:
 # a thread pool over this script took the same corpus from 3.99 s to 5.35 s,
 # 34% SLOWER. json.loads is 93% of the run and holds the GIL, so workers only
@@ -699,14 +743,27 @@ def _session_in_window(records, since, until):
 def collect(roots, since, until):
     census = {"roots": len(roots), "files_seen": 0, "files_unreadable": 0,
               "files_empty": 0, "files_outside_window": 0, "files_measured": 0,
-              "files_unsupported": 0,
+              "files_unsupported": 0, "files_skipped_by_mtime": 0,
               "files_unknown_window": 0, "files_without_eligible_turn_ends": 0,
               "sidechain_records_excluded": 0, "sdk_records_excluded": 0,
               "sessions": set(), "first_day": None, "last_day": None,
               "active_days": set()}
     candidates, totals, seen = [], new_counts(), set()
-    for _, path in walk_transcripts(roots):
+    paths = walk_transcripts(roots)
+    floor = _mtime_floor(since) if since else None
+    progress = Progress("stopped-promises", len(paths))
+    for done, (_, path) in enumerate(paths, 1):
+        progress.step(done)
         census["files_seen"] += 1
+        if floor is not None:
+            try:
+                before_window = path.stat().st_mtime < floor
+            except OSError:
+                before_window = False   # read_transcript reports it
+            if before_window:
+                census["files_skipped_by_mtime"] += 1
+                census["files_outside_window"] += 1
+                continue
         records, status = read_transcript(path)
         if status == "unreadable":
             census["files_unreadable"] += 1
