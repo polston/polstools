@@ -5,9 +5,13 @@ description: Select the p work skill profile for the current Claude Code or Code
 
 # Use the work skill profile
 
-1. Before any other action, resolve the plugin root from this `SKILL.md` and
-   run `<python> <plugin-root>/bin/skill-profile-ctl check work`. If it exits 1
-   or 2, stop and report its output.
+1. Before any other action, run
+   `<python> <plugin-root>/bin/skill-profile-ctl check work`. If it exits 1 or
+   2, stop and report its output. `<plugin-root>` is the absolute path two
+   directories above this `SKILL.md`, whose directory is
+   `<plugin-root>/skills/work`; take it from this file's own path, never from
+   the working directory or an environment variable. `<python>` is `sh
+   <plugin-root>/bin/python-launcher`.
 2. Resolve `scripts/toggle.py` relative to the directory containing this
    `SKILL.md`; do not resolve it from the current working directory or depend
    on a plugin-root environment variable.

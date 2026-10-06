@@ -5,9 +5,13 @@ description: Review whether an implemented workflow proposal helped, using activ
 
 # Reviewing improvement effects
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check reviewing-improvement-effects`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/reviewing-improvement-effects`; take it from this file's
+own path, never from the working directory or an environment variable.
+`<python>` is `sh <plugin-root>/bin/python-launcher`.
 
 Follow one existing proposal into use. Shipping a skill, completing a response,
 or recording an experiment does not establish that the work improved. This

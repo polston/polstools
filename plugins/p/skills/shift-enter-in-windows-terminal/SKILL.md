@@ -5,9 +5,13 @@ description: Use on Windows when Shift+Enter submits instead of inserting a newl
 
 # Shift+Enter in Windows Terminal
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check shift-enter-in-windows-terminal`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/shift-enter-in-windows-terminal`; take it from this
+file's own path, never from the working directory or an environment variable.
+`<python>` is `sh <plugin-root>/bin/python-launcher`.
 
 ## Overview
 

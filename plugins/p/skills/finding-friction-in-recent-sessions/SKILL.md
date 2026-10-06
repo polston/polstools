@@ -5,9 +5,13 @@ description: Use when asked what has been going wrong in how we work, for a week
 
 # Finding friction in recent sessions
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check finding-friction-in-recent-sessions`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/finding-friction-in-recent-sessions`; take it from this
+file's own path, never from the working directory or an environment variable.
+`<python>` is `sh <plugin-root>/bin/python-launcher`.
 
 ## Overview
 
@@ -45,8 +49,8 @@ separate populations when inclusion rules differ. Use an isolated external
 re-read, so a routine run costs a fraction of a first build.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 7 --moments-per-session 3
+<python> <plugin-root>/bin/retro.py extract
+<python> <plugin-root>/bin/retro.py pack --days 7 --moments-per-session 3
 ```
 
 `extract` exits 1 when a transcript would not read. It still writes the ledger,

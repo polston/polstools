@@ -5,9 +5,13 @@ description: Use when looking for tooling that would remove a known, named frict
 
 # Scouting tools for open frictions
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check scouting-tools-for-open-frictions`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/scouting-tools-for-open-frictions`; take it from this
+file's own path, never from the working directory or an environment variable.
+`<python>` is `sh <plugin-root>/bin/python-launcher`.
 
 ## Overview
 
@@ -30,8 +34,8 @@ before discovering or reading any transcript. If it exits 1 or 2, stop this
 fallback and ask for a named friction instead.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 30
+<python> <plugin-root>/bin/retro.py extract
+<python> <plugin-root>/bin/retro.py pack --days 30
 ```
 
 `extract` exits 1 when a transcript would not read. It still writes the ledger,

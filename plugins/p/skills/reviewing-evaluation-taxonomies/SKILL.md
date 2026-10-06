@@ -5,14 +5,16 @@ description: Use when starting, resuming, or checking the local mixed interpreta
 
 # Reviewing agent interpretations
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check reviewing-evaluation-taxonomies`.
 If it exits 1 or 2, stop before discovering evidence or opening the workspace.
+`<plugin-root>` is the absolute path two directories above this `SKILL.md`,
+whose directory is `<plugin-root>/skills/reviewing-evaluation-taxonomies`; take
+it from this file's own path, never from the working directory or an
+environment variable. `<python>` is `sh <plugin-root>/bin/python-launcher`.
 
-Use the plugin's `bin/retro-eval-review` as the single entrypoint. Resolve the
-plugin root from this skill's location, `PLUGIN_ROOT`, or
-`CLAUDE_PLUGIN_ROOT`. Resolve Python by trying `python3`, `python`, `py -3`,
-then `uv run --no-project python`.
+Use the plugin's `bin/retro-eval-review` as the single entrypoint, run as
+`<python> <plugin-root>/bin/retro-eval-review <command>`.
 
 ## Default run
 

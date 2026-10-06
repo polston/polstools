@@ -5,15 +5,18 @@ description: Use when checking, previewing, applying, repairing, or restoring th
 
 # Aligning status lines
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
-`<python> <plugin-root>/bin/skill-profile-ctl check aligning-statuslines`. If it
-exits 1 or 2, stop and report its output.
+Before any other action, run
+`<python> <plugin-root>/bin/skill-profile-ctl check aligning-statuslines`. If
+it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/aligning-statuslines`; take it from this file's own path,
+never from the working directory or an environment variable. `<python>` is `sh
+<plugin-root>/bin/python-launcher`.
 
 Use the plugin's `bin/statusline-ctl`; never edit a user's whole settings file
 or replace unrelated plugin configuration. Inspect only Claude's `statusLine`
-field before recommending a change. Resolve the plugin root from this skill's
-location, `PLUGIN_ROOT`, or `CLAUDE_PLUGIN_ROOT`. Resolve Python by trying
-`python3`, `python`, `py -3`, then `uv run --no-project python`.
+field before recommending a change. Run it as
+`<python> <plugin-root>/bin/statusline-ctl <command>`.
 
 ## Default run
 

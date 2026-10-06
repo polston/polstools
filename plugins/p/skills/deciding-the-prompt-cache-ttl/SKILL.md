@@ -5,9 +5,13 @@ description: Use when deciding whether Claude Code's prompt cache should use the
 
 # Deciding the prompt-cache TTL
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check deciding-the-prompt-cache-ttl`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/deciding-the-prompt-cache-ttl`; take it from this file's
+own path, never from the working directory or an environment variable.
+`<python>` is `sh <plugin-root>/bin/python-launcher`.
 
 ## Overview
 
@@ -17,15 +21,11 @@ decided from what the machine actually did rather than from intuition.
 Run it:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report
-"${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report --days 30
-"${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report --project SUBSTR
-"${CLAUDE_PLUGIN_ROOT}/bin/cache_ttl.py" report --json
+<python> <plugin-root>/bin/cache_ttl.py report
+<python> <plugin-root>/bin/cache_ttl.py report --days 30
+<python> <plugin-root>/bin/cache_ttl.py report --project SUBSTR
+<python> <plugin-root>/bin/cache_ttl.py report --json
 ```
-
-`${CLAUDE_PLUGIN_ROOT}` is how every other skill in this plugin invokes its
-script, and it is the only form that resolves when the plugin is installed
-rather than run from a checkout.
 
 - `--days N` restricts to the last N days by UTC timestamp; default is the
   whole corpus.

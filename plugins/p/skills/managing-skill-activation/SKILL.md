@@ -5,9 +5,13 @@ description: Use when checking or changing the p home/work default, reviewing di
 
 # Manage p skill activation
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check managing-skill-activation`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/managing-skill-activation`; take it from this file's own
+path, never from the working directory or an environment variable. `<python>`
+is `sh <plugin-root>/bin/python-launcher`.
 
 Use the same controller for the requested operation:
 

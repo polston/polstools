@@ -5,9 +5,13 @@ description: Blinded, grounded ensemble review that catches reinvention, over-co
 
 # Adequacy review
 
-Before any other action, resolve the plugin root and run
-`<python> <plugin-root>/bin/skill-profile-ctl check adequacy-review`. If it exits
-1 or 2, stop and report its output.
+Before any other action, run
+`<python> <plugin-root>/bin/skill-profile-ctl check adequacy-review`. If it
+exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute path
+two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/adequacy-review`; take it from this file's own path,
+never from the working directory or an environment variable. `<python>` is `sh
+<plugin-root>/bin/python-launcher`.
 
 The canonical policy is `<skill-root>/contract-v1.json`; the deterministic
 renderer and distiller is `<skill-root>/scripts/adequacy_review.py`. Do not

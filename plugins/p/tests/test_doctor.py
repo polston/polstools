@@ -307,8 +307,7 @@ class SchemaAndPackagingTests(unittest.TestCase):
     def test_native_skill_runs_doctor_through_python_launcher(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         self.assertIn("name: doctor", skill)
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/python-launcher", skill)
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}/bin/p-doctor", skill)
+        self.assertIn("<python> <plugin-root>/bin/p-doctor", skill)
         self.assertIn("exit code", skill)
 
 
