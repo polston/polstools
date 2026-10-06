@@ -119,10 +119,21 @@ def command_session_profile(args):
     return 0
 
 
+def _native_notice(policy):
+    # sync-native stays explicit (it edits the operator's Codex config), but
+    # entries it already wrote must not silently disagree with the profile.
+    if activation.native_out_of_date(policy, PLUGIN_ROOT):
+        print(
+            "Codex catalog entries written by sync-native no longer match; "
+            "run `skill-profile-ctl sync-native` to refresh them"
+        )
+
+
 def command_use(args):
     policy = manifest()
     activation.set_profile(policy, args.profile, "global")
     print("global skill profile set to %s" % args.profile)
+    _native_notice(policy)
     return 0
 
 
@@ -134,6 +145,8 @@ def command_override(args):
         "%s %s for %s scope"
         % (args.component, "enabled" if args.enabled else "disabled", scope)
     )
+    if scope == "global":
+        _native_notice(policy)
     return 0
 
 

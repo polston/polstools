@@ -317,6 +317,54 @@ class NativeAdapterTests(unittest.TestCase):
         self.assertEqual(restored, original)
 
 
+class NativeSyncFileTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.activation = load_activation()
+        cls.manifest = cls.activation.load_manifest(MANIFEST_PATH)
+
+    def sync(self, root, config, profile):
+        env = {
+            "P_SKILL_CONFIG_FILE": str(root / "global.json"),
+            "P_SKILL_STATE_DIR": str(root / "sessions"),
+            "P_CODEX_CONFIG_FILE": str(config),
+        }
+        self.activation.set_profile(self.manifest, profile, "global", env=env)
+        return self.activation.sync_native(self.manifest, PLUGIN_ROOT, env=env)
+
+    def test_sync_writes_through_a_symlinked_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "dotfiles").mkdir()
+            real = root / "dotfiles" / "config.toml"
+            real.write_text('model = "example"\n', encoding="utf-8")
+            link = root / "config.toml"
+            try:
+                link.symlink_to(real)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks are unavailable")
+            self.assertTrue(self.sync(root, link, "work"))
+            self.assertTrue(link.is_symlink())
+            self.assertIn(self.activation.NATIVE_BEGIN, real.read_text("utf-8"))
+
+    def test_sync_round_trip_preserves_crlf_and_bom_bytes(self):
+        for original in (
+            b'[tui]\r\nstatus_line = ["model"]\r\n',
+            b'\xef\xbb\xbf[tui]\nstatus_line = ["model"]\n',
+        ):
+            with self.subTest(original=original), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config = root / "config.toml"
+                config.write_bytes(original)
+                self.assertTrue(self.sync(root, config, "work"))
+                synced = config.read_bytes()
+                self.assertTrue(synced.startswith(original))
+                if b"\r\n" in original:
+                    self.assertNotIn(b"\n", synced.replace(b"\r\n", b""))
+                self.assertTrue(self.sync(root, config, "home"))
+                self.assertEqual(config.read_bytes(), original)
+
+
 class ActivationCliTests(unittest.TestCase):
     def env(self, root, session="session-a"):
         env = dict(os.environ)
@@ -393,7 +441,10 @@ class ActivationCliTests(unittest.TestCase):
             synced = self.run_ctl(["sync-native"], env)
             self.assertEqual(synced.returncode, 0, synced.stderr)
             self.assertIn("p-skill-activation begin", config.read_text("utf-8"))
-            self.assertEqual(self.run_ctl(["use", "home", "--global"], env).returncode, 0)
+            self.assertNotIn("sync-native", selected.stdout)
+            home = self.run_ctl(["use", "home", "--global"], env)
+            self.assertEqual(home.returncode, 0)
+            self.assertIn("sync-native", home.stdout)
             self.assertIn("p-skill-activation begin", config.read_text("utf-8"))
             self.assertEqual(self.run_ctl(["sync-native"], env).returncode, 0)
             self.assertEqual(config.read_text("utf-8"), original)

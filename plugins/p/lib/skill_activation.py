@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -555,16 +556,39 @@ def update_native_text(text, plugin_root, resolution):
     return text + region
 
 
-def sync_native(manifest, plugin_root, env=None):
-    path = codex_config_path(env)
+def _read_native(env):
+    """(target, text, bom). The target is the symlink-resolved file so a
+    write replaces the real config, not the link. Bytes are decoded without
+    newline translation so CRLF files round-trip unchanged."""
+    target = Path(os.path.realpath(codex_config_path(env)))
     try:
-        original = path.read_text(encoding="utf-8-sig") if path.exists() else ""
+        raw = target.read_bytes() if target.exists() else b""
+        bom = raw.startswith(codecs.BOM_UTF8)
+        return target, raw[len(codecs.BOM_UTF8) if bom else 0 :].decode("utf-8"), bom
     except (OSError, UnicodeError) as error:
         raise PolicyError("Codex config is unreadable") from error
+
+
+def native_out_of_date(manifest, plugin_root, env=None):
+    """True when sync-native has written p-owned entries that no longer
+    match the global profile. Never raises: this only informs a notice."""
+    try:
+        _, text, _ = _read_native(env)
+        if _native_bounds(text) is None:
+            return False
+        return update_native_text(text, plugin_root, resolve_global(manifest, env)) != text
+    except PolicyError:
+        return False
+
+
+def sync_native(manifest, plugin_root, env=None):
+    target, original, bom = _read_native(env)
     updated = update_native_text(original, plugin_root, resolve_global(manifest, env))
     if updated != original:
         try:
-            _atomic_write(path, updated.encode("utf-8"))
+            _atomic_write(
+                target, (codecs.BOM_UTF8 if bom else b"") + updated.encode("utf-8")
+            )
         except OSError as error:
             raise PolicyError("Codex config could not be updated") from error
     return updated != original
