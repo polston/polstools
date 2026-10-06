@@ -12,6 +12,15 @@ CLAUDE_PATH = REPO_ROOT / "CLAUDE.md"
 LICENSE_PATH = REPO_ROOT / "LICENSE"
 CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
 HARNESSES = ("Claude Code", "Codex", "Antigravity")
+STATE_CHANGING_SKILLS = (
+    "fmt-on",
+    "fmt-off",
+    "home",
+    "work",
+    "update",
+    "statusline-apply",
+    "statusline-restore",
+)
 
 
 def sections(text):
@@ -128,6 +137,13 @@ class RepositoryDocumentTests(unittest.TestCase):
                     "plugins/p/" + name + "/" in layout,
                     "CLAUDE.md layout does not name plugins/p/" + name + "/",
                 )
+
+    def test_skills_that_change_machine_state_apply_only_on_request(self):
+        for name in STATE_CHANGING_SKILLS:
+            text = (PLUGIN_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+            description = re.search(r"(?m)^description: (.+)$", text).group(1)
+            with self.subTest(skill=name):
+                self.assertTrue(description.startswith("Use only when the operator asks to "))
 
     def test_licence_file_is_present(self):
         text = LICENSE_PATH.read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 ---
 name: statusline-restore
-description: Restore statusline settings changed by the last apply operation.
+description: Use only when the operator asks to restore the statusline settings changed by the last apply; it edits Claude and Codex settings files.
 ---
 
 # Restore aligned status lines

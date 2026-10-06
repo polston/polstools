@@ -1,6 +1,6 @@
 ---
 name: home
-description: Select the p home skill profile for the current Claude Code or Codex session.
+description: Use only when the operator asks to select the p home skill profile, in which every skill is enabled, for the current session (Claude Code, Codex, Antigravity).
 ---
 
 # Use the home skill profile

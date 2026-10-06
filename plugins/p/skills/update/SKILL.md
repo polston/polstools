@@ -1,6 +1,6 @@
 ---
 name: update
-description: Safely update p across installed harnesses (Claude Code, Codex, Antigravity) without deleting versioned cache snapshots still referenced by active sessions.
+description: Use only when the operator asks to update p across installed harnesses (Claude Code, Codex, Antigravity); it keeps versioned cache snapshots that active sessions still reference.
 ---
 
 # Update p safely

@@ -1,6 +1,6 @@
 ---
 name: statusline-apply
-description: Apply the aligned Codex footer and a compatible Claude statusline.
+description: Use only when the operator asks to apply the aligned Codex footer and a compatible Claude statusline; it edits their settings files.
 ---
 
 # Apply aligned status lines

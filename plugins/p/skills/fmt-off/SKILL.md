@@ -1,6 +1,6 @@
 ---
 name: fmt-off
-description: Disable the p response format for the current Claude Code or Codex session, or make off the default globally or for one harness.
+description: Use only when the operator asks to turn the p response format off, for the current session or as the default globally or for one harness (Claude Code, Codex, Antigravity).
 ---
 
 # Turn the response format off

@@ -1,6 +1,6 @@
 ---
 name: work
-description: Select the p work skill profile for the current Claude Code or Codex session.
+description: Use only when the operator asks to select the p work skill profile, which keeps repository-publication audits and local session-history workflows out of the session (Claude Code, Codex, Antigravity).
 ---
 
 # Use the work skill profile
