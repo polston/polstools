@@ -1,3 +1,7 @@
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -142,6 +146,32 @@ class SessionProbeTests(unittest.TestCase):
         lines = (self.state / "probe.log").read_text(encoding="utf-8").splitlines()
         self.assertEqual(["N ab", "N .."],
                          [line.split("\t")[0] for line in lines if line.startswith("N ")])
+
+    def test_help_exits_0_and_prints_the_usage(self):
+        for flag_ in ("--help", "-h"):
+            with self.subTest(flag=flag_):
+                completed = self.probe(flag_)
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertIn("--harness", completed.stdout)
+
+    def test_a_bad_argument_still_exits_2(self):
+        self.assertEqual(2, self.probe("--nonsense").returncode)
+
+    def test_the_antigravity_trace_is_unsupported_on_windows(self):
+        loader = importlib.machinery.SourceFileLoader("p_session_probe_win", str(PROBE))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        module.WINDOWS = True
+        env = dict(self.env, ANTIGRAVITY_CONVERSATION_ID="x")
+        for argv in (["--arm"], ["--harness", "antigravity"]):
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    code = module.main(argv, env)
+                self.assertEqual(2, code)
+                self.assertIn("not supported on Windows", stderr.getvalue())
+        self.assertFalse(self.state.exists())
 
     def test_armed_trace_is_private_bound_and_removed_by_the_reader(self):
         self.arm()

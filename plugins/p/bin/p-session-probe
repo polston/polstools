@@ -13,13 +13,19 @@ and session ids are never printed.
   p-session-probe --arm
   p-session-probe [--json] [--harness claude|codex|antigravity]
 
+The Antigravity hook trace needs a POSIX state directory the format hook
+accepts, which Windows does not provide: on Windows, --arm and the antigravity
+report exit 2 as unsupported.
+
 Exit: 0 ran clean and found a session variable (and, on Antigravity, hook
 evidence for this session); 1 ran clean and flagged missing evidence; 2
-could not run (bad arguments, or the state directory is not private).
+could not run (bad arguments, the state directory is not private, or the
+Antigravity trace on Windows). --help and -h exit 0.
 """
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -33,6 +39,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import session_probe  # noqa: E402
 
 HARNESSES = ("claude", "codex", "antigravity")
+WINDOWS = os.name == "nt"
+UNSUPPORTED = ("p-session-probe: the Antigravity hook trace is not supported on "
+               "Windows: the format hook refuses its state directory there")
 
 
 def collect(env, harness_flag):
@@ -52,6 +61,8 @@ def collect(env, harness_flag):
         "format_hook": None,
     }
     flagged = not variable
+    if harness == "antigravity" and WINDOWS:
+        return report, 2
     if harness == "antigravity":
         records = session_probe.consume(env)
         record = records.get(session_probe.trace_key(env.get(variable))) if variable else None
@@ -98,18 +109,19 @@ def render(report):
 
 
 def main(argv=None, env=None):
-    import os
-
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--arm", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--harness", choices=HARNESSES)
     try:
         args = parser.parse_args(argv)
-    except SystemExit:
-        return 2
+    except SystemExit as stop:
+        return 0 if stop.code == 0 else 2
     env = os.environ if env is None else env
     if args.arm:
+        if WINDOWS:
+            print(UNSUPPORTED, file=sys.stderr)
+            return 2
         try:
             session_probe.arm(env)
         except (OSError, session_probe.ProbeError) as error:
@@ -119,6 +131,9 @@ def main(argv=None, env=None):
               "then run p-session-probe again")
         return 0
     report, code = collect(env, args.harness)
+    if WINDOWS and report["harness"] == "antigravity":
+        print(UNSUPPORTED, file=sys.stderr)
+        return 2
     if args.json:
         sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
     else:
