@@ -76,13 +76,12 @@ commands = {ev: events[ev][0]["hooks"][0]["command"] for ev in events}
 payloads = {}
 command_ready = []
 shell_root = ROOT.replace("\\", "/")
-launcher = shell_root + "/bin/python-launcher"
-controller = shell_root + "/bin/format-ctl"
+entry = shell_root + "/bin/format-gate"
 for ev, raw in commands.items():
     argv = hook_cmd(raw)
     payloads[ev] = argv[argv.index("gate") + 1]
-    ready = (argv[:3] == ["sh", launcher, controller]
-             and os.path.isfile(launcher)
+    ready = (argv[:3] == ["sh", entry, "gate"]
+             and os.path.isfile(entry)
              and os.path.isfile(payloads[ev]))
     command_ready.append(ready)
     check("portable command and payload exist for %s" % ev,

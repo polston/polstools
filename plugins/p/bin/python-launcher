@@ -1,47 +1,9 @@
 #!/usr/bin/env sh
 # Find a usable Python 3 without assuming one harness's PATH. The optional
-# override is a single executable path, not a shell fragment.
+# override is a single executable path, not a shell fragment. bin/format-gate
+# sources this file (single-start mode), so it must not depend on $0 and
+# must always end by exec or exit.
 set -eu
-
-# Shell fast-path for hook gate evaluations when formatting is inactive
-if [ "${2:-}" = "gate" ]; then
-  case "${1:-}" in
-    *format-ctl)
-      if [ -z "${RETRO_HOME:-}" ] && [ "${P_FORMAT_DEFAULT:-}" != "on" ]; then
-        cfg="${P_FORMAT_CONFIG_FILE:-}"
-        if [ -z "$cfg" ]; then
-          if [ -n "${LOCALAPPDATA:-}" ]; then
-            cfg="$LOCALAPPDATA/polstools/format.json"
-          else
-            cfg="${XDG_CONFIG_HOME:-$HOME/.config}/polstools/format.json"
-          fi
-        fi
-        if [ ! -f "$cfg" ] || ! grep -q '"on"' "$cfg" 2>/dev/null; then
-          fdir="${P_FORMAT_STATE_DIR:-}"
-          if [ -z "$fdir" ]; then
-            if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-              fdir="$XDG_RUNTIME_DIR/p-format-toggle"
-            else
-              uid=$(id -u 2>/dev/null || true)
-              [ -z "$uid" ] && uid="${USERNAME:-default}"
-              fdir="${TMPDIR:-${TEMP:-/tmp}}/p-format-toggle-$uid"
-            fi
-          fi
-          sid="${CLAUDE_CODE_SESSION_ID:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-${ANTIGRAVITY_SESSION_ID:-${ANTIGRAVITY_CONVERSATION_ID:-${AGY_SESSION_ID:-${AGY_CONVERSATION_ID:-}}}}}}}"
-          if [ -n "$sid" ]; then
-            if [ ! -f "$fdir/$sid.on" ]; then
-              exit 0
-            fi
-          elif [ ! -d "$fdir" ]; then
-            exit 0
-          elif ! ls "$fdir"/*.on >/dev/null 2>&1; then
-            exit 0
-          fi
-        fi
-      fi
-      ;;
-  esac
-fi
 
 shell_path() {
   value=$1
@@ -66,36 +28,78 @@ usable() {
     2>/dev/null)" = python-ok ]
 }
 
+# launch N WORD... ARG...: the first N words are the interpreter command (N=0
+# skips the probe). Normally the candidate is probed, then exec'd. With
+# POLSTOOLS_SINGLE_START=1 (set only by bin/format-gate, whose target is
+# format-ctl) each candidate starts once on the real command instead: the
+# hook's stdin is buffered and replayed to every attempt, stdout is held
+# back, and an attempt counts only if its output begins with the ready token
+# format-ctl writes after its own version check. Anything else (a stub, an
+# old interpreter, a crash before that point) falls through to the next
+# candidate and its output is discarded.
+launch() {
+  n=$1
+  shift
+  if [ "${POLSTOOLS_SINGLE_START:-}" != 1 ]; then
+    case $n in
+      1) usable "$1" || return 0 ;;
+      2) usable "$1" "$2" || return 0 ;;
+    esac
+    exec "$@"
+  fi
+  token="polstools-ready-$$"
+  # The trailing x<status> keeps trailing newlines and the exit status; the
+  # && / || form keeps set -e from ending the substitution early.
+  out=$(printf '%s' "$hook_input" | POLSTOOLS_READY_TOKEN=$token "$@" \
+    && printf 'x0' || printf 'x%s' "$?")
+  status=${out##*x}
+  out=${out%x*}
+  case $out in
+    "$token"*)
+      printf '%s' "${out#"$token"}"
+      exit "$status"
+      ;;
+  esac
+  return 0
+}
+
+if [ "${POLSTOOLS_SINGLE_START:-}" = 1 ]; then
+  hook_input=
+  newline='
+'
+  while IFS= read -r line; do
+    hook_input=$hook_input$line$newline
+  done
+  hook_input=$hook_input$line
+fi
+
 python_override=$(shell_path "${POLSTOOLS_PYTHON:-}")
 if [ -n "$python_override" ] && [ -x "$python_override" ]; then
-  if usable "$python_override"; then
-    exec "$python_override" "$@"
-  fi
+  launch 1 "$python_override" "$@"
   echo "python-launcher: POLSTOOLS_PYTHON is not Python 3.9 or newer; searching PATH" >&2
 fi
 
 # Every PATH entry, not only the first match: a stub that shadows a real
 # interpreter must not hide it.
-set -f
 old_ifs=$IFS
-IFS=:
-search_path=$PATH
 for name in python3 python; do
-  for dir in $search_path; do
+  set -f
+  IFS=:
+  for dir in $PATH; do
+    IFS=$old_ifs
+    set +f
     for candidate in "${dir:-.}/$name" "${dir:-.}/$name.exe"; do
-      if [ -f "$candidate" ] && [ -x "$candidate" ] && usable "$candidate"; then
-        IFS=$old_ifs
-        set +f
-        exec "$candidate" "$@"
+      if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+        launch 1 "$candidate" "$@"
       fi
     done
   done
+  IFS=$old_ifs
+  set +f
 done
-IFS=$old_ifs
-set +f
 
-if command -v py >/dev/null 2>&1 && usable py -3; then
-  exec py -3 "$@"
+if command -v py >/dev/null 2>&1; then
+  launch 2 py -3 "$@"
 fi
 
 # uv-managed Windows installations are intentionally not required to be on
@@ -104,15 +108,15 @@ app_data=$(shell_path "${APPDATA:-}")
 local_app_data=$(shell_path "${LOCALAPPDATA:-}")
 if [ -n "$app_data" ]; then
   for candidate in "$app_data"/uv/python/*/python.exe; do
-    if [ -x "$candidate" ] && usable "$candidate"; then
-      exec "$candidate" "$@"
+    if [ -x "$candidate" ]; then
+      launch 1 "$candidate" "$@"
     fi
   done
 fi
 if [ -n "$local_app_data" ]; then
   for candidate in "$local_app_data"/Programs/Python/Python*/python.exe; do
-    if [ -x "$candidate" ] && usable "$candidate"; then
-      exec "$candidate" "$@"
+    if [ -x "$candidate" ]; then
+      launch 1 "$candidate" "$@"
     fi
   done
 fi
@@ -121,7 +125,7 @@ if command -v uv >/dev/null 2>&1; then
   cache_base=$(shell_path "${TMPDIR:-${TEMP:-/tmp}}")
   UV_CACHE_DIR=${UV_CACHE_DIR:-${POLSTOOLS_UV_CACHE:-$cache_base/polstools-uv-cache}}
   export UV_CACHE_DIR
-  exec uv run --no-project python "$@"
+  launch 0 uv run --no-project python "$@"
 fi
 
 echo "python-launcher: Python 3 not found" >&2

@@ -24,20 +24,33 @@ run. gate never exits 2: it exits 1 on bad arguments or a missing payload,
 because exit 2 from a UserPromptSubmit hook blocks the user's prompt in both
 Claude Code and Codex.
 """
-import hashlib
-import json
-import os
-import secrets
-import stat
 import sys
-import tempfile
-import time
+
+# The plugin's Python floor. This must stay above every use of newer syntax
+# or library calls in this file, and before the ready token below.
+if sys.version_info < (3, 9):
+    sys.exit(1)
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import secrets  # noqa: E402
+import stat  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
 
 # The harness reads hook stdout as UTF-8, but on Windows a piped stdout
 # defaults to the ANSI code page, which mangles any non-ASCII payload byte.
 for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8")
+
+# python-launcher's single-start mode (used by bin/format-gate) accepts this
+# interpreter only if its output begins with the token it passed in.
+_ready_token = os.environ.pop("POLSTOOLS_READY_TOKEN", "")
+if _ready_token:
+    sys.stdout.write(_ready_token)
+    sys.stdout.flush()
 
 def _default_flag_dir():
     # The one definition of the flag directory. bin/format-gate's shell fast

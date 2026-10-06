@@ -1,5 +1,7 @@
 import json
 import os
+import shlex
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -242,6 +244,169 @@ class NestedHarnessTests(unittest.TestCase):
         self.assertEqual(self.gate("inner-codex", **self.nested).stdout, "payload\n")
         self.assertEqual(
             self.gate("inner-codex", P_FORMAT_HARNESS="claude", **self.nested).stdout, "")
+
+
+FORMAT_GATE = PLUGIN_ROOT / "bin" / "format-gate"
+SH = shutil.which("sh")
+
+
+def run_hook(env, stdin, payload, *extra):
+    return subprocess.run(
+        [SH, str(FORMAT_GATE), "gate", str(payload), *extra], input=stdin,
+        text=True, encoding="utf-8", capture_output=True, env=env)
+
+
+class HookEntryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.payload = self.root / "payload.md"
+        self.payload.write_text("payload\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_both_hooks_enter_through_format_gate(self):
+        hooks = json.loads((PLUGIN_ROOT / "hooks" / "hooks.json").read_text("utf-8"))
+        for event in ("SessionStart", "UserPromptSubmit"):
+            argv = shlex.split(hooks["hooks"][event][0]["hooks"][0]["command"])
+            self.assertEqual(argv[:3], ["sh", "${CLAUDE_PLUGIN_ROOT}/bin/format-gate", "gate"])
+
+    def location_envs(self):
+        """Every way the toggle directory can be located, each in scratch."""
+        temp = self.root / "temp"
+        temp.mkdir()
+        bare = {k: v for k, v in hermetic_env(self.root).items()
+                if k not in ("P_FORMAT_STATE_DIR", "TMPDIR", "TEMP", "TMP")}
+        return {
+            "P_FORMAT_STATE_DIR": hermetic_env(self.root),
+            "XDG_RUNTIME_DIR": dict(bare, XDG_RUNTIME_DIR=str(self.root / "run")),
+            "TMPDIR": dict(bare, TMPDIR=str(temp)),
+            "TEMP": dict(bare, TEMP=str(temp)),
+            "TMP": dict(bare, TMP=str(temp)),
+        }
+
+    def test_hook_entry_and_python_gate_always_agree(self):
+        (self.root / "run").mkdir(mode=0o700)
+        for location, env in self.location_envs().items():
+            scenarios = [
+                ("no toggles", {}, None),
+                ("default off env", {"P_FORMAT_DEFAULT": "off"}, None),
+                ("this session on", {}, "this"),
+                ("another session on", {}, "other"),
+                ("on under env off", {"P_FORMAT_DEFAULT": "off"}, "this"),
+                ("hook env names another session", {"CLAUDE_CODE_SESSION_ID": "other"}, "this"),
+            ]
+            for name, extra, toggled in scenarios:
+                with self.subTest(location=location, scenario=name):
+                    for state in ("state", "run", "temp"):
+                        shutil.rmtree(self.root / state, ignore_errors=True)
+                    (self.root / "run").mkdir(mode=0o700)
+                    (self.root / "temp").mkdir()
+                    if toggled:
+                        made = run_ctl(["on"], dict(env, CLAUDE_CODE_SESSION_ID=toggled))
+                        self.assertEqual(made.returncode, 0, made.stderr)
+                    case_env = dict(env, **extra)
+                    stdin = json.dumps({"session_id": "this"})
+                    hook = run_hook(case_env, stdin, self.payload)
+                    python = run_ctl(["gate", str(self.payload)], case_env, stdin)
+                    self.assertEqual((hook.returncode, hook.stdout),
+                                     (python.returncode, python.stdout))
+                    expected = "payload\n" if toggled == "this" else ""
+                    self.assertEqual(hook.stdout, expected)
+
+    def test_inputs_the_shell_cannot_read_are_left_to_python(self):
+        env = hermetic_env(self.root)
+        stdin = json.dumps({"session_id": "this"})
+        state = self.root / "state"
+        state.mkdir(mode=0o700)
+        # A toggle named by an earlier release (the raw session id).
+        (state / "this.on").write_text("", encoding="utf-8")
+        cases = [("legacy toggle name", None),
+                 ("escaped on", '{"default": "\\u006fn"}'),
+                 ("on under another key", '{"codex": "on"}')]
+        for name, config in cases:
+            with self.subTest(case=name):
+                if config is not None:
+                    (self.root / "format.json").write_text(config, encoding="utf-8")
+                hook = run_hook(env, stdin, self.payload)
+                python = run_ctl(["gate", str(self.payload)], env, stdin)
+                self.assertEqual((hook.returncode, hook.stdout),
+                                 (python.returncode, python.stdout))
+        self.assertEqual(hook.stdout, "")
+        (self.root / "format.json").write_text('{"default": "\\u006fn"}', encoding="utf-8")
+        self.assertEqual(run_hook(env, stdin, self.payload).stdout, "payload\n")
+
+    def interpreter_dirs(self, names):
+        """One PATH directory per candidate, each holding a python3 that logs
+        its name and then behaves as described."""
+        real = sys.executable.replace("\\", "/")
+        log = self.root / "attempts.log"
+        old = ("import sys, runpy; sys.version_info = (3, 8, 18, 'final', 0); "
+               "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
+        bodies = {
+            # Not Python: swallows stdin and prints to stdout.
+            "not-python": 'cat >/dev/null; echo garbage; exit 0',
+            # Python that reports 3.8: the gate itself must refuse to run.
+            "too-old": "exec \"%s\" -c \"%s\" \"$@\"" % (real, old),
+            # Fails before reading stdin.
+            "crash": 'echo "fatal: cannot start" >&2; exit 1',
+            "good": 'exec "%s" "$@"' % real,
+        }
+        dirs = []
+        for name in names:
+            directory = self.root / ("bin-" + name)
+            directory.mkdir()
+            script = directory / "python3"
+            script.write_bytes(("#!/bin/sh\necho %s >> \"%s\"\n%s\n"
+                                % (name, str(log).replace("\\", "/"), bodies[name]))
+                               .encode("utf-8"))
+            script.chmod(0o755)
+            dirs.append(str(directory))
+        sh_dir = self.root / "bin-sh"
+        sh_dir.mkdir()
+        (sh_dir / "sh").write_bytes(
+            ('#!/bin/sh\nexec "%s" "$@"\n' % SH.replace("\\", "/")).encode("utf-8"))
+        (sh_dir / "sh").chmod(0o755)
+        return os.pathsep.join(dirs + [str(sh_dir)]), log
+
+    def test_each_interpreter_starts_once_and_bad_ones_fall_through(self):
+        env = hermetic_env(self.root)
+        self.assertEqual(run_ctl(["on"], dict(env, CLAUDE_CODE_SESSION_ID="this")).returncode, 0)
+        path, log = self.interpreter_dirs(["not-python", "too-old", "crash", "good"])
+        hook = run_hook(dict(env, PATH=path, POLSTOOLS_PYTHON=""),
+                        json.dumps({"session_id": "this"}), self.payload)
+        # The JSON reached the last interpreter intact (the toggle matched),
+        # the payload appears exactly once, and nothing a rejected attempt
+        # printed leaks through.
+        self.assertEqual((hook.returncode, hook.stdout), (0, "payload\n"), hook.stderr)
+        self.assertEqual(log.read_text("utf-8").split(),
+                         ["not-python", "too-old", "crash", "good"])
+
+    def test_no_adequate_interpreter_exits_1_with_no_output(self):
+        env = dict(hermetic_env(self.root), P_FORMAT_DEFAULT="on", POLSTOOLS_PYTHON="")
+        path, log = self.interpreter_dirs(["not-python", "too-old", "crash"])
+        hook = run_hook(dict(env, PATH=path), '{"session_id": "s"}', self.payload)
+        self.assertEqual((hook.returncode, hook.stdout), (1, ""))
+        self.assertEqual(log.read_text("utf-8").split(), ["not-python", "too-old", "crash"])
+
+    def test_off_needs_no_python_and_on_without_python_never_exits_2(self):
+        only_sh = self.root / "only-sh"
+        only_sh.mkdir()
+        wrapper = only_sh / "sh"
+        wrapper.write_bytes(
+            ('#!/bin/sh\nexec "%s" "$@"\n' % SH.replace("\\", "/")).encode("utf-8"))
+        wrapper.chmod(0o755)
+        env = dict(hermetic_env(self.root), PATH=str(only_sh))
+        off = run_hook(env, '{"session_id": "s"}', self.payload)
+        self.assertEqual((off.returncode, off.stdout), (0, ""))
+        on = run_hook(dict(env, P_FORMAT_DEFAULT="on"), '{"session_id": "s"}', self.payload)
+        self.assertEqual((on.returncode, on.stdout), (1, ""))
+
+    def test_bad_arguments_never_exit_2(self):
+        env = hermetic_env(self.root, P_FORMAT_DEFAULT="on")
+        result = run_hook(env, "{}", self.payload, "--hook-id")
+        self.assertEqual(result.returncode, 1)
 
 
 if __name__ == "__main__":
