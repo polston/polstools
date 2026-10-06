@@ -478,6 +478,25 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertEqual(json.loads(claude_target.read_text("utf-8")), {"theme": "dark"})
             self.assertNotIn("status_line", codex_target.read_text("utf-8"))
 
+    def test_a_malformed_rollback_file_exits_two_without_a_traceback(self):
+        for body in (
+            {"schema": 2, "applied": "x"},
+            {"schema": 2},
+            {"schema": 2, "applied": {}, "previous": [], "managed": {}},
+            {"schema": 2, "applied": {}, "previous": {}, "managed": []},
+        ):
+            for command in ("apply", "sync", "restore"):
+                with self.subTest(body=body, command=command), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    env = self.make_env(root)
+                    Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+                    Path(env["STATUSLINE_CODEX_CONFIG"]).write_text("[tui]\n", "utf-8")
+                    (root / "state").mkdir()
+                    (root / "state" / "rollback-v1.json").write_text(json.dumps(body), "utf-8")
+                    result = self.run_ctl(command, env)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
     def test_a_full_restore_retires_the_managed_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

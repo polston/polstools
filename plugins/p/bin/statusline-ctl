@@ -694,6 +694,11 @@ def load_rollback(path):
         value = json.load(handle)
     if not isinstance(value, dict) or value.get("schema") not in {1, 2}:
         raise ValueError("rollback metadata has an unsupported shape")
+    for section in ("applied", "previous"):
+        if not isinstance(value.get(section), dict):
+            raise ValueError("rollback metadata has an unsupported shape")
+    if not isinstance(value.get("managed", {}), dict):
+        raise ValueError("rollback metadata has an unsupported shape")
     return value
 
 
