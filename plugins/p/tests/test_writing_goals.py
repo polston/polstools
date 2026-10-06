@@ -9,6 +9,7 @@ SKILL_ROOT = REPO_ROOT / "plugins" / "p" / "skills" / "writing-goals"
 SKILL = SKILL_ROOT / "SKILL.md"
 CLAUDE_ADAPTER = SKILL_ROOT / "references" / "claude-code.md"
 CODEX_ADAPTER = SKILL_ROOT / "references" / "codex.md"
+ANTIGRAVITY_ADAPTER = SKILL_ROOT / "references" / "antigravity.md"
 MARKETPLACE = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 PLUGIN_MANIFEST = REPO_ROOT / "plugins" / "p" / ".claude-plugin" / "plugin.json"
 
@@ -37,7 +38,12 @@ class CrossHarnessGoalGuidanceTests(unittest.TestCase):
 
         self.assertLess(route, contract)
         self.assertEqual(
-            {"references/claude-code.md", "references/codex.md"}, references
+            {
+                "references/claude-code.md",
+                "references/codex.md",
+                "references/antigravity.md",
+            },
+            references,
         )
         self.assertTrue(all((SKILL_ROOT / path).is_file() for path in references))
         frontmatter = text.split("---", 2)[1]

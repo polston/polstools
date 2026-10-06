@@ -443,5 +443,31 @@ class ActivationInstrumentationTests(unittest.TestCase):
         self.assertNotIn("skill-profile-ctl", hooks)
 
 
+class MultiUserStateIsolationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.activation = load_activation()
+
+    def test_state_dir_respects_explicit_override(self):
+        env = {"P_SKILL_STATE_DIR": "/custom/path"}
+        self.assertEqual(self.activation._state_dir(env), Path("/custom/path"))
+
+    def test_state_dir_prefers_xdg_runtime_dir(self):
+        env = {"XDG_RUNTIME_DIR": "/run/user/1000"}
+        self.assertEqual(
+            self.activation._state_dir(env),
+            Path("/run/user/1000/p-skill-activation"),
+        )
+
+    def test_state_dir_namespaces_by_uid_or_username(self):
+        env = {}
+        path = self.activation._state_dir(env)
+        expected_suffix = str(os.getuid()) if hasattr(os, "getuid") else "default"
+        self.assertEqual(
+            path,
+            Path(tempfile.gettempdir()) / ("p-skill-activation-" + expected_suffix),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

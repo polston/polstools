@@ -40,7 +40,9 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 PROFILE_PATH = PLUGIN_ROOT / "profiles" / "aligned-v1.json"
-RENDERER_SOURCE = PLUGIN_ROOT / "renderer" / "claude-statusline.ps1"
+RENDERER_SOURCE_PS1 = PLUGIN_ROOT / "renderer" / "claude-statusline.ps1"
+RENDERER_SOURCE_PY = PLUGIN_ROOT / "renderer" / "claude-statusline.py"
+RENDERER_SOURCE = RENDERER_SOURCE_PS1 if os.name == "nt" else RENDERER_SOURCE_PY
 PROFILE_LABEL_SOURCE = PLUGIN_ROOT / "renderer" / "skill-profile-label.py"
 ACTIVATION_LIB_SOURCE = PLUGIN_ROOT / "lib" / "skill_activation.py"
 ACTIVATION_PROFILE_SOURCE = PLUGIN_ROOT / "profiles" / "skill-activation-v1.json"
@@ -156,12 +158,15 @@ def _default_state_dir():
 def paths():
     state_dir = _default_state_dir()
     install_dir = Path(os.environ.get("STATUSLINE_INSTALL_DIR") or state_dir / "installed-v1")
+    renderer_name = "claude-statusline.ps1" if os.name == "nt" else "claude-statusline.py"
     return {
         "claude": Path(os.environ.get("STATUSLINE_CLAUDE_SETTINGS") or Path.home() / ".claude" / "settings.json"),
         "codex": Path(os.environ.get("STATUSLINE_CODEX_CONFIG") or Path.home() / ".codex" / "config.toml"),
         "state": state_dir,
         "rollback": state_dir / ROLLBACK_NAME,
-        "renderer": install_dir / "claude-statusline.ps1",
+        "renderer": install_dir / renderer_name,
+        "renderer_py": install_dir / "claude-statusline.py",
+        "renderer_ps1": install_dir / "claude-statusline.ps1",
         "profile_label": install_dir / "skill-profile-label.py",
         "profile_lib": install_dir / "skill_activation.py",
         "profile_policy": install_dir / "skill-activation-v1.json",
@@ -281,7 +286,7 @@ def renderer_command(renderer_path):
     normalized = renderer_path.resolve().as_posix()
     if os.name == "nt":
         return 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + normalized + '"'
-    return 'pwsh -NoProfile -File "' + normalized + '"'
+    return 'python3 "' + normalized + '"'
 
 
 def desired_claude(renderer_path):
@@ -426,13 +431,17 @@ def restore_profile_widgets(settings, applied, previous):
 
 
 def profile_bundle_changes(target, include_renderer=False):
-    sources = (
+    sources = [
         (target["profile_label"], PROFILE_LABEL_SOURCE),
         (target["profile_lib"], ACTIVATION_LIB_SOURCE),
         (target["profile_policy"], ACTIVATION_PROFILE_SOURCE),
-    )
+    ]
     if include_renderer:
-        sources = ((target["renderer"], RENDERER_SOURCE),) + sources
+        sources.insert(0, (target["renderer"], RENDERER_SOURCE))
+        if RENDERER_SOURCE_PS1.is_file() and target.get("renderer_ps1") != target["renderer"]:
+            sources.append((target["renderer_ps1"], RENDERER_SOURCE_PS1))
+        if RENDERER_SOURCE_PY.is_file() and target.get("renderer_py") != target["renderer"]:
+            sources.append((target["renderer_py"], RENDERER_SOURCE_PY))
     for _, source in sources:
         if not source.is_file():
             raise FileNotFoundError("status profile source is missing")

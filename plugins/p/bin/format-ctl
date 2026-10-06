@@ -37,19 +37,30 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8")
 
-# The flags are disposable session state. The OS temp directory is writable in
-# both harness sandboxes and keeps the files out of repositories and config.
-FLAG_DIR = os.environ.get("P_FORMAT_STATE_DIR") or os.path.join(
-    tempfile.gettempdir(), "p-format-toggle"
-)
+def _default_flag_dir():
+    override = os.environ.get("P_FORMAT_STATE_DIR")
+    if override:
+        return override
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return os.path.join(runtime, "p-format-toggle")
+    suffix = str(os.getuid()) if hasattr(os, "getuid") else (os.environ.get("USERNAME") or "default")
+    return os.path.join(tempfile.gettempdir(), "p-format-toggle-" + suffix)
+
+
+FLAG_DIR = _default_flag_dir()
 STALE_SECONDS = 14 * 24 * 3600
 # retro.py's reporting_session_ids() reads this same tuple of session-id env
 # vars to exclude the reporting session from a report; keep both in sync.
-HARNESSES = ("claude", "codex")
+HARNESSES = ("claude", "codex", "antigravity")
 SESSION_ENV_VARS = (
     "CLAUDE_CODE_SESSION_ID",
     "CODEX_SESSION_ID",
     "CODEX_THREAD_ID",
+    "ANTIGRAVITY_SESSION_ID",
+    "ANTIGRAVITY_CONVERSATION_ID",
+    "AGY_SESSION_ID",
+    "AGY_CONVERSATION_ID",
 )
 STATES = ("on", "off")
 
@@ -122,6 +133,13 @@ def harness_name():
         return "claude"
     if os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_THREAD_ID"):
         return "codex"
+    if (
+        os.environ.get("ANTIGRAVITY_SESSION_ID")
+        or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        or os.environ.get("AGY_SESSION_ID")
+        or os.environ.get("AGY_CONVERSATION_ID")
+    ):
+        return "antigravity"
     return ""
 
 
@@ -153,20 +171,30 @@ def resolve(session_id):
     return default_state()
 
 
+_CACHED_TELEMETRY_PATH = None
+_CACHED_RETRO_HOME = None
+
+
 def _telemetry_path():
+    global _CACHED_TELEMETRY_PATH, _CACHED_RETRO_HOME
     root = os.environ.get("RETRO_HOME")
     if not root:
         return ""
-    root = os.path.abspath(root)
-    current = root
+    if root == _CACHED_RETRO_HOME and _CACHED_TELEMETRY_PATH is not None:
+        return _CACHED_TELEMETRY_PATH
+    _CACHED_RETRO_HOME = root
+    resolved_root = os.path.abspath(root)
+    current = resolved_root
     while True:
         if os.path.isdir(os.path.join(current, ".git")):
+            _CACHED_TELEMETRY_PATH = ""
             return ""
         parent = os.path.dirname(current)
         if parent == current:
             break
         current = parent
-    return os.path.join(root, "telemetry", "owned-hook-events.jsonl")
+    _CACHED_TELEMETRY_PATH = os.path.join(resolved_root, "telemetry", "owned-hook-events.jsonl")
+    return _CACHED_TELEMETRY_PATH
 
 
 def _emit_hook_event(base, event, **values):
@@ -260,8 +288,15 @@ def default_command(args):
         return
     action, rest = args[0], args[1:]
     harness = ""
-    if rest[:1] == ["--harness"] and len(rest) == 2 and rest[1] in HARNESSES:
-        harness = rest[1]
+    if rest[:1] == ["--harness"] and len(rest) == 2:
+        candidate = rest[1]
+        if candidate == "agy":
+            candidate = "antigravity"
+        if candidate in HARNESSES:
+            harness = candidate
+        else:
+            print(__doc__, file=sys.stderr)
+            sys.exit(2)
     elif rest:
         print(__doc__, file=sys.stderr)
         sys.exit(2)

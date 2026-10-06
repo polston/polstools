@@ -3,6 +3,46 @@
 # override is a single executable path, not a shell fragment.
 set -eu
 
+# Shell fast-path for hook gate evaluations when formatting is inactive
+if [ "${2:-}" = "gate" ]; then
+  case "${1:-}" in
+    *format-ctl)
+      if [ -z "${RETRO_HOME:-}" ] && [ "${P_FORMAT_DEFAULT:-}" != "on" ]; then
+        cfg="${P_FORMAT_CONFIG_FILE:-}"
+        if [ -z "$cfg" ]; then
+          if [ -n "${LOCALAPPDATA:-}" ]; then
+            cfg="$LOCALAPPDATA/polstools/format.json"
+          else
+            cfg="${XDG_CONFIG_HOME:-$HOME/.config}/polstools/format.json"
+          fi
+        fi
+        if [ ! -f "$cfg" ] || ! grep -q '"on"' "$cfg" 2>/dev/null; then
+          fdir="${P_FORMAT_STATE_DIR:-}"
+          if [ -z "$fdir" ]; then
+            if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+              fdir="$XDG_RUNTIME_DIR/p-format-toggle"
+            else
+              uid=$(id -u 2>/dev/null || true)
+              [ -z "$uid" ] && uid="${USERNAME:-default}"
+              fdir="${TMPDIR:-${TEMP:-/tmp}}/p-format-toggle-$uid"
+            fi
+          fi
+          sid="${CLAUDE_CODE_SESSION_ID:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-${ANTIGRAVITY_SESSION_ID:-${ANTIGRAVITY_CONVERSATION_ID:-${AGY_SESSION_ID:-${AGY_CONVERSATION_ID:-}}}}}}}"
+          if [ -n "$sid" ]; then
+            if [ ! -f "$fdir/$sid.on" ]; then
+              exit 0
+            fi
+          elif [ ! -d "$fdir" ]; then
+            exit 0
+          elif ! ls "$fdir"/*.on >/dev/null 2>&1; then
+            exit 0
+          fi
+        fi
+      fi
+      ;;
+  esac
+fi
+
 shell_path() {
   value=$1
   case "$value" in

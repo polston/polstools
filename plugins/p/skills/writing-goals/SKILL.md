@@ -22,6 +22,7 @@ Read exactly one adapter:
 
 1. Claude Code: `references/claude-code.md`
 2. Codex: `references/codex.md`
+3. Antigravity: `references/antigravity.md`
 
 For another harness, verify its official goal lifecycle and evaluator semantics
 before drafting. Apply the shared contract below, but do not borrow mechanics

@@ -171,11 +171,7 @@ def _find_executable(name):
     return None
 
 
-def update_agy(runner, plugin_root, executable="agy"):
-    runner([executable, "plugin", "install", str(plugin_root)])
-
-
-def _agy_has_p(executable):
+def _agy_item(executable="agy"):
     try:
         completed = subprocess.run(
             [executable, "plugin", "list"],
@@ -183,15 +179,31 @@ def _agy_has_p(executable):
         )
         out = completed.stdout.strip()
         if not out or out == "No imported plugins.":
-            return False
+            return None
         data = json.loads(out)
         imports = data.get("imports") or []
-        return any(isinstance(x, dict) and x.get("name") == "p" for x in imports)
+        for item in imports:
+            if isinstance(item, dict) and item.get("name") == "p":
+                return item
     except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
-        return False
+        pass
+    return None
 
 
-def _new_doctor_root(claude_item, codex_item):
+def update_agy(runner, plugin_root, executable="agy"):
+    item = _agy_item(executable)
+    source = item.get("source") if isinstance(item, dict) else None
+    if isinstance(source, str) and (source.startswith("http://") or source.startswith("https://") or source.startswith("git@")):
+        runner([executable, "plugin", "install", source])
+    else:
+        runner([executable, "plugin", "install", str(plugin_root)])
+
+
+def _agy_has_p(executable):
+    return _agy_item(executable) is not None
+
+
+def _new_doctor_root(claude_item, codex_item, agy_item=None, default_root=None):
     if claude_item:
         root = claude_item.get("installPath")
         if root and (Path(root) / "bin" / "p-doctor").is_file():
@@ -201,19 +213,32 @@ def _new_doctor_root(claude_item, codex_item):
         root = source.get("path") if isinstance(source, dict) else None
         if root and (Path(root) / "bin" / "p-doctor").is_file():
             return Path(root)
+    if agy_item:
+        root = agy_item.get("path") or agy_item.get("installPath") or agy_item.get("installedPath")
+        if root and (Path(root) / "bin" / "p-doctor").is_file():
+            return Path(root)
+    if default_root and (Path(default_root) / "bin" / "p-doctor").is_file():
+        return Path(default_root)
     raise UpdateError("updated p doctor could not be located")
 
 
-def _verify_versions(claude, codex):
+def _verify_versions(claude, codex, agy=None):
     installed = []
     if claude:
-        installed.append(_installed(run_json(claude, ["plugin", "list", "--json"]), "claude"))
+        installed.append(("Claude", _installed(run_json(claude, ["plugin", "list", "--json"]), "claude")))
     if codex:
-        installed.append(_installed(run_json(codex, ["plugin", "list", "--json"]), "codex"))
-    versions = {str(item.get("version") or "") for item in installed}
-    if len(versions) != 1 or "" in versions:
-        raise UpdateError("Claude and Codex did not converge on one p version")
-    return next(iter(versions))
+        installed.append(("Codex", _installed(run_json(codex, ["plugin", "list", "--json"]), "codex")))
+    if agy:
+        item = _agy_item(agy)
+        if item:
+            installed.append(("Antigravity", item))
+    if not installed:
+        raise UpdateError("no supported harness has p installed")
+    versions = {str(item.get("version") or "") for _, item in installed if item.get("version")}
+    if len(versions) > 1 or "" in versions:
+        diffs = ", ".join("%s (%s)" % (name, item.get("version")) for name, item in installed)
+        raise UpdateError("installed harnesses did not converge on one p version: %s" % diffs)
+    return next(iter(versions)) if versions else ""
 
 
 def run_doctor(plugin_root, runner=subprocess.run, stream=None):
@@ -268,7 +293,6 @@ def main(argv=None):
             update_agy(run_checked, Path(__file__).resolve().parent.parent, agy)
             print("PASS Antigravity p update")
 
-        version = _verify_versions(claude, codex)
         current_claude = (
             _installed(run_json(claude, ["plugin", "list", "--json"]), "claude")
             if claude else None
@@ -277,7 +301,11 @@ def main(argv=None):
             _installed(run_json(codex, ["plugin", "list", "--json"]), "codex")
             if codex else None
         )
-        doctor_root = _new_doctor_root(current_claude, current_codex)
+        current_agy = _agy_item(agy) if agy else None
+        version = _verify_versions(claude, codex, agy)
+        doctor_root = _new_doctor_root(
+            current_claude, current_codex, current_agy, Path(__file__).resolve().parent.parent
+        )
         doctor_code = run_doctor(doctor_root)
         if doctor_code:
             return doctor_code

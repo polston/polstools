@@ -571,7 +571,7 @@ def is_approval(reply):
     # whole-reply rule catching 24% of real approvals. The misses were an
     # affirmative followed by a qualifier -- agreeing and adding a preference.
     # Requiring no negation is what keeps "sure, but not that way" out.
-    head = re.split(r"[,;.!]", stripped, 1)[0].strip()
+    head = re.split(r"[,;.!]", stripped, maxsplit=1)[0].strip()
     return bool(_APPROVAL.match(head)) and not _NEGATION.search(stripped)
 
 

@@ -18,13 +18,6 @@ import tempfile
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = PLUGIN_ROOT.parents[1]
-COMMAND_NAMES = (
-    "adequacy-review",
-    "statusline-apply",
-    "statusline-check",
-    "statusline-preview",
-    "statusline-restore",
-)
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
@@ -100,6 +93,7 @@ def _validate_adequacy_review(plugin_root, errors):
     adapters = {
         "Claude Code": skill_root / "references" / "claude-code.md",
         "Codex": skill_root / "references" / "codex.md",
+        "Antigravity": skill_root / "references" / "antigravity.md",
     }
     if (plugin_root / "workflows" / "adequacy-review.js").exists():
         errors.append("legacy Claude-only adequacy-review workflow still exists")
@@ -112,6 +106,7 @@ def _validate_adequacy_review(plugin_root, errors):
             "contract-v1.json",
             "references/claude-code.md",
             "references/codex.md",
+            "references/antigravity.md",
             "Read exactly one adapter",
         ):
             if expected not in skill:
@@ -249,8 +244,8 @@ def validate_package(plugin_root):
                 if not isinstance(details, dict) or details.get("source") != expected:
                     errors.append("skill activation source differs for " + component)
 
-    for name in COMMAND_NAMES:
-        command_path = plugin_root / "commands" / (name + ".md")
+    for command_path in sorted((plugin_root / "commands").glob("*.md")):
+        name = command_path.stem
         skill_path = plugin_root / "skills" / name / "SKILL.md"
         if not command_path.is_file() or not skill_path.is_file():
             errors.append("canonical skill or Claude adapter is missing for " + name)

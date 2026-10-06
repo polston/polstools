@@ -15,6 +15,7 @@ import sys
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 CONTRACT_PATH = SKILL_ROOT / "contract-v1.json"
 ADAPTERS = {
+    "antigravity": "references/antigravity.md",
     "claude-code": "references/claude-code.md",
     "codex": "references/codex.md",
 }

@@ -41,6 +41,12 @@ command -v git >/dev/null 2>&1 || { echo "git not found" >&2; exit 2; }
 # script: it refused to record a deleted memory file, which is exactly the kind
 # of change someone would later want a date for.
 DIR=$(dirname "$TARGET")
+BASE_NAME=$(basename "$TARGET")
+DIR=$(CDPATH= cd -- "$DIR" 2>/dev/null && pwd) || {
+    echo "no such directory: $(dirname "$TARGET")" >&2
+    exit 2
+}
+TARGET="$DIR/$BASE_NAME"
 if [ ! -e "$TARGET" ]; then
     git -C "$DIR" ls-files --error-unmatch -- "$TARGET" >/dev/null 2>&1 || {
         echo "no such path, and not tracked: $TARGET" >&2

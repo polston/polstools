@@ -23,6 +23,7 @@ restate either in an adapter or improvise their behavior.
 2. Identify the active harness from session context. Read exactly one adapter:
    - Claude Code: `references/claude-code.md`
    - Codex: `references/codex.md`
+   - Antigravity: `references/antigravity.md`
 3. Follow that adapter with the filtered `target`, optional `spec`, inferred
    repository root, every exclusion, and optional reviewer count. The skill
    explicitly authorizes the adapter's native parallel subagent calls.

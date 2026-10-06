@@ -9,13 +9,6 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "p"
-COMMAND_NAMES = (
-    "adequacy-review",
-    "statusline-apply",
-    "statusline-check",
-    "statusline-preview",
-    "statusline-restore",
-)
 VALIDATOR_PATH = PLUGIN_ROOT / "bin" / "p_validate.py"
 
 
@@ -90,13 +83,15 @@ class UniversalMetadataTests(unittest.TestCase):
 class CanonicalSkillAdapterTests(unittest.TestCase):
     def test_every_legacy_command_is_a_thin_adapter_to_a_canonical_skill(self):
         activation = load_json(PLUGIN_ROOT / "profiles" / "skill-activation-v1.json")
-        for name in COMMAND_NAMES:
+        command_files = sorted((PLUGIN_ROOT / "commands").glob("*.md"))
+        self.assertGreaterEqual(len(command_files), 5)
+        for command_path in command_files:
+            name = command_path.stem
             with self.subTest(name=name):
                 skill = PLUGIN_ROOT / "skills" / name / "SKILL.md"
-                command = PLUGIN_ROOT / "commands" / (name + ".md")
                 self.assertTrue(skill.is_file())
                 skill_text = skill.read_text(encoding="utf-8")
-                command_text = command.read_text(encoding="utf-8")
+                command_text = command_path.read_text(encoding="utf-8")
                 self.assertIn("name: " + name, skill_text)
                 self.assertIn("skill-profile-ctl check " + name, skill_text)
                 self.assertIn(

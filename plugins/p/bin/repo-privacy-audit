@@ -113,6 +113,7 @@ git -C "$REPO" log --all --format= -p 2>/dev/null \
     ' > "$TMP/patches" || true
 git -C "$REPO" tag -l --format='%(contents)'                 > "$TMP/tags"      2>/dev/null || true
 git -C "$REPO" log --all --format='%an <%ae> %cn <%ce>' | sort -u > "$TMP/idents" 2>/dev/null || true
+git -C "$REPO" rev-list --all                                > "$TMP/revs"      2>/dev/null || true
 
 total_hits=0
 printf '%-22s %9s %9s %9s %9s %9s\n' "category" "msgs" "trees" "patches" "tags" "idents"
@@ -124,8 +125,11 @@ for cat in $CATS; do
   messages="$TMP/messages"
   [ "$cat" = "email" ] && messages="$TMP/messages_without_authorship"
   c1=$(grep -cEI "$pat" "$messages" 2>/dev/null || true); c1=${c1:-0}
-  c2=$(git -C "$REPO" grep -IEl "$pat" $(git -C "$REPO" rev-list --all) 2>/dev/null \
-       | sed 's/^[0-9a-f]*://' | sort -u | wc -l | tr -d ' '); c2=${c2:-0}
+  c2=0
+  if [ -s "$TMP/revs" ]; then
+    c2=$(xargs -n 500 git -C "$REPO" grep -IEl "$pat" < "$TMP/revs" 2>/dev/null \
+         | sed 's/^[0-9a-f]*://' | sort -u | wc -l | tr -d ' ' || true); c2=${c2:-0}
+  fi
   c3=$(grep -cEI "$pat" "$TMP/patches"  2>/dev/null || true); c3=${c3:-0}
   c4=$(grep -cEI "$pat" "$TMP/tags"     2>/dev/null || true); c4=${c4:-0}
   c5=$(grep -cEI "$pat" "$TMP/idents"   2>/dev/null || true); c5=${c5:-0}
@@ -142,8 +146,8 @@ for cat in $CATS; do
   [ "$sum" -gt 0 ] && total_hits=$((total_hits + 1))
   printf '%-22s %9s %9s %9s %9s %9s\n' "$cat" "$c1" "$c2" "$c3" "$c4" "$c5"
 
-  if [ "$VERBOSE" -eq 1 ] && [ "$c2" -gt 0 ]; then
-    git -C "$REPO" grep -IEl "$pat" $(git -C "$REPO" rev-list --all) 2>/dev/null \
+  if [ "$VERBOSE" -eq 1 ] && [ "$c2" -gt 0 ] && [ -s "$TMP/revs" ]; then
+    xargs -n 500 git -C "$REPO" grep -IEl "$pat" < "$TMP/revs" 2>/dev/null \
       | sed 's/^[0-9a-f]*://' | sort -u | head -15 | sed 's/^/      /'
   fi
 

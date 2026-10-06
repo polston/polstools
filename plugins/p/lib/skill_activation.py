@@ -18,6 +18,10 @@ SESSION_ENV_VARS = (
     "CLAUDE_CODE_SESSION_ID",
     "CODEX_SESSION_ID",
     "CODEX_THREAD_ID",
+    "ANTIGRAVITY_SESSION_ID",
+    "ANTIGRAVITY_CONVERSATION_ID",
+    "AGY_SESSION_ID",
+    "AGY_CONVERSATION_ID",
 )
 IDENTIFIER_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 NATIVE_BEGIN = "# p-skill-activation begin"
@@ -146,7 +150,13 @@ def session_id_from_env(env=None, required=False):
 def _state_dir(env=None):
     env = os.environ if env is None else env
     override = env.get("P_SKILL_STATE_DIR")
-    return Path(override) if override else Path(tempfile.gettempdir()) / "p-skill-activation"
+    if override:
+        return Path(override)
+    runtime = env.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return Path(runtime) / "p-skill-activation"
+    suffix = str(os.getuid()) if hasattr(os, "getuid") else (env.get("USERNAME") or "default")
+    return Path(tempfile.gettempdir()) / ("p-skill-activation-" + suffix)
 
 
 def global_state_path(env=None):
