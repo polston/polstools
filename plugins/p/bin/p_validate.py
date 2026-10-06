@@ -629,9 +629,14 @@ def antigravity_validate(plugin_root):
             plugin_root, copy_root,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
+        # agy must never see the operator's configuration: give it a scratch
+        # home that goes away with the copy.
+        scratch_home = Path(tmp) / "home"
+        scratch_home.mkdir()
+        env = dict(os.environ, HOME=str(scratch_home), USERPROFILE=str(scratch_home))
         result = subprocess.run(
             [agy_bin, "plugin", "validate", str(copy_root)],
-            text=True, encoding="utf-8", capture_output=True,
+            text=True, encoding="utf-8", capture_output=True, env=env,
         )
     if result.returncode != 0:
         return ["agy plugin validate rejected the package"]

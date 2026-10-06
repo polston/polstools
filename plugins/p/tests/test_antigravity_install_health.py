@@ -113,6 +113,29 @@ class AntigravityInstallHealthTests(unittest.TestCase):
         self.assertEqual("FAIL", check({"components": ["skills", "commands"]}).status)
         self.assertEqual("SKIP", check({}).status)
 
+    def test_validator_runs_agy_with_a_scratch_home_that_is_removed(self):
+        root = Path(self.tmp.name)
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        seen = root / "seen-home.txt"
+        output = root / "agy-output.txt"
+        output.write_text(AGY_LOADED, encoding="utf-8")
+        script = fake_bin / "agy"
+        script.write_text(
+            '#!/bin/sh\nprintf %s "$HOME" > "$SEEN_HOME"\ncat "$AGY_OUTPUT"\n',
+            encoding="utf-8")
+        script.chmod(0o755)
+        environ = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
+                       SEEN_HOME=str(seen), AGY_OUTPUT=str(output),
+                       USERPROFILE=str(root / "userdir"))
+        with mock.patch.dict(os.environ, environ, clear=True):
+            errors = self.validator.antigravity_validate(PLUGIN_ROOT)
+        self.assertEqual([], errors)
+        recorded = seen.read_text(encoding="utf-8")
+        self.assertNotEqual(str(root / "userdir"), recorded)
+        self.assertNotEqual(os.environ["HOME"], recorded)
+        self.assertFalse(Path(recorded).exists())
+
 
 if __name__ == "__main__":
     unittest.main()
