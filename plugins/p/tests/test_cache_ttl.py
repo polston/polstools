@@ -297,14 +297,24 @@ class TestCostModel(unittest.TestCase):
         self.assertEqual(result["observed"], 0.0)
         self.assertEqual(result["unpriced"]["claude-unknown-9"], 2)
 
+    # The pricing page, read 2026-10-06: "Cache hits and refreshes on Claude
+    # Fable 5.1 and Claude Mythos 5.1 are priced at 0.025x the base input
+    # price." "Cache hits and refreshes on Claude Opus 5.5 are priced at
+    # 0.05x the base input price." "All other models use the standard 0.1x
+    # multiplier."
+    READ_MULTIPLIER = {"claude-fable-5-1": 0.025, "claude-opus-5-5": 0.05}
+    STANDARD_READ_MULTIPLIER = 0.1
+
     def test_price_rows_hold_the_exact_published_multipliers(self):
-        """Every row is base x1.25 (5m), x2.0 (1h), x0.1 (read). Expressed
-        against the 5m write so no base column is needed: 1h is 1.6x the 5m
-        write and a read is 0.08x it. An ordering-only assertion would let a
-        tenfold typo through."""
+        """Every row is base x1.25 (5m write), x2.0 (1h write) and the read
+        multiplier the page publishes for that model. Base is derived from the
+        row itself (5m write / 1.25), so no base column is needed. An
+        ordering-only assertion would let a tenfold typo through."""
         for model, (w5, w1, read) in cache_ttl.PRICES.items():
-            self.assertAlmostEqual(w1, w5 * 1.6, places=12, msg=model)
-            self.assertAlmostEqual(read, w5 * 0.08, places=12, msg=model)
+            base = w5 / 1.25
+            mult = self.READ_MULTIPLIER.get(model, self.STANDARD_READ_MULTIPLIER)
+            self.assertAlmostEqual(w1, base * 2.0, places=12, msg=model)
+            self.assertAlmostEqual(read, base * mult, places=12, msg=model)
 
     def test_unpriced_record_keeps_its_place_in_the_chain_for_the_next_gap(self):
         """The brief requires an unpriced request to stay in the chain

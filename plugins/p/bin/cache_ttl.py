@@ -335,7 +335,7 @@ def _write_band_table(stream, bands):
 # USD per token, keyed by the exact message.model string in transcripts.
 # Read from the model pricing table on the page below. Re-check the date
 # before trusting a dollar figure: prices change and this table does not.
-PRICES_VERIFIED_ON = "2026-08-19"
+PRICES_VERIFIED_ON = "2026-10-06"
 PRICES_SOURCE = "https://platform.claude.com/docs/en/about-claude/pricing"
 PRICES = {
     # model id:                    (write_5m,  write_1h,  read)
@@ -347,6 +347,10 @@ PRICES = {
     "claude-sonnet-4-6":           (3.75e-6, 6.00e-6, 0.30e-6),
     "claude-sonnet-4-5-20250929":  (3.75e-6, 6.00e-6, 0.30e-6),
     "claude-haiku-4-5-20251001":   (1.25e-6, 2.00e-6, 0.10e-6),
+    "claude-fable-5-1":            (12.50e-6, 20.00e-6, 0.25e-6),
+    "claude-opus-5-5":             (5.00e-6, 8.00e-6, 0.20e-6),
+    "claude-sonnet-5-5":           (2.50e-6, 4.00e-6, 0.20e-6),
+    "claude-opus-4-6":             (6.25e-6, 10.00e-6, 0.50e-6),
 }
 
 
