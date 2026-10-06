@@ -20,7 +20,22 @@ the remote history ends up mislabeled.
 
 ## The check
 
-Two numbers, before branching and again before opening or merging:
+Two numbers, before branching and again before opening or merging. The script
+fetches, finds the base, and counts both:
+
+```sh
+sh <plugin-root>/bin/branch-base-check -C <repo> [-b <base>] [-r <remote>]
+```
+
+Exit 0 is in sync. Exit 1 is ahead, behind, or a base that was never pushed.
+Exit 2 means it could not compare: an unusable argument, several remotes and
+none named `origin` (pass `-r`), or a fetch that failed -- comparing against
+refs that a failed fetch left behind can report "in sync" while the remote has
+moved. `-n` skips the fetch and says the comparison is against the refs as last
+fetched. The base defaults to the remote's HEAD, asked of the remote when the
+clone never recorded it, then `main`, then `master`.
+
+By hand, the same two numbers:
 
 ```bash
 git fetch origin
@@ -72,4 +87,4 @@ the first time you commit locally without pushing.
 - "I'll check when I open the PR"
 - "The diff looks big but that's probably the formatter"
 
-All of these mean: run the two counts.
+All of these mean: run the check.
