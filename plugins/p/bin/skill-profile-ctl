@@ -209,12 +209,11 @@ def command_check(args):
         raise activation.PolicyError("unknown component")
     try:
         resolved = activation.resolve(policy)
-    except activation.PolicyError:
+    except activation.PolicyError as error:
         required = set(policy["components"][args.component]["requires"])
         if required <= {"control-plane", "core"}:
             print(
-                "warning: activation policy is invalid; "
-                "core/control-plane component allowed",
+                "warning: %s; core/control-plane component allowed" % error,
                 file=sys.stderr,
             )
             return 0
@@ -234,9 +233,9 @@ def command_check_capability(args):
         raise activation.PolicyError("unknown component")
     try:
         resolved = activation.resolve(policy)
-    except activation.PolicyError:
+    except activation.PolicyError as error:
         if args.capability in {"control-plane", "core"}:
-            print("warning: activation policy is invalid; core capability allowed", file=sys.stderr)
+            print("warning: %s; core capability allowed" % error, file=sys.stderr)
             return 0
         raise
     if activation.capability_enabled(resolved, args.capability, args.component):

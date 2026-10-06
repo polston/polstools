@@ -127,6 +127,15 @@ class ActivationPolicyTests(unittest.TestCase):
             outer = dict(env, P_SKILL_HARNESS="claude")
             self.assertEqual(self.activation.resolve(self.manifest, env=outer)["profile"], "home")
 
+    def test_the_harness_override_accepts_agy_for_antigravity(self):
+        env = {"CLAUDE_CODE_SESSION_ID": "outer-claude",
+               "ANTIGRAVITY_CONVERSATION_ID": "inner-agy"}
+        with self.assertRaises(self.activation.PolicyError):
+            self.activation.session_id_from_env(env)
+        for name in ("agy", "antigravity"):
+            self.assertEqual(self.activation.session_id_from_env(
+                dict(env, P_SKILL_HARNESS=name)), "inner-agy")
+
     def test_overrides_enable_disable_and_cannot_change_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = self.env(Path(tmp))
@@ -520,6 +529,17 @@ class ControllerExitContractTests(unittest.TestCase):
             [sys.executable, str(self.plugin / "bin" / "skill-profile-ctl"), *args],
             text=True, encoding="utf-8", capture_output=True,
             env=dict(self.env, P_SKILL_SKIP_STATUS_SYNC="1", **extra))
+
+    def test_check_names_the_ambiguous_session_for_a_core_component(self):
+        result = self.run_ctl("check", "home", CLAUDE_CODE_SESSION_ID="outer-claude")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("P_SKILL_HARNESS", result.stderr)
+        self.assertNotIn("policy is invalid", result.stderr)
+        result = self.run_ctl("check-capability", "core",
+                              CLAUDE_CODE_SESSION_ID="outer-claude")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("P_SKILL_HARNESS", result.stderr)
+        self.assertNotIn("policy is invalid", result.stderr)
 
     def test_validate_flags_a_coverage_mismatch_with_exit_1(self):
         self.assertEqual(self.run_ctl("validate").returncode, 0)
