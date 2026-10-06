@@ -135,6 +135,14 @@ class SessionProbeTests(unittest.TestCase):
         for line in (self.state / "probe.log").read_text(encoding="utf-8").splitlines():
             self.assertNotIn("/", line.split("\t")[0])
 
+    def test_a_key_that_regex_matches_an_earlier_key_still_gets_its_names_line(self):
+        self.arm()
+        self.run_hook(conversation="ab")
+        self.run_hook(conversation="..")
+        lines = (self.state / "probe.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(["N ab", "N .."],
+                         [line.split("\t")[0] for line in lines if line.startswith("N ")])
+
     def test_armed_trace_is_private_bound_and_removed_by_the_reader(self):
         self.arm()
         trace = self.state / "probe.log"

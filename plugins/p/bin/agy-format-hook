@@ -118,7 +118,8 @@ trace() {
     refuse "trace file is missing or a link"; return
   fi
   key=${sid:-no-session}
-  if ! grep -q "^N $key	" "$log" 2>/dev/null; then
+  if ! awk -v k="$key" -F '\t' '$1 == "N " k { found = 1 } END { exit !found }' \
+      "$log" 2>/dev/null; then
     keys=$(printf '%s\n' "$event" | grep -o '"[A-Za-z0-9_]*"[[:space:]]*:' \
       | sed 's/[":[:space:]]//g' | sort -u | tr '\n' ' ')
     names=$(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' \
