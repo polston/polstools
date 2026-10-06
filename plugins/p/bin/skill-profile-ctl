@@ -260,6 +260,8 @@ def command_validate(_args):
 def command_sync_native(_args):
     changed = activation.sync_native(manifest(), PLUGIN_ROOT)
     print("Codex skill catalog adapter " + ("updated" if changed else "already current"))
+    print("Claude Code and Antigravity: no native per-skill switch exists; a "
+          "disabled skill is stopped only by its skill-profile-ctl check guard")
     return 0
 
 

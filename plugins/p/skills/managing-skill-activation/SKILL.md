@@ -25,7 +25,10 @@ Use the same controller for the requested operation:
 - `sync-native` optionally refreshes p-owned Codex catalog entries after a
   plugin update. It affects future-session visibility and is not required for
   enforcement. Do not run it unless the operator explicitly asks for catalog
-  hiding; a current session cannot reload a skill removed at startup.
+  hiding; a current session cannot reload a skill removed at startup. Claude
+  Code and Antigravity have no per-skill switch for plugin skills, so there a
+  disabled skill stays listed and is stopped only by its own
+  `skill-profile-ctl check` guard.
 - `validate` checks the policy schema and exact source coverage.
 
 `P_SKILL_PROFILE` is an environment lock above session and global state. If it
