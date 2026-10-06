@@ -37,16 +37,24 @@ rather than run from a checkout.
   same hashed labels the plain-text report shows. Neither mode ever emits a raw
   directory name.
 
-Exit `0` means the TTL in force is the right one, `1` means it should change,
-`2` means it could not run.
+Exit `0` means the TTL in force is the right one; `1` means either it should
+change or the window cannot support a verdict (`verdict` in `--json` says
+which); `2` means it could not run.
+
+The report measures Claude Code transcripts only, under `CLAUDE_CONFIG_DIR`
+(default `~/.claude`). Codex and Antigravity are named as not applicable on
+every run: their records carry no five-minute/one-hour write split, so the
+question cannot be asked of them.
 
 ### The smaller JSON shape on the four early-return paths
 
 `--json` combined with an outcome that has no verdict to give — no session
 directory, no readable transcripts, no main-thread requests in the window, or
 every main-thread model unpriced — emits a different, smaller payload than a
-full report: `window_days`, a machine-readable `reason` code, and
-`keep_current_ttl: null` in place of a real verdict. Check for a null
+full report: `window_days`, `harness`, a machine-readable `reason` code, and
+`keep_current_ttl: null` in place of a real verdict. When every main-thread
+model is unpriced but reads were made, `reason` is `insufficient_evidence` and
+the exit is `1`. Check for a null
 `keep_current_ttl` (or the presence of `reason`) before reading any other key
 that only the full shape carries.
 
@@ -59,14 +67,21 @@ every pause stays under five minutes gets nothing from the one-hour TTL.
 The decision therefore lives in one narrow band: gaps between five minutes and
 one hour. Shorter and both policies hit; longer and both mostly miss.
 
-## Session corpus and retention
+## Session corpus
 
-Session corpora vary across harnesses:
-- **Claude Code**: Transcripts sit under `~/.claude/projects/<project-slug>/<session-id>.jsonl` (the target of `cache_ttl.py`).
-- **Antigravity (`agy`)**: Transcripts sit under `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` and session databases under `~/.gemini/antigravity-cli/conversations/`. Unlike systems with automated cache pruning, Antigravity retains all session logs locally indefinitely without automated TTL eviction.
+Transcripts sit under `<claude-config>/projects/<project-slug>/<session-id>.jsonl`,
+where `<claude-config>` is `CLAUDE_CONFIG_DIR` or `~/.claude`. Nothing else is
+read.
 
 ## Reading the output
 
+- **A withheld verdict.** `VERDICT: insufficient evidence` names its reason.
+  `unpriced_read_share_above_limit`: more than 5% of main-thread read tokens
+  belong to models with no price row, so both totals are missing that volume.
+  `decisive_band_empty`: no request fell in the five-to-sixty-minute band, so
+  a keep could only come from the over-an-hour miss branch, which overcharges
+  the counterfactual. A switch with an empty band stands: every hit is cheaper
+  under five minutes.
 - **Setting governs N% of read tokens.** Subagents run on the five-minute TTL
   whatever you set, and some models are pinned to five minutes too. The verdict
   applies to the governed share, never to total spend.
@@ -90,8 +105,10 @@ Session corpora vary across harnesses:
 4. Check the unpriced bucket for any model carrying a non-zero token count.
    A `<synthetic>` row with zero tokens is normal and expected — it costs
    nothing and changes no total. A non-zero-token entry means a real model is
-   missing from the cost model, so its requests are silently absent from
-   both the observed and counterfactual totals.
+   missing from the cost model, so its requests are absent from both totals;
+   the "unpriced main reads" line gives their share, and above 5% the verdict
+   is withheld. Add the missing rows from the `PRICES_SOURCE` page, never by
+   guessing from a neighbouring model id.
 5. Only then act on the verdict, by setting or clearing the environment
    variable below.
 
@@ -159,5 +176,7 @@ mangled absolute paths that embed the account name and other projects.
   the counterfactual rests on no longer holds.
 - The verdict says "nothing to decide" → the window or filter matched nothing
   priceable; widen it rather than reading that as a result.
+- The verdict says "insufficient evidence" → fix what it names (price rows, or
+  a wider window) before reading any ratio in the report.
 - The report names a project directory rather than a hash → stop and fix it
   before the output goes anywhere.

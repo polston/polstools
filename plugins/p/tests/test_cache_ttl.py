@@ -419,8 +419,9 @@ class TestBoundariesAndBranches(unittest.TestCase):
                                        T0 + timedelta(seconds=30))]}])
             stream = io.StringIO()
             code = cache_ttl.report(root, None, None, False, stream)
-            self.assertEqual(code, cache_ttl.EXIT_CLEAN)
-            self.assertIn("nothing to decide", stream.getvalue())
+            # Reads were made and none could be priced: no verdict, and not
+            # the clean exit that means "the TTL in force is right".
+            self.assertEqual(code, cache_ttl.EXIT_FLAGGED)
             self.assertNotIn("FORCE_PROMPT_CACHING_5M", stream.getvalue())
 
     def test_a_subagent_only_unknown_model_still_reaches_the_unpriced_bucket(self):
@@ -710,9 +711,9 @@ class TestJsonOnEarlyReturns(unittest.TestCase):
                                        T0 + timedelta(seconds=30))]}])
             stream = io.StringIO()
             code = cache_ttl.report(root, None, None, True, stream)
-            self.assertEqual(code, cache_ttl.EXIT_CLEAN)
+            self.assertEqual(code, cache_ttl.EXIT_FLAGGED)
             body = json.loads(stream.getvalue())
-            self.assertEqual(body["reason"], "no_priced_main_thread_requests")
+            self.assertEqual(body["reason"], "insufficient_evidence")
             self.assertIsNone(body["keep_current_ttl"])
             self.assertIn("claude-zzz-unknown", body["unpriced_requests"])
 
