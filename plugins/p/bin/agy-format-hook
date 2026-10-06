@@ -14,6 +14,13 @@
 # gate is on, otherwise {}. Exit: always 0 - a hook must not break the agent
 # loop; a gate failure prints {} and one line on stderr, which p-doctor
 # reports.
+#
+# Session probe: only when `p-session-probe --arm` has created the arming
+# marker does this entry append one names-only line to the trace file the
+# arming step created in the private per-user state directory. It refuses,
+# writing nothing, unless that directory is a real directory (not a link)
+# owned by this user with mode 0700 and the trace file is a regular file,
+# not a link. Without the marker the cost is one file test.
 
 here=${0%/*}
 [ "$here" = "$0" ] && here=.
@@ -67,6 +74,63 @@ elif [ -n "$output" ]; then
   state=on
 else
   state=off
+fi
+
+# The arming marker sits beside the format defaults file (format-ctl's
+# config_path, as format-gate reproduces it).
+if [ -n "${P_FORMAT_CONFIG_FILE:-}" ]; then
+  case $P_FORMAT_CONFIG_FILE in
+    */*) armed=${P_FORMAT_CONFIG_FILE%/*}/session-probe.armed ;;
+    *) armed=./session-probe.armed ;;
+  esac
+elif [ -n "${LOCALAPPDATA:-}" ]; then
+  armed=$LOCALAPPDATA/polstools/session-probe.armed
+elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  armed=$XDG_CONFIG_HOME/polstools/session-probe.armed
+elif [ -n "${HOME:-}" ]; then
+  armed=$HOME/.config/polstools/session-probe.armed
+else
+  armed=''
+fi
+
+refuse() {
+  echo "agy-format-hook: session probe refused: $1" >&2
+}
+
+trace() {
+  dir=$(sh "$here/format-gate" state-dir) || {
+    refuse "no per-user state directory"; return; }
+  if [ ! -d "$dir" ] || [ -L "$dir" ]; then
+    refuse "state directory is not a real directory"; return
+  fi
+  # ls -ldn: mode, links, numeric owner. '@' (macOS extended attributes) and
+  # '.' (SELinux context) are allowed suffixes; '+' (an ACL) is not.
+  set -- $(ls -ldn "$dir" 2>/dev/null)
+  case ${1:-} in
+    drwx------ | drwx------@ | drwx------.) ;;
+    *) refuse "state directory is not private (mode 0700)"; return ;;
+  esac
+  if [ "${3:-}" != "$(id -u 2>/dev/null)" ]; then
+    refuse "state directory is not owned by this user"; return
+  fi
+  log=$dir/probe.log
+  if [ ! -f "$log" ] || [ -L "$log" ]; then
+    refuse "trace file is missing or a link"; return
+  fi
+  key=${sid:-no-session}
+  if ! grep -q "^N $key	" "$log" 2>/dev/null; then
+    keys=$(printf '%s\n' "$event" | grep -o '"[A-Za-z0-9_]*"[[:space:]]*:' \
+      | sed 's/[":[:space:]]//g' | sort -u | tr '\n' ' ')
+    names=$(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' \
+      | grep -E '^(ANTIGRAVITY|AGY|CODEX|CLAUDE)_|PLUGIN_ROOT|PLUGIN_DATA|SESSION_ID|THREAD_ID|CONVERSATION_ID' \
+      | sort -u | tr '\n' ' ')
+    printf 'N %s\t%s\t%s\n' "$key" "$keys" "$names" >> "$log"
+  fi
+  printf 'R %s\t%s %s %s\n' "$key" "$invocation" "$steps" "$state" >> "$log"
+}
+
+if [ -n "$armed" ] && [ -e "$armed" ]; then
+  trace
 fi
 
 if [ -n "$output" ]; then

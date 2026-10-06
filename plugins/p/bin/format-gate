@@ -70,6 +70,13 @@ no_session_on() {
   return 0
 }
 
+# The session probe asks for the toggle directory in the cases the shell
+# reproduces exactly; any other case fails and the probe writes nothing.
+if [ "${1:-}" = state-dir ]; then
+  flag_dir
+  exit
+fi
+
 if [ "${1:-}" = gate ] && [ -z "${RETRO_HOME:-}" ] \
     && [ "${P_FORMAT_DEFAULT:-}" != on ] \
     && config_cannot_enable && no_session_on; then
