@@ -196,7 +196,10 @@ def global_state_path(env=None):
 def codex_config_path(env=None):
     env = os.environ if env is None else env
     override = env.get("P_CODEX_CONFIG_FILE")
-    return Path(override) if override else Path.home() / ".codex" / "config.toml"
+    if override:
+        return Path(override)
+    codex_home = env.get("CODEX_HOME")
+    return (Path(codex_home) if codex_home else Path.home() / ".codex") / "config.toml"
 
 
 def _private_dir(directory, create):

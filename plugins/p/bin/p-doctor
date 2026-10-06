@@ -599,8 +599,8 @@ def antigravity_hook_registration(installed):
     )
 
 
-def _find_executable(name):
-    override = os.environ.get("P_DOCTOR_" + name.upper())
+def _find_executable(name, prefix="P_DOCTOR_"):
+    override = os.environ.get(prefix + name.upper())
     if override:
         candidate = Path(override)
         return str(candidate) if candidate.is_file() else None

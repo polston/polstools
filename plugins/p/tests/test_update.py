@@ -94,6 +94,33 @@ class CachePreservationTests(unittest.TestCase):
                 )
             self.assertEqual([], calls)
 
+    def test_codex_reinstall_refuses_when_the_installed_version_is_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            (cache / "1.8.0").mkdir(parents=True)
+            calls = []
+            with self.assertRaisesRegex(self.update.UpdateError, "version"):
+                self.update.update_codex(lambda argv: calls.append(argv), cache, "", False,
+                                         backup_root=Path(tmp) / "backup")
+            self.assertEqual([], calls)
+
+    def test_native_region_is_read_from_the_config_under_codex_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "config.toml").write_text(
+                self.update.NATIVE_REGION_BEGIN + "\n", encoding="utf-8")
+            self.assertTrue(self.update.native_region_present({"CODEX_HOME": tmp}))
+            self.assertFalse(self.update.native_region_present(
+                {"CODEX_HOME": str(Path(tmp) / "other")}))
+
+    def test_updater_finds_executables_through_the_doctors_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "codex"
+            fake.touch()
+            with patched_env({"P_UPDATE_CODEX": str(fake), "P_DOCTOR_CODEX": str(Path(tmp) / "no")}):
+                found = self.update.load_doctor()._find_executable("codex", "P_UPDATE_")
+            self.assertEqual(str(fake), found)
+            self.assertFalse(hasattr(self.update, "_find_executable"))
+
     def test_codex_reinstall_restores_active_snapshot_and_uses_supported_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = self._cache(Path(tmp))

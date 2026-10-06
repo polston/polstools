@@ -78,6 +78,15 @@ def load_doctor():
     return module
 
 
+def _load_activation():
+    """Load lib/skill_activation.py, the rule skill-profile-ctl resolves paths by."""
+    path = PLUGIN_ROOT / "lib" / "skill_activation.py"
+    spec = importlib.util.spec_from_file_location("skill_activation_for_update", str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _installed(payload, harness):
     """Return every p installation a Claude or Codex plugin list reports."""
     items = payload if harness == "claude" else (
@@ -230,6 +239,8 @@ def update_codex(
     cache_root = Path(cache_root)
     backup_root = Path(backup_root or (update_state_root() / "cache-snapshots"))
     reconcile_cache_versions(cache_root, backup_root)
+    if not installed_version:
+        raise UpdateError("Codex does not report p's installed version; refusing removal")
     snapshot = cache_root / installed_version
     if not snapshot.is_dir():
         raise UpdateError(
@@ -260,19 +271,6 @@ def update_claude(runner, scope, executable="claude"):
 
 def update_agy(runner, source, executable="agy"):
     runner([executable, "plugin", "install", str(source)])
-
-
-def _find_executable(name):
-    override = os.environ.get("P_UPDATE_" + name.upper())
-    if override:
-        return override if Path(override).is_file() else None
-    found = shutil.which(name)
-    if found:
-        return found
-    if os.name != "nt":
-        candidate = Path.home() / ".local" / "bin" / name
-        return str(candidate) if candidate.is_file() else None
-    return None
 
 
 def _plugin_root_of(harness, item, doctor):
@@ -373,8 +371,7 @@ def native_region_present(env=None):
     skill-profile-ctl uses.
     """
     env = os.environ if env is None else env
-    override = env.get("P_CODEX_CONFIG_FILE")
-    path = Path(override) if override else Path.home() / ".codex" / "config.toml"
+    path = _load_activation().codex_config_path(env)
     try:
         text = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):
@@ -405,13 +402,18 @@ def main(argv=None):
         help="plugin directory to reinstall Antigravity from when no other harness has p",
     )
     args = parser.parse_args(argv)
-    executables = {name: _find_executable(name) for name in ("claude", "codex", "agy")}
+    try:
+        doctor = load_doctor()
+        executables = {
+            name: doctor._find_executable(name, "P_UPDATE_") for name in ("claude", "codex", "agy")
+        }
+    except (OSError, ImportError, SyntaxError) as error:
+        print("p update: p doctor could not be loaded: %s" % type(error).__name__, file=sys.stderr)
+        return 2
     if not any(executables.values()):
         print("p update: no supported harness CLI is available", file=sys.stderr)
         return 2
-
     try:
-        doctor = load_doctor()
         state, errors = survey(doctor, executables)
     except (OSError, ImportError, SyntaxError) as error:
         print("p update: p doctor could not be loaded: %s" % type(error).__name__, file=sys.stderr)
