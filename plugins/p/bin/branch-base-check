@@ -9,56 +9,101 @@
 # Read-only: fetches refs, then counts. Nothing is checked out, reset, or pushed.
 #
 # Usage: branch-base-check [-C <repo>] [-b <base-branch>] [-r <remote>] [-n]
-#        -n  skip the fetch (use already-fetched refs)
+#        -r  remote to compare with (default: origin, else the only remote)
+#        -b  base branch (default: the remote's HEAD, else main, else master)
+#        -n  skip the fetch and compare with the refs as last fetched
 #
-# Exit: 0 = in sync. 1 = ahead and/or behind. 2 = usage/setup error.
+# Exit: 0 = in sync, or no remote exists for a PR to target.
+#       1 = ahead and/or behind, or the base was never pushed.
+#       2 = could not run: usage, setup, or a fetch that failed.
 
 set -eu
 
+usage() {
+  awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
+}
+die() { echo "$1" >&2; exit 2; }
+
 REPO="."
 BASE=""
-REMOTE="origin"
+REMOTE=""
 FETCH=1
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    -C) REPO="${2:?-C needs a path}"; shift 2 ;;
-    -b) BASE="${2:?-b needs a branch}"; shift 2 ;;
-    -r) REMOTE="${2:?-r needs a remote}"; shift 2 ;;
+    -C|-b|-r)
+      [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs an argument"
+      case "$1" in
+        -C) REPO="$2" ;;
+        -b) BASE="$2" ;;
+        -r) REMOTE="$2" ;;
+      esac
+      shift 2 ;;
     -n) FETCH=0; shift ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
   esac
 done
 
-command -v git >/dev/null 2>&1 || { echo "git not found" >&2; exit 2; }
-git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || {
-  echo "not a git repository: $REPO" >&2; exit 2; }
+command -v git >/dev/null 2>&1 || die "git not found"
+git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $REPO"
 
-git -C "$REPO" remote get-url "$REMOTE" >/dev/null 2>&1 || {
-  echo "no remote named '$REMOTE' — nothing to be out of sync with"; exit 0; }
+# Which remote. An explicit -r must exist. Otherwise origin, or the only remote
+# there is; with several and no origin, which one a PR targets is a guess.
+if [ -n "$REMOTE" ]; then
+  git -C "$REPO" remote get-url "$REMOTE" >/dev/null 2>&1 ||
+    die "no remote named '$REMOTE'"
+else
+  remotes=$(git -C "$REPO" remote)
+  if [ -z "$remotes" ]; then
+    echo "no remotes — a pull request has nothing to diff against"
+    exit 0
+  fi
+  if printf '%s\n' "$remotes" | grep -qx origin; then
+    REMOTE=origin
+  elif [ "$(printf '%s\n' "$remotes" | wc -l | tr -d ' ')" -eq 1 ]; then
+    REMOTE=$remotes
+  else
+    die "no remote named 'origin' and several others ($(echo $remotes)); pass -r"
+  fi
+fi
 
-# Default base = the remote's HEAD, falling back to main then master.
+# Default base = the remote's HEAD as last fetched, else as the remote reports
+# it now, else main, else master.
 if [ -z "$BASE" ]; then
-  BASE=$(git -C "$REPO" symbolic-ref --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null | sed "s|^$REMOTE/||" || true)
+  BASE=$(git -C "$REPO" symbolic-ref --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null \
+         | sed "s|^$REMOTE/||" || true)
+  if [ -z "$BASE" ] && [ "$FETCH" -eq 1 ]; then
+    BASE=$(git -C "$REPO" ls-remote --symref "$REMOTE" HEAD 2>/dev/null \
+           | sed -n 's|^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$|\1|p' \
+           | head -n 1 || true)
+  fi
   [ -n "$BASE" ] || for c in main master; do
     git -C "$REPO" show-ref --verify --quiet "refs/heads/$c" && { BASE="$c"; break; }
   done
 fi
-[ -n "$BASE" ] || { echo "could not determine a base branch; pass -b" >&2; exit 2; }
+[ -n "$BASE" ] || die "could not determine a base branch; pass -b"
 
-git -C "$REPO" show-ref --verify --quiet "refs/heads/$BASE" || {
-  echo "no local branch '$BASE'" >&2; exit 2; }
+git -C "$REPO" show-ref --verify --quiet "refs/heads/$BASE" ||
+  die "no local branch '$BASE'"
 
-[ "$FETCH" -eq 1 ] && git -C "$REPO" fetch --quiet "$REMOTE" 2>/dev/null || true
+# A failed fetch leaves the remote-tracking refs as they were, and comparing
+# against those can report "in sync" while the remote has moved. Git's own
+# error is not echoed: it can carry the remote URL, credentials included.
+if [ "$FETCH" -eq 1 ]; then
+  git -C "$REPO" fetch --quiet "$REMOTE" >/dev/null 2>&1 ||
+    die "fetch from '$REMOTE' failed, so its refs may be stale; run
+'git fetch $REMOTE' to see why, or pass -n to compare with the refs as last fetched"
+fi
 
 git -C "$REPO" show-ref --verify --quiet "refs/remotes/$REMOTE/$BASE" || {
   echo "no remote branch '$REMOTE/$BASE' — it has never been pushed"; exit 1; }
 
-AHEAD=$(git -C "$REPO" rev-list --count "$REMOTE/$BASE..$BASE")
-BEHIND=$(git -C "$REPO" rev-list --count "$BASE..$REMOTE/$BASE")
+AHEAD=$(git -C "$REPO" rev-list --count "refs/remotes/$REMOTE/$BASE..refs/heads/$BASE")
+BEHIND=$(git -C "$REPO" rev-list --count "refs/heads/$BASE..refs/remotes/$REMOTE/$BASE")
 
 echo "base: $BASE   remote: $REMOTE/$BASE"
+[ "$FETCH" -eq 1 ] || echo "(-n: compared with $REMOTE as last fetched, not as it is now)"
 echo "ahead:  $AHEAD  (local commits not on the remote)"
 echo "behind: $BEHIND  (remote commits not local)"
 echo
@@ -72,7 +117,8 @@ if [ "$AHEAD" -gt 0 ]; then
   echo "STOP: '$BASE' is ahead by $AHEAD. A PR cut from here diffs against"
   echo "$REMOTE/$BASE, so those $AHEAD commits would ride along and be squashed"
   echo "under your change's title. Unpushed commits, most recent first:"
-  git -C "$REPO" log --oneline "$REMOTE/$BASE..$BASE" | head -10 | sed 's/^/    /'
+  git -C "$REPO" log --oneline "refs/remotes/$REMOTE/$BASE..refs/heads/$BASE" \
+    | head -10 | sed 's/^/    /'
   echo
   echo "  push $BASE first, or:  git rebase --onto $REMOTE/$BASE <your-base>"
 fi
