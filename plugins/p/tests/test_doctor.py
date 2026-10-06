@@ -332,10 +332,19 @@ class FakeHarnessDoctorTests(unittest.TestCase):
         return {check.key: check for check in checks}, self.doctor.exit_code(checks)
 
     def _agy_imports_p(self, version):
-        write_plugin(self.fake.home / ".gemini" / "config" / "plugins" / "p", version)
+        # The installed copy carries the files its PreInvocation hook runs.
+        hook_files = (
+            "hooks.json", "bin/agy-format-hook", "bin/format-gate", "bin/format-ctl",
+            "bin/python-launcher", "style/response-format.md", "style/turn-reminder.md",
+            "style/antigravity/response-format.json", "style/antigravity/turn-reminder.json",
+        )
+        write_plugin(
+            self.fake.home / ".gemini" / "config" / "plugins" / "p", version,
+            {name: (PLUGIN_ROOT / name).read_text(encoding="utf-8") for name in hook_files},
+        )
         self.fake.on("agy", ["plugin", "list"], (0, {"imports": [{
             "name": "p", "source": "antigravity",
-            "importedAt": "2026-01-01T00:00:00Z", "components": ["skills"],
+            "importedAt": "2026-01-01T00:00:00Z", "components": ["skills", "hooks"],
         }]}))
 
     def test_failing_agy_list_is_unavailable_not_uninstalled(self):
@@ -361,8 +370,36 @@ class FakeHarnessDoctorTests(unittest.TestCase):
         self._agy_imports_p(version)
         found, code = self._collect(["agy"])
         self.assertEqual("PASS", found["agy.version"].status)
-        self.assertEqual("SKIP", found["agy.hooks"].status)
+        self.assertEqual("PASS", found["agy.hooks.registered"].status)
+        for case in ("off", "first", "later"):
+            self.assertEqual("PASS", found["agy.hook.pre_invocation_" + case].status)
         self.assertEqual(0, code)
+
+    def test_antigravity_hook_probe_fails_when_the_installed_hook_is_missing(self):
+        self._agy_imports_p(self.doctor._manifest_version())
+        installed = self.fake.home / ".gemini" / "config" / "plugins" / "p"
+        (installed / "bin" / "agy-format-hook").unlink()
+        found, code = self._collect(["agy"])
+        for case in ("off", "first", "later"):
+            self.assertEqual("FAIL", found["agy.hook.pre_invocation_" + case].status)
+        self.assertEqual(1, code)
+
+    def test_antigravity_hook_is_not_probed_when_agy_is_absent(self):
+        self._agy_imports_p(self.doctor._manifest_version())
+        found, code = self._collect([])
+        self.assertFalse([key for key in found if key.startswith("agy.hook")])
+        self.assertNotIn("agy.hooks.registered", found)
+
+    def test_antigravity_import_without_hooks_component_fails_registration(self):
+        self._agy_imports_p(self.doctor._manifest_version())
+        self.fake.on("agy", ["plugin", "list"], (0, {"imports": [{
+            "name": "p", "source": "antigravity",
+            "importedAt": "2026-01-01T00:00:00Z", "components": ["skills"],
+        }]}))
+        found, code = self._collect(["agy"])
+        self.assertEqual("FAIL", found["agy.hooks.registered"].status)
+        self.assertEqual("PASS", found["agy.hook.pre_invocation_first"].status)
+        self.assertEqual(1, code)
 
     def test_antigravity_copy_without_a_manifest_is_not_a_version_match(self):
         self._agy_imports_p(self.doctor._manifest_version())
@@ -383,7 +420,7 @@ class FakeHarnessDoctorTests(unittest.TestCase):
         shutil.copytree(installed, repo / "plugins" / "p")
         found, code = self._collect(["agy"], repo_root=repo)
         self.assertEqual("PASS", found["agy.content"].status)
-        (repo / "plugins" / "p" / "bin").mkdir()
+        (repo / "plugins" / "p" / "bin").mkdir(exist_ok=True)
         (repo / "plugins" / "p" / "bin" / "tool").write_text("changed", encoding="utf-8")
         found, code = self._collect(["agy"], repo_root=repo)
         self.assertEqual("PASS", found["agy.version"].status)

@@ -359,7 +359,18 @@ HOOK_CONTRACTS = (
         "path": ("hooks", "hooks.json"),
         "events": frozenset({"SessionStart", "UserPromptSubmit"}),
     },
+    {
+        "label": "Antigravity hook manifest",
+        "path": ("hooks.json",),
+        "events": frozenset({"PreInvocation"}),
+        "shape": "antigravity",
+    },
 )
+# Antigravity reads <plugin-root>/hooks.json: hook name -> event -> a flat
+# handler list, run with the plugin root as the working directory.
+AGY_HOOK_NAME = "p-format"
+AGY_HOOK_COMMAND = "sh bin/agy-format-hook"
+AGY_HOOKS_LOADED_RE = re.compile(r"^\s*\S*\s*hooks\s*:\s*1 processed\s*$", re.M)
 HOOK_ROOT_TOKEN_RE = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([^\"'\s]+)")
 
 
@@ -367,6 +378,9 @@ def _validate_hook_contract(plugin_root, contract, errors):
     label = contract["label"]
     manifest = _read_json(plugin_root.joinpath(*contract["path"]), label, errors)
     if manifest is None:
+        return
+    if contract.get("shape") == "antigravity":
+        _validate_antigravity_hooks(manifest, contract, errors)
         return
     events = manifest.get("hooks")
     if not isinstance(events, dict):
@@ -393,6 +407,24 @@ def _validate_hook_contract(plugin_root, contract, errors):
                     errors.append(
                         "%s %s references missing plugin file %s" % (label, event, relative)
                     )
+
+
+def _validate_antigravity_hooks(manifest, contract, errors):
+    """One named hook whose single flat handler runs the format entry."""
+    spec = manifest.get(AGY_HOOK_NAME) if isinstance(manifest, dict) else None
+    handlers = spec.get("PreInvocation") if isinstance(spec, dict) else None
+    handler = handlers[0] if isinstance(handlers, list) and len(handlers) == 1 else None
+    timeout = handler.get("timeout", 30) if isinstance(handler, dict) else None
+    if (
+        set(manifest) != {AGY_HOOK_NAME}
+        or set(spec) != set(contract["events"])
+        or not isinstance(handler, dict)
+        or handler.get("type", "command") != "command"
+        or handler.get("command") != AGY_HOOK_COMMAND
+        or not isinstance(timeout, int) or isinstance(timeout, bool)
+        or not 0 < timeout <= 30
+    ):
+        errors.append(contract["label"] + " does not wire the format gate")
 
 
 def validate_repository(repo_root=REPO_ROOT, plugin_root=PLUGIN_ROOT):
@@ -601,7 +633,11 @@ def antigravity_validate(plugin_root):
             [agy_bin, "plugin", "validate", str(copy_root)],
             text=True, encoding="utf-8", capture_output=True,
         )
-    return [] if result.returncode == 0 else ["agy plugin validate rejected the package"]
+    if result.returncode != 0:
+        return ["agy plugin validate rejected the package"]
+    if not AGY_HOOKS_LOADED_RE.search(re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)):
+        return ["agy plugin validate did not load hooks.json"]
+    return []
 
 
 def _report(label, errors):

@@ -51,7 +51,12 @@ HOOK_CONTRACTS = {
         "events": HOOK_EVENTS,
         "session_env": "CODEX_SESSION_ID",
     },
-    "agy": None,
+    "agy": {
+        "catalog": ("hooks.json",),
+        "events": ("PreInvocation",),
+        "session_env": None,
+        "shape": "antigravity",
+    },
 }
 CONTENT_IGNORED_PARTS = {"__pycache__", ".in_use", ".git", ".DS_Store"}
 CODEX_CONFIG_TABLE_RE = re.compile(
@@ -273,6 +278,7 @@ def normalize_agy_plugins(payload):
             "enabled": enabled,
             "root": str(root) if root.is_dir() else "",
             "scope": "user",
+            "components": item.get("components"),
         })
     return result
 
@@ -387,6 +393,8 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=Non
             "%s has no p hook contract; p's format hooks do not run there"
             % HARNESS_LABELS.get(harness, harness.capitalize()),
         )]
+    if contract.get("shape") == "antigravity":
+        return probe_antigravity_hook(plugin_root, runner, contract)
     plugin_root = Path(plugin_root)
     events = tuple(contract["events"])
     try:
@@ -475,6 +483,96 @@ def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=Non
             ))
     shutil.rmtree(scratch, ignore_errors=True)
     return checks
+
+
+def probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
+    """Run the installed Antigravity hook exactly as agy does - its argv from
+    <root>/hooks.json, cwd = the plugin root, camelCase JSON on stdin - and
+    compare the parsed stdout with the off and on envelopes."""
+    contract = contract or HOOK_CONTRACTS["agy"]
+    plugin_root = Path(plugin_root)
+    try:
+        with plugin_root.joinpath(*contract["catalog"]).open(encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        raw = manifest["p-format"][contract["events"][0]][0]["command"]
+        argv = shlex.split(raw, posix=True)
+        spec = (plugin_root / "style" / "response-format.md").read_text(encoding="utf-8")
+        reminder = (plugin_root / "style" / "turn-reminder.md").read_text(encoding="utf-8")
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return [Check(
+            "agy.hooks", "ERROR", "Antigravity installed hook manifest cannot be read",
+            _version_fix("agy"),
+        )]
+    scratch = tempfile.mkdtemp(prefix="p-doctor-agy-")
+    env = dict(os.environ)
+    for name in ("RETRO_HOME", "P_FORMAT_HARNESS", "P_FORMAT_DEFAULT",
+                 "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID",
+                 "ANTIGRAVITY_CONVERSATION_ID"):
+        env.pop(name, None)
+    env.update({
+        "P_FORMAT_STATE_DIR": os.path.join(scratch, "state"),
+        "P_FORMAT_CONFIG_FILE": os.path.join(scratch, "format.json"),
+    })
+    cases = (
+        ("agy.hook.pre_invocation_off", "off", None, {}),
+        ("agy.hook.pre_invocation_first", "on", None,
+         {"injectSteps": [{"ephemeralMessage": spec}]}),
+        ("agy.hook.pre_invocation_later", "on", 1,
+         {"injectSteps": [{"ephemeralMessage": reminder}]}),
+    )
+    checks = []
+    for key, state, invocation, expected in cases:
+        event = {"conversationId": "p-doctor-check", "initialNumSteps": 0}
+        if invocation is not None:
+            event["invocationNum"] = invocation
+        try:
+            completed = runner(
+                argv, cwd=str(plugin_root), input=json.dumps(event), text=True,
+                encoding="utf-8", capture_output=True,
+                env=dict(env, P_FORMAT_DEFAULT=state),
+            )
+        except OSError:
+            checks.append(Check(
+                key, "ERROR", "Antigravity PreInvocation hook command could not start",
+                "Install a POSIX sh and Python 3, then rerun p doctor.",
+            ))
+            continue
+        try:
+            output = json.loads(getattr(completed, "stdout", "") or "")
+        except ValueError:
+            output = None
+        if int(getattr(completed, "returncode", 2)) != 0:
+            checks.append(Check(
+                key, "FAIL", "Antigravity PreInvocation hook exited %d" % completed.returncode,
+                _version_fix("agy"),
+            ))
+        elif output != expected:
+            checks.append(Check(
+                key, "FAIL",
+                "Antigravity PreInvocation hook output differs for format %s" % state,
+                _version_fix("agy"),
+            ))
+        else:
+            checks.append(Check(
+                key, "PASS", "Antigravity PreInvocation hook returns the %s envelope" % state,
+            ))
+    shutil.rmtree(scratch, ignore_errors=True)
+    return checks
+
+
+def antigravity_hook_registration(installed):
+    components = installed.get("components")
+    if not isinstance(components, list):
+        return Check(
+            "agy.hooks.registered", "SKIP",
+            "Antigravity did not report imported plugin components",
+        )
+    if "hooks" in components:
+        return Check("agy.hooks.registered", "PASS", "Antigravity imported p with its hooks")
+    return Check(
+        "agy.hooks.registered", "FAIL", "Antigravity imported p without its hooks",
+        _version_fix("agy"),
+    )
 
 
 def _find_executable(name):
@@ -824,6 +922,8 @@ def collect(repo_root=None):
         installed_by_harness[harness] = installed
         if len(installed) == 1 and installed[0].get("enabled"):
             root = installed[0].get("root")
+            if harness == "agy":
+                checks.append(antigravity_hook_registration(installed[0]))
             if root and not Path(root).is_dir():
                 checks.append(Check(
                     harness + ".content", "FAIL",
