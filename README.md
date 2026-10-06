@@ -1,6 +1,6 @@
 # polstools
 
-One `p` plugin for Claude Code and Codex: home/work skill activation,
+One `p` plugin for Claude Code, Codex, and Antigravity: home/work skill activation,
 repository safety, cross-harness diagnostics and goal design, workflow
 evidence, evaluation, response formatting, aligned status lines, and small
 platform fixes. Runtime scripts use only POSIX shell or Python's standard
@@ -35,12 +35,14 @@ agy plugin install ./plugins/p
 ```
 
 Start a new session after installing or changing the plugin. Skills may trigger
-from their descriptions; invoke one explicitly as `/p:<skill>` in Claude Code,
-`$p:<skill>` in Codex, or `/<skill>` in Antigravity.
+from their descriptions; invoke one explicitly as `/p:<skill>` in Claude Code and
+Antigravity, or `$p:<skill>` in Codex. Antigravity also accepts `/<skill>`, but
+seven names are both a command and a skill there and the short form is
+ambiguous for them, so use `/p:<skill>`.
 
 ## Diagnose
 
-Run `/p:doctor` in Claude Code, `$p:doctor` in Codex, or `/doctor` in Antigravity. From a development
+Run `/p:doctor` in Claude Code or Antigravity, or `$p:doctor` in Codex. From a development
 checkout, compare the live installations with that checkout directly:
 
 ```sh
@@ -62,7 +64,7 @@ Use the plugin-owned updater from a checkout or installed plugin root:
 sh plugins/p/bin/python-launcher plugins/p/bin/p-update
 ```
 
-It updates both available harnesses, preserves prior Codex cache snapshots so
+It updates every installed harness (Claude Code, Codex, Antigravity), preserves prior Codex cache snapshots so
 already-running sessions keep valid skill paths, and finishes by running the
 newly installed doctor. Start new sessions to load the new version.
 
@@ -89,7 +91,28 @@ codex plugin marketplace add <repo-root>
 codex plugin add p@polstools
 ```
 
+### Antigravity
+
+```sh
+agy plugin install <repo-root>/plugins/p
+```
+
 Start a new session, then run the doctor against `<repo-root>`.
+
+## Uninstall
+
+Each command removes only the plugin registration.
+
+```sh
+claude plugin uninstall p@polstools --scope user
+codex plugin remove p@polstools
+agy plugin uninstall p
+```
+
+Remove a marketplace registration separately with
+`claude plugin marketplace remove polstools` or
+`codex plugin marketplace remove polstools`. The name Antigravity expects is
+the one `agy plugin list` shows.
 
 ## Capabilities
 
@@ -110,8 +133,9 @@ Start a new session, then run the doctor against `<repo-root>`.
 
 ## Validate a checkout
 
-The CI workflow runs these commands on Windows and Linux. Run the same contract
-locally before integration:
+The CI workflow runs these commands on Linux, macOS, and Windows under Python
+3.9 and 3.14, plus a shell syntax check of the POSIX scripts and the
+stopped-promises self-test. Run the same contract locally before integration:
 
 ```sh
 sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
