@@ -1036,7 +1036,9 @@ def antigravity_status():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "command",
         choices=("sync", "check", "preview", "apply", "profile-sync", "restore", "antigravity"),

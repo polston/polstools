@@ -162,5 +162,27 @@ class AntigravityStatuslineTests(unittest.TestCase):
             self.assertEqual(0, private.stat().st_mode & 0o077)
 
 
+class StatuslineCtlHelpTests(unittest.TestCase):
+    def test_help_keeps_one_subcommand_per_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "HOME": tmp,
+                "TMPDIR": tmp,
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            result = subprocess.run(
+                [sys.executable, "-B", str(CTL), "--help"],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(0, result.returncode)
+        for name in ("sync", "check", "preview", "apply", "profile-sync", "restore", "antigravity"):
+            with self.subTest(subcommand=name):
+                self.assertRegex(result.stdout, r"(?m)^  %s\b" % re.escape(name))
+
+
 if __name__ == "__main__":
     unittest.main()
