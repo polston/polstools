@@ -210,6 +210,44 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
                         self.assertIn("--only-binary :all:", line)
 
 
+class OptionalAnalyticsJobTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.jobs = parse_jobs(WORKFLOW.read_text(encoding="utf-8"))
+
+    def test_optional_paths_run_where_they_can_never_skip(self):
+        job = self.jobs["optional-analytics"]
+        self.assertIn("runs-on: ubuntu-latest", job["raw"])
+        setup = [s for s in job["steps"] if s.get("uses", "").startswith("actions/setup-python@")]
+        self.assertEqual(["3.14"], [s["with"]["python-version"] for s in setup])
+        runs = "\n".join(step.get("run", "") for step in job["steps"])
+        self.assertIn(
+            "pip install --only-binary :all: -r plugins/p/requirements-eval.txt", runs
+        )
+        tests = [s for s in job["steps"] if "unittest" in s.get("run", "")]
+        self.assertEqual(1, len(tests))
+        self.assertEqual("1", tests[0]["env"].get("RETRO_EVAL_REQUIRE_OPTIONAL"))
+        self.assertIn('-p "test_eval_*.py"', tests[0]["run"])
+
+    def test_version_bump_is_checked_against_the_pull_request_base(self):
+        steps = [s for s in self.jobs["plugin"]["steps"] if "--base" in s.get("run", "")]
+        self.assertEqual(1, len(steps))
+        self.assertIn("pull_request", steps[0].get("if", ""))
+        self.assertEqual(
+            "${{ github.event.pull_request.base.sha }}", steps[0]["env"].get("BASE_SHA")
+        )
+        self.assertEqual('sh plugins/p/bin/p-validate --base "$BASE_SHA"', steps[0]["run"])
+
+
+class PythonFloorTests(unittest.TestCase):
+    def test_the_matrix_runs_the_python_floor_the_readme_states(self):
+        readme = README.read_text(encoding="utf-8")
+        floor = re.search(r"Python (\d+\.\d+) or newer", readme)
+        self.assertIsNotNone(floor)
+        job = parse_jobs(WORKFLOW.read_text(encoding="utf-8"))["plugin"]
+        self.assertIn(floor.group(1), job["matrix"]["python"])
+
+
 class WorkflowReaderTests(unittest.TestCase):
     def test_reader_sees_run_blocks_with_and_lists(self):
         text = (
