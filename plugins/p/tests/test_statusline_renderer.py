@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,10 @@ def load_activation():
     import skill_activation
 
     return skill_activation
+
+
+def powershell():
+    return shutil.which("powershell" if os.name == "nt" else "pwsh")
 
 
 class FakeHome:
@@ -105,6 +110,16 @@ def run_python(stdin, env):
     )
 
 
+def run_powershell(stdin, env):
+    argv = [powershell(), "-NoProfile"]
+    if os.name == "nt":
+        argv += ["-ExecutionPolicy", "Bypass"]
+    argv += ["-File", str(RENDERER_DIR / "claude-statusline.ps1")]
+    return subprocess.run(
+        argv, input=stdin, text=True, encoding="utf-8", capture_output=True, env=env, timeout=60,
+    )
+
+
 class RendererContractTests(unittest.TestCase):
     def check_contract(self, runner, fake):
         outputs = {}
@@ -124,6 +139,36 @@ class RendererContractTests(unittest.TestCase):
     def test_python_renderer_meets_the_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.check_contract(run_python, FakeHome(tmp))
+
+    def test_powershell_renderer_meets_the_contract_byte_for_byte(self):
+        if not powershell():
+            if os.environ.get("CI"):
+                self.fail("PowerShell is required in CI so renderer parity is always verified")
+            self.skipTest("PowerShell is unavailable on this machine")
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeHome(tmp)
+            expected = self.check_contract(run_python, fake)
+            actual = self.check_contract(run_powershell, fake)
+        for name, stdout in expected.items():
+            with self.subTest(case=name):
+                self.assertEqual(actual[name], stdout)
+
+    def test_unreadable_session_state_shows_the_unknown_profile_label(self):
+        activation = load_activation()
+        runners = [run_python] + ([run_powershell] if powershell() else [])
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeHome(tmp)
+            env = fake.env()
+            state = activation.session_state_path("broken-session", env)
+            state.parent.mkdir(parents=True)
+            state.write_text("{broken", encoding="utf-8")
+            stdin = json.dumps({"session_id": "broken-session", "model": {"display_name": "M"}})
+            for runner in runners:
+                with self.subTest(runner=runner.__name__):
+                    result = runner(stdin, env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(ANSI.sub("", result.stdout).splitlines(), ["M | p:?"])
+
 
 class RendererProcessTests(unittest.TestCase):
     @classmethod

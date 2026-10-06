@@ -141,67 +141,6 @@ class StatuslineUnitTests(unittest.TestCase):
             "external",
         )
 
-    @unittest.skipUnless(
-        shutil.which("powershell" if os.name == "nt" else "pwsh"),
-        "PowerShell is unavailable",
-    )
-    def test_powershell_renderer_matches_percent_left_semantics(self):
-        sample = {
-            "model": {"display_name": "Example Model"},
-            "effort": {"level": "high"},
-            "workspace": {"current_dir": "project", "git_branch": "main"},
-            "context_window": {"remaining_percentage": 72},
-            "rate_limits": {
-                "five_hour": {"used_percentage": 36},
-                "seven_day": {"used_percentage": 19},
-            },
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ)
-            env["LOCALAPPDATA"] = tmp
-            env["HOME"] = str(Path(tmp) / "no-credentials")
-            if os.name == "nt":
-                env["USERPROFILE"] = env["HOME"]
-            else:
-                env.pop("USERPROFILE", None)
-            cache_dir = Path(tmp) / "claude-statusline"
-            cache_dir.mkdir()
-            (cache_dir / "usage-cache.json").write_text(
-                json.dumps(
-                    {
-                        "at": int(time.time() * 1000),
-                        "label": "model-week",
-                        "percent": 12,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            result = subprocess.run(
-                [
-                    "powershell" if os.name == "nt" else "pwsh",
-                    "-NoProfile",
-                    *(["-ExecutionPolicy", "Bypass"] if os.name == "nt" else []),
-                    "-File",
-                    str(PLUGIN_ROOT / "renderer" / "claude-statusline.ps1"),
-                ],
-                input=json.dumps(sample),
-                text=True,
-                encoding="utf-8",
-                capture_output=True,
-                env=env,
-            )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
-        self.assertIn("Example Model | eff high | project | main |", plain)
-        self.assertIn("72% left", plain)
-        self.assertIn("5h", plain)
-        self.assertIn("64% left", plain)
-        self.assertIn("wk", plain)
-        self.assertIn("81% left", plain)
-        self.assertIn("model-week", plain)
-        self.assertIn("88% left", plain)
-        self.assertIn("p:h", plain)
-
 
 class StatuslineCliTests(unittest.TestCase):
     @classmethod
