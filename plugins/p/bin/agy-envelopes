@@ -8,7 +8,7 @@ style/antigravity/<name>.json holding {"injectSteps": [{"ephemeralMessage":
 
   agy-envelopes [--check]
 
-Exit: 0 every envelope already matched; 1 an envelope differed (rewritten,
+Exit: 0 every envelope already matched (or --help/-h); 1 an envelope differed (rewritten,
 or only reported with --check); 2 could not run.
 """
 
@@ -26,6 +26,9 @@ def envelope(text):
 
 
 def main(argv):
+    if argv in (["--help"], ["-h"]):
+        print(__doc__)
+        return 0
     check = argv == ["--check"]
     if argv and not check:
         print(__doc__, file=sys.stderr)

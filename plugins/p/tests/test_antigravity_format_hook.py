@@ -170,6 +170,16 @@ class AntigravityFormatHookTests(unittest.TestCase):
             env=controlled_env(self.tmp.name))
         self.assertEqual(0, completed.returncode, completed.stdout)
 
+    def test_envelopes_help_exits_0_and_prints_the_usage(self):
+        for flag_ in ("--help", "-h"):
+            with self.subTest(flag=flag_):
+                completed = subprocess.run(
+                    [sys.executable, "-B", str(PLUGIN_ROOT / "bin" / "agy-envelopes"), flag_],
+                    text=True, encoding="utf-8", capture_output=True,
+                    env=controlled_env(self.tmp.name))
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertIn("agy-envelopes [--check]", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
