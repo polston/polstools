@@ -1348,7 +1348,11 @@ def test_candidate_tail_is_redacted(tmp):
     text = "Done at " + str(Path.home()) + ". I'll run the tests now."
     msg = Message("s", "m1", text, False, [], "t")
     found, _ = find_candidates([TurnEnd(msg, "prompt", False, "s")])
-    assert Path.home().name.lower() not in found[0].tail.lower()
+    tail = found[0].tail
+    # The whole home path, not its basename: a short or common basename
+    # ("h", "run") is a substring of ordinary text.
+    assert str(Path.home()) not in tail, tail
+    assert "~" in tail, tail
 
 
 @selftest_case

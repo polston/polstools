@@ -155,6 +155,15 @@ class ControlCharacters(Sandbox):
             self.assertIn("\n", out)
 
 
+class SelftestHomeName(Sandbox):
+    def test_selftest_passes_with_a_one_letter_home_directory(self):
+        short = Path(self.tmp.name) / "h"
+        short.mkdir()
+        self.env["HOME"] = str(short)
+        done = self.run_tool("stopped-promises.py", "--selftest")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+
+
 class ClaudeConfigDir(unittest.TestCase):
     def test_whitespace_value_means_default(self):
         retro = _load("retro_cfg_under_test", "retro.py")
