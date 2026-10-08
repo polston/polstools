@@ -7,6 +7,7 @@ import csv
 import json
 from pathlib import Path
 
+from .cli import command
 from .interpretation_cards import write_interpretation_review
 
 
@@ -47,6 +48,7 @@ def _hydrate(cards, authored_path):
     return hydrated
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)

@@ -37,6 +37,14 @@
       "glob": "rollout-*.jsonl",
       "options": {
         "handoff_tools": ["spawn_agent", "followup_task", "send_message", "interrupt_agent"],
+        "machine_prompt_openers": [
+          "<task-notification>", "<system-reminder>", "<command-name>",
+          "<local-command-stdout>", "Base directory for this skill:",
+          "This session is being continued", "Caveat: The messages below were generated",
+          "<environment_context>", "<recommended_plugins>", "<skill>",
+          "<turn_aborted>", "<codex_delegation>",
+          "<codex_internal_context", "<in-app-browser-context", "<image"
+        ],
         "capabilities": {
           "human_provenance": {"state": "available"},
           "subagent_identity": {"state": "available"},
@@ -49,6 +57,34 @@
           "usage": {"state": "available"},
           "cache_usage": {"state": "available"},
           "handoffs": {"state": "available"},
+          "agent_prompt_structure": {"state": "unavailable", "reason": "normalized traces intentionally omit prompt content"},
+          "source_completion": {"state": "available"},
+          "outcomes": {"state": "unavailable", "reason": "source completion has no contract-bound task verification"},
+          "instruction_provenance": {"state": "unavailable", "reason": "active instruction versions are not emitted authoritatively"},
+          "permissions": {"state": "unavailable", "reason": "adapter does not normalize permission-control events"},
+          "hooks": {"state": "unavailable", "reason": "hook opportunity and result events are not emitted authoritatively"},
+          "privacy_scan": {"state": "unavailable", "reason": "privacy audit results are external evaluation evidence"}
+        }
+      }
+    },
+    {
+      "name": "antigravity",
+      "module": "retro_eval.adapters.antigravity",
+      "class": "AntigravityAdapter",
+      "discover": "retro_eval.adapters.antigravity:discover",
+      "options": {
+        "capabilities": {
+          "human_provenance": {"state": "available"},
+          "subagent_identity": {"state": "unavailable", "reason": "exports carry no authoritative main or subagent marker; session population is not observable"},
+          "skill_attribution": {"state": "unavailable", "reason": "exports do not emit an authoritative skill attribution field"},
+          "skill_lifecycle": {"state": "unavailable", "reason": "exports do not emit authoritative skill lifecycle events"},
+          "skill_chaining": {"state": "unavailable", "reason": "skill invocation and chain events are not emitted authoritatively"},
+          "skill_opportunities": {"state": "unavailable", "reason": "trigger opportunities and missed triggers require a separately calibrated classifier"},
+          "tool_trajectory": {"state": "available"},
+          "tool_result_status": {"state": "unavailable", "reason": "tool results are not linked to calls by an authoritative per-call status; GENERIC steps are not results"},
+          "usage": {"state": "unavailable", "reason": "token fields are absent from most steps, so totals would undercount"},
+          "cache_usage": {"state": "unavailable", "reason": "cache token accounting is not emitted"},
+          "handoffs": {"state": "unavailable", "reason": "exports do not normalize parent-child dispatch links"},
           "agent_prompt_structure": {"state": "unavailable", "reason": "normalized traces intentionally omit prompt content"},
           "source_completion": {"state": "available"},
           "outcomes": {"state": "unavailable", "reason": "source completion has no contract-bound task verification"},

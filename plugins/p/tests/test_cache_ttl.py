@@ -297,14 +297,38 @@ class TestCostModel(unittest.TestCase):
         self.assertEqual(result["observed"], 0.0)
         self.assertEqual(result["unpriced"]["claude-unknown-9"], 2)
 
+    # The pricing page, read 2026-10-06: "Cache hits and refreshes on Claude
+    # Fable 5.1 and Claude Mythos 5.1 are priced at 0.025x the base input
+    # price." "Cache hits and refreshes on Claude Opus 5.5 are priced at
+    # 0.05x the base input price." "All other models use the standard 0.1x
+    # multiplier."
+    READ_MULTIPLIER = {"claude-fable-5-1": 0.025, "claude-opus-5-5": 0.05}
+    STANDARD_READ_MULTIPLIER = 0.1
+
+    # Published base input price, dollars per million tokens, same reading.
+    BASE_INPUT = {
+        "claude-fable-5-1": 10.0, "claude-fable-5": 10.0,
+        "claude-opus-5-5": 4.0, "claude-opus-5": 5.0, "claude-opus-4-8": 5.0,
+        "claude-opus-4-7": 5.0, "claude-opus-4-6": 5.0,
+        "claude-sonnet-5-5": 2.0, "claude-sonnet-5": 2.0,
+        "claude-sonnet-4-6": 3.0, "claude-sonnet-4-5-20250929": 3.0,
+        "claude-haiku-4-5-20251001": 1.0,
+    }
+
+    def test_every_price_row_has_a_published_base(self):
+        self.assertEqual(set(cache_ttl.PRICES), set(self.BASE_INPUT))
+
     def test_price_rows_hold_the_exact_published_multipliers(self):
-        """Every row is base x1.25 (5m), x2.0 (1h), x0.1 (read). Expressed
-        against the 5m write so no base column is needed: 1h is 1.6x the 5m
-        write and a read is 0.08x it. An ordering-only assertion would let a
-        tenfold typo through."""
+        """Every row is the published base x1.25 (5m write), x2.0 (1h write)
+        and the read multiplier the page publishes for that model. The base
+        comes from the table above, not from the row, so a row scaled
+        uniformly away from the published price fails too."""
         for model, (w5, w1, read) in cache_ttl.PRICES.items():
-            self.assertAlmostEqual(w1, w5 * 1.6, places=12, msg=model)
-            self.assertAlmostEqual(read, w5 * 0.08, places=12, msg=model)
+            base = self.BASE_INPUT[model] * 1e-6
+            self.assertAlmostEqual(w5, base * 1.25, places=12, msg=model)
+            mult = self.READ_MULTIPLIER.get(model, self.STANDARD_READ_MULTIPLIER)
+            self.assertAlmostEqual(w1, base * 2.0, places=12, msg=model)
+            self.assertAlmostEqual(read, base * mult, places=12, msg=model)
 
     def test_unpriced_record_keeps_its_place_in_the_chain_for_the_next_gap(self):
         """The brief requires an unpriced request to stay in the chain
@@ -419,8 +443,9 @@ class TestBoundariesAndBranches(unittest.TestCase):
                                        T0 + timedelta(seconds=30))]}])
             stream = io.StringIO()
             code = cache_ttl.report(root, None, None, False, stream)
-            self.assertEqual(code, cache_ttl.EXIT_CLEAN)
-            self.assertIn("nothing to decide", stream.getvalue())
+            # Reads were made and none could be priced: no verdict, and not
+            # the clean exit that means "the TTL in force is right".
+            self.assertEqual(code, cache_ttl.EXIT_FLAGGED)
             self.assertNotIn("FORCE_PROMPT_CACHING_5M", stream.getvalue())
 
     def test_a_subagent_only_unknown_model_still_reaches_the_unpriced_bucket(self):
@@ -710,9 +735,9 @@ class TestJsonOnEarlyReturns(unittest.TestCase):
                                        T0 + timedelta(seconds=30))]}])
             stream = io.StringIO()
             code = cache_ttl.report(root, None, None, True, stream)
-            self.assertEqual(code, cache_ttl.EXIT_CLEAN)
+            self.assertEqual(code, cache_ttl.EXIT_FLAGGED)
             body = json.loads(stream.getvalue())
-            self.assertEqual(body["reason"], "no_priced_main_thread_requests")
+            self.assertEqual(body["reason"], "insufficient_evidence")
             self.assertIsNone(body["keep_current_ttl"])
             self.assertIn("claude-zzz-unknown", body["unpriced_requests"])
 

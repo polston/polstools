@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 import time
 
 
 SCHEMA_VERSION = 1
 STALE_SECONDS = 14 * 24 * 3600
-SESSION_ENV_VARS = (
-    "CLAUDE_CODE_SESSION_ID",
-    "CODEX_SESSION_ID",
-    "CODEX_THREAD_ID",
+REFRESH_SECONDS = 24 * 3600
+HARNESS_SESSION_VARS = (
+    ("claude", ("CLAUDE_CODE_SESSION_ID",)),
+    ("codex", ("CODEX_SESSION_ID", "CODEX_THREAD_ID")),
+    ("antigravity", ("ANTIGRAVITY_CONVERSATION_ID",)),
 )
+SESSION_ENV_VARS = tuple(name for _, names in HARNESS_SESSION_VARS for name in names)
 IDENTIFIER_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 NATIVE_BEGIN = "# p-skill-activation begin"
 NATIVE_END = "# p-skill-activation end"
@@ -133,11 +137,30 @@ def validate_manifest(manifest, plugin_root=None):
 
 
 def session_id_from_env(env=None, required=False):
+    """The current session id. A harness started inside another inherits the
+    outer session's variable; when more than one harness is visible the
+    caller must name its own with P_SKILL_HARNESS, because guessing would
+    read or write the other session's state."""
     env = os.environ if env is None else env
-    for name in SESSION_ENV_VARS:
-        value = env.get(name)
-        if value:
-            return value
+    visible = []
+    for harness, names in HARNESS_SESSION_VARS:
+        for name in names:
+            if env.get(name):
+                visible.append((harness, env[name]))
+                break
+    named = env.get("P_SKILL_HARNESS")
+    if named == "agy":
+        named = "antigravity"
+    if named in dict(HARNESS_SESSION_VARS):
+        visible = [entry for entry in visible if entry[0] == named]
+    if len(visible) > 1:
+        raise PolicyError(
+            "session ids for "
+            + " and ".join(harness for harness, _ in visible)
+            + " are all set; set P_SKILL_HARNESS to this session's harness"
+        )
+    if visible:
+        return visible[0][1]
     if required:
         raise PolicyError("no supported harness session id is set")
     return None
@@ -146,7 +169,13 @@ def session_id_from_env(env=None, required=False):
 def _state_dir(env=None):
     env = os.environ if env is None else env
     override = env.get("P_SKILL_STATE_DIR")
-    return Path(override) if override else Path(tempfile.gettempdir()) / "p-skill-activation"
+    if override:
+        return Path(override)
+    runtime = env.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return Path(runtime) / "p-skill-activation"
+    suffix = str(os.getuid()) if hasattr(os, "getuid") else (env.get("USERNAME") or "default")
+    return Path(tempfile.gettempdir()) / ("p-skill-activation-" + suffix)
 
 
 def global_state_path(env=None):
@@ -167,12 +196,48 @@ def global_state_path(env=None):
 def codex_config_path(env=None):
     env = os.environ if env is None else env
     override = env.get("P_CODEX_CONFIG_FILE")
-    return Path(override) if override else Path.home() / ".codex" / "config.toml"
+    if override:
+        return Path(override)
+    codex_home = env.get("CODEX_HOME")
+    return (Path(codex_home) if codex_home else Path.home() / ".codex") / "config.toml"
 
 
-def session_state_path(session_id, env=None):
+def _private_dir(directory, create):
+    """Refuse a session directory another user could have planted: it must
+    be a real directory owned by this user. With create, make it (0700) or
+    tighten a looser mode. A missing directory is fine when only reading."""
+    if create:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        info = os.lstat(directory)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode) or (
+        hasattr(os, "getuid") and info.st_uid != os.getuid()
+    ):
+        raise PolicyError(
+            "session state directory is not a private directory owned by this user"
+        )
+    if create and hasattr(os, "getuid") and stat.S_IMODE(info.st_mode) != 0o700:
+        os.chmod(directory, 0o700)
+
+
+def session_state_path(session_id, env=None, create=False):
+    directory = _state_dir(env)
+    _private_dir(directory, create)
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-    return _state_dir(env) / (digest + ".json")
+    return directory / (digest + ".json")
+
+
+def _refresh(path):
+    # Reading session state is use: refresh it (at most daily) so pruning
+    # removes only state no session has read for STALE_SECONDS.
+    now = time.time()
+    try:
+        if now - path.stat().st_mtime > REFRESH_SECONDS:
+            os.utime(path, (now, now))
+    except OSError:
+        pass
 
 
 def prune_session_state(env=None, now=None):
@@ -245,6 +310,7 @@ def resolve(manifest, session_id=None, env=None):
         path = session_state_path(session_id, env)
         if path.exists():
             state, stale = _load_state(path, manifest, "session policy")
+            _refresh(path)
             return _resolution(
                 manifest, state["profile"], state["overrides"], "session", stale
             )
@@ -401,6 +467,8 @@ def set_profile(manifest, profile, scope, session_id=None, env=None):
             "profile": manifest["default_profile"],
             "overrides": {},
         }
+    if scope == "session":
+        _private_dir(path.parent, create=True)
     write_state(path, profile, state["overrides"])
     if scope == "session":
         prune_session_state(env)
@@ -413,6 +481,8 @@ def set_override(manifest, component, enabled, scope, session_id=None, env=None)
         raise PolicyError("control-plane components cannot be overridden")
     state, path = current_scope_state(manifest, scope, session_id, env)
     state["overrides"][component] = bool(enabled)
+    if scope == "session":
+        _private_dir(path.parent, create=True)
     write_state(path, state["profile"], state["overrides"])
     if scope == "session":
         prune_session_state(env)
@@ -490,16 +560,39 @@ def update_native_text(text, plugin_root, resolution):
     return text + region
 
 
-def sync_native(manifest, plugin_root, env=None):
-    path = codex_config_path(env)
+def _read_native(env):
+    """(target, text, bom). The target is the symlink-resolved file so a
+    write replaces the real config, not the link. Bytes are decoded without
+    newline translation so CRLF files round-trip unchanged."""
+    target = Path(os.path.realpath(codex_config_path(env)))
     try:
-        original = path.read_text(encoding="utf-8-sig") if path.exists() else ""
+        raw = target.read_bytes() if target.exists() else b""
+        bom = raw.startswith(codecs.BOM_UTF8)
+        return target, raw[len(codecs.BOM_UTF8) if bom else 0 :].decode("utf-8"), bom
     except (OSError, UnicodeError) as error:
         raise PolicyError("Codex config is unreadable") from error
+
+
+def native_out_of_date(manifest, plugin_root, env=None):
+    """True when sync-native has written p-owned entries that no longer
+    match the global profile. Never raises: this only informs a notice."""
+    try:
+        _, text, _ = _read_native(env)
+        if _native_bounds(text) is None:
+            return False
+        return update_native_text(text, plugin_root, resolve_global(manifest, env)) != text
+    except PolicyError:
+        return False
+
+
+def sync_native(manifest, plugin_root, env=None):
+    target, original, bom = _read_native(env)
     updated = update_native_text(original, plugin_root, resolve_global(manifest, env))
     if updated != original:
         try:
-            _atomic_write(path, updated.encode("utf-8"))
+            _atomic_write(
+                target, (codecs.BOM_UTF8 if bom else b"") + updated.encode("utf-8")
+            )
         except OSError as error:
             raise PolicyError("Codex config could not be updated") from error
     return updated != original

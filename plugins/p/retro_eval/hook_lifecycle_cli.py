@@ -6,10 +6,12 @@ import argparse
 import json
 from pathlib import Path
 
+from .cli import command
 from .annotation import _external
 from .hook_lifecycle import evaluate_owned_hook_events
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--events", type=Path, required=True)

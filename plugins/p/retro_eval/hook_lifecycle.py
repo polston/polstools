@@ -101,6 +101,6 @@ def evaluate_owned_hook_events(path: Path, *, expected_invocations: int,
         "status_counts": dict(sorted(status_counts.items())),
         "limitations": [
             "only repository-owned deterministically wrapped hooks are covered",
-            "silent opportunities elsewhere in either harness are not observable",
+            "silent opportunities elsewhere in any harness are not observable",
         ],
     }

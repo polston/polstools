@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from .cli import command
 from .instruction_manifest import (InstructionSource, hash_instruction_source,
                                    write_instruction_manifest)
 
@@ -24,6 +25,7 @@ def _mapping(values, label):
     return result
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)

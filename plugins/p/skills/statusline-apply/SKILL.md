@@ -1,16 +1,27 @@
 ---
 name: statusline-apply
-description: Apply the aligned Codex footer and a compatible Claude statusline.
+description: Use only when the operator asks to apply the aligned Codex footer and a compatible Claude statusline; it edits their settings files.
 ---
 
 # Apply aligned status lines
 
-Before any other action, resolve the plugin root and run
-`<python> <plugin-root>/bin/skill-profile-ctl check statusline-apply`. If it
-exits 1 or 2, stop and report its output.
+Claude Code and Codex only. An Antigravity plugin cannot register a status
+line; Antigravity changes its status line only through its own `/statusline`
+command, and the `aligning-statuslines` skill explains how to check it.
 
-Resolve Python and the plugin root as described by the `aligning-statuslines`
-skill, then run `statusline-ctl apply`. This explicit configuration mutation
+Before any other action, run
+`<python> <plugin-root>/bin/skill-profile-ctl check statusline-apply`. If it
+exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute path
+two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/statusline-apply`; take it from this file's own path,
+never from the working directory or an environment variable. `<python>` is `sh
+<plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
+
+Run `<python> <plugin-root>/bin/statusline-ctl apply`. This explicit configuration mutation
 preserves ccstatusline, installs the fallback only when Claude has no renderer,
 adds or refreshes only the tagged p profile widget, refuses unknown external
 renderers, and restores every earlier target if a later write fails. Report the

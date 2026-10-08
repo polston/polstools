@@ -5,9 +5,17 @@ description: Diagnose rejected, overlapping, or unusable delegated work by audit
 
 # Auditing agent contracts
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check auditing-agent-contracts`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/auditing-agent-contracts`; take it from this file's own
+path, never from the working directory or an environment variable. `<python>`
+is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 Audit the dispatched task and the authority it actually received. A named
 agent definition can be overridden by the caller, session instructions, tool

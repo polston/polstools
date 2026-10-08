@@ -45,25 +45,43 @@ import json
 import os
 import re
 import sys
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 
-HOME = Path.home()
-CLAUDE_DIR = HOME / ".claude"
+try:
+    HOME = Path.home()
+except RuntimeError:
+    # Windows reads USERPROFILE, not HOME; with neither there is nothing to
+    # measure, which is "could not run", not a traceback.
+    sys.stderr.write("retro: cannot determine the home directory\n")
+    raise SystemExit(2)
 
 # Stable discovery precedence when transcript roots overlap.
 HARNESSES = ("claude", "codex", "antigravity")
 
 
+def claude_config_dir():
+    """The Claude configuration directory: CLAUDE_CONFIG_DIR, else ~/.claude.
+
+    Resolved at call time, and the one place in this file that decides it:
+    the transcript root, the rule sources `rules` and `effect` read, and the
+    skill inventory all go through here, so the override means the same thing
+    to every subcommand (spec D1.1). An import-time constant here once left
+    `rules` and `effect` inspecting the default while the walk honoured the
+    override.
+    """
+    config = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    return Path(config) if config else HOME / ".claude"
+
+
 def claude_projects_dir():
     """The Claude transcript root, resolved at call time so tests can
-    inject it and so CLAUDE_CONFIG_DIR is honoured — retiring the
-    documented asymmetry with stopped-promises (spec D1.1)."""
-    config = os.environ.get("CLAUDE_CONFIG_DIR")
-    return (Path(config) if config else HOME / ".claude") / "projects"
+    inject it and so CLAUDE_CONFIG_DIR is honoured (spec D1.1)."""
+    return claude_config_dir() / "projects"
 
 
 def codex_home_dir():
@@ -107,7 +125,16 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
+import skill_activation  # noqa: E402
+
 from retro_eval.catalog import ensure_rubric_use, load_rubric_catalogue
+from retro_eval.text_rules import (  # noqa: E402,F401 -- re-exported
+    CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS, _INTERRUPT,
+    _predict_at, _redaction_patterns, classify_user_turn, content_text,
+    is_approval, prose_of, redact, strip_controls, text_of)
+
+_content_text = content_text
 
 RUBRICS_FILE = PLUGIN_ROOT / "rubrics" / "rubrics.json"
 LEGACY_TURN_RUBRIC = "turn_friction_legacy"
@@ -128,60 +155,13 @@ def legacy_turn_labels_allow(use):
         return False
     return True
 
-# --- Tuning constants ------------------------------------------------------
-# These define what counts as friction. They are the knobs worth arguing about;
-# everything else in this file is bookkeeping.
-
-# A user prompt shorter than this, arriving right after a long assistant turn,
-# reads as a correction ("no", "stop", "I said X") rather than a new request.
-CORRECTION_MAX_CHARS = 200
-# ...and the assistant turn it follows has to have been substantial, or every
-# short back-and-forth in a fast exchange scores as a correction.
-CORRECTION_MIN_PRIOR_CHARS = 200
-
-# A short reply that only agrees is the process working, not friction. The whole
-# reply has to be one of these, ignoring case and trailing punctuation: "yes" is
-# an approval, "yes, but drop the cache" is a correction.
-#
-# A seed list of unambiguous whole-reply affirmatives, deliberately short. The
-# `label` subcommand exists to settle this list from marked turns rather than
-# from a guess - add a phrase when the marks show it is being missed.
-APPROVAL_PHRASES = (
-    "yes", "yep", "yeah", "yup", "ok", "okay", "k", "kk", "sure", "correct",
-    "agreed", "go ahead", "go for it", "go", "do it", "sounds good",
-    "looks good", "lgtm", "seems right", "seems ok", "seems okay", "seems good",
-    "lets go", "let's go", "perfect", "exactly", "approved", "please do",
-    "ship it", "fine", "yes please",
-)
-# A negation anywhere means the reply is doing more than agreeing, so the
-# leading-affirmative rule below must not claim it: "sure, but that is wrong" is
-# a correction wearing an approval's first word.
-_NEGATION = re.compile(
-    r"(no|not|n't|never|stop|wrong|instead|revert|undo|but|however|except)", re.I)
-# A reply may open with a list marker and still be nothing but agreement --
-# "1. sure" is an answer to a numbered question, not a new instruction.
-_LIST_PREFIX = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
-# Wording that marks a reply as pushing back, wherever it sits in the reply.
-# Assembled from 300 hand-marked turns, not from imagination: every entry here
-# appeared in a turn a human marked as a correction.
-_CORRECTIVE = re.compile(
-    r"\b(no|nope|not|isn'?t|aren'?t|doesn'?t|don'?t|didn'?t|can'?t|won'?t|never"
-    r"|wrong|stop|instead|revert|undo|disregard|ignore"
-    r"|broken|broke|fail(?:s|ed|ing)?|terrible|worse|awful|missing|still|again"
-    r"|reword|rewrite|redo|shorter|concise(?:ly)?|simplif"
-    r"|why (?:are|did|would|is)|you'?re|are you|do you really)\b", re.I)
-# A reply longer than this is a fresh request, not a reaction to the turn before.
-CANDIDATE_MAX_CHARS = 600
-_APPROVAL_TAIL = re.compile(r"[\s.!,]+$")
-_APPROVAL = re.compile(
-    r"^(?:%s)$" % "|".join(re.escape(p) for p in APPROVAL_PHRASES), re.I)
 
 # Row schema. Every counter here is a column. Bump SCHEMA_VERSION whenever this
 # list changes OR a counter's definition changes, because a ledger holding two
 # definitions at once is worse than no ledger: it reports a number belonging to
 # neither, and nothing in the output says so. `extract` rebuilds on a mismatch
 # rather than trusting prose to prevent it.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_candidates", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
@@ -253,109 +233,9 @@ SWEEP_MAX_CHARS = (60, 90, 120, 160, 200, 300)
 SWEEP_MIN_PRIOR = (0, 200, 400, 800, 1600)
 
 
-# --- Redaction -------------------------------------------------------------
-
-@lru_cache(maxsize=1)
-def _redaction_patterns():
-    """Compile once.
-
-    THREE lists now hold redaction categories and none is a superset:
-      - this one,
-      - plugins/p/bin/repo-privacy-audit (generic home-path forms this lacks,
-        private-range addresses only),
-      - plugins/p/bin/stopped-promises.py (adds absolute paths belonging to
-        anywhere else, which neither of the other two catch).
-    Keep them in step deliberately rather than assuming they agree; the previous
-    wording said "the two lists" and was already stale.
-    """
-    home = str(HOME)
-    user = HOME.name
-    pats = [
-        (re.compile(re.escape(home), re.I), "~"),
-        (re.compile(re.escape(home.replace("\\", "/")), re.I), "~"),
-        (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b"), "<email>"),
-        (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
-        (re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), "<mac>"),
-        (re.compile(r"\b[A-Za-z0-9_-]{32,}\b"), "<long-token>"),
-        # Spend and plan state. Kept in step with repo-privacy-audit's
-        # money_amount and account_billing_field categories -- a measured
-        # spend figure is confidential and is shaped like nothing else here,
-        # so every identity pattern above is structurally blind to it.
-        (re.compile(r"\$\d{1,3}(,\d{3})+(\.\d{2})?|\$\d{4,}(\.\d{2})?"), "<amount>"),
-        # Literals split across adjacent string pieces so this file does not
-        # match the pattern it defines; Python rejoins them at parse time.
-        # Kept in the subset of regex syntax both grep -E and Python re
-        # accept -- no \b (not POSIX-guaranteed) and an explicit character
-        # class rather than \w -- so this stays identical to
-        # repo-privacy-audit's account_billing_field pattern.
-        (re.compile(r"(hasExtra" r"Usage[A-Za-z0-9_]*|subscription" r"Type"
-                    r"|billing" r"Type|organizationRateLimit" r"Tier"
-                    r"|userRateLimit" r"Tier|seat" r"Tier)"),
-         "<billing-field>"),
-    ]
-    # The account-name rule goes LAST, and the position is load-bearing. Running
-    # it first rewrote the name inside the home path, after which neither
-    # home-path pattern could ever match: a path came back as drive + Users +
-    # placeholder + every directory below it, instead of collapsing to "~".
-    # Identity was removed, the directory structure was not.
-    if len(user) > 2:
-        pats.append((re.compile(r"\b" + re.escape(user) + r"\b", re.I), "<user>"))
-    return pats
-
-
-def redact(text):
-    """Strip machine-identifying and credential-shaped values from text.
-
-    Runs before anything is written to a pack. A pack file on disk must already
-    be safe to read aloud — redacting at read time would be too late.
-    """
-    if not text:
-        return ""
-    for pattern, replacement in _redaction_patterns():
-        text = pattern.sub(replacement, text)
-    return text
 
 
 # --- Transcript parsing ----------------------------------------------------
-
-def _content_text(content, block_types, bare_strings=False):
-    """The text-bearing pieces of a `content` field, as an unjoined list of
-    strings -- callers decide how to filter and join, since the two shapes
-    that flatten through here disagree about both.
-
-    A bare string in a content list passes through only when `bare_strings`
-    is set (Claude content mixes plain strings and typed blocks; Codex
-    content never does). A `tool_result` block, when its type is in
-    `block_types`, contributes its own string `content` field instead of a
-    `text` key -- the one shape neither format's other block types use.
-    """
-    if isinstance(content, str):
-        return [content]
-    if not isinstance(content, list):
-        return []
-    parts = []
-    for block in content:
-        if bare_strings and isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and block.get("type") in block_types:
-            if block.get("type") == "tool_result":
-                inner = block.get("content")
-                if isinstance(inner, str):
-                    parts.append(inner)
-            else:
-                parts.append(block.get("text") or "")
-    return parts
-
-
-def text_of(message):
-    """Flatten a message's content to plain text. Content is a string on some
-    records and a list of typed blocks on others."""
-    if not isinstance(message, dict):
-        return ""
-    parts = _content_text(message.get("content"), ("text", "tool_result"),
-                          bare_strings=True)
-    return "\n".join(p for p in parts if p)
-
 
 def tool_calls_of(message):
     """Yield (block_id, tool_name, input_signature) for each tool use.
@@ -376,7 +256,6 @@ def tool_calls_of(message):
                    signature(block.get("input")))
 
 
-_INTERRUPT = re.compile(r"\[request interrupted", re.I)
 
 def signature(tool_input):
     """An exact digest of a tool call's input.
@@ -519,25 +398,6 @@ def classify_failure(tool, body):
     return ""
 
 
-def prose_of(message):
-    """A message's text blocks only.
-
-    Deliberately not text_of(), which also flattens tool_result bodies into the
-    string. That is right for quoting a turn and wrong for asking whether the
-    agent itself said anything: a transcript that merely read a file mentioning
-    the interrupt marker would otherwise read as interrupted.
-    """
-    if not isinstance(message, dict):
-        return ""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "\n".join(block.get("text") or "" for block in content
-                     if isinstance(block, dict) and block.get("type") == "text")
-
-
 def eligible_signals(tools_used, isolated):
     """The signals this run could have produced, as a sorted list.
 
@@ -558,89 +418,6 @@ def eligible_signals(tools_used, isolated):
     return sorted(out)
 
 
-def is_approval(reply):
-    """Is this whole reply nothing but agreement? `reply` is already stripped.
-
-    Shared with the label report's threshold sweep, so the sweep cannot drift
-    from the rule the ledger was built with.
-    """
-    stripped = _APPROVAL_TAIL.sub("", _LIST_PREFIX.sub("", reply)).strip()
-    if _APPROVAL.match(stripped):
-        return True
-    # Widened from evidence: 300 turns read and marked by hand showed the
-    # whole-reply rule catching 24% of real approvals. The misses were an
-    # affirmative followed by a qualifier -- agreeing and adding a preference.
-    # Requiring no negation is what keeps "sure, but not that way" out.
-    head = re.split(r"[,;.!]", stripped, 1)[0].strip()
-    return bool(_APPROVAL.match(head)) and not _NEGATION.search(stripped)
-
-
-def classify_user_turn(body, prior_assistant_chars,
-                       max_chars=None, min_prior=None):
-    """The pack's central definition, in one place: what a user turn means.
-
-    Returns "interrupt", "question", "approval", "correction" or "". Precedence
-    is fixed in that order, so a turn that could read as two things is always
-    the earlier one. `measure` counts the result and `moments` quotes it, so
-    both read the same rule, and the threshold sweep calls it too rather than
-    keeping a second copy that drifts.
-
-    A correction is deliberately over-flagged. Measured against turns read and
-    marked by hand -- 300 originally, of which 144 survived a later correction to
-    the sampler, which had been drawing from a population including records the
-    ledger does not count -- no wording rule got past about 0.63 precision, because whether a reply
-    is a correction is a judgment about intent and every missed one was a
-    correction phrased as a question. Four content rules were tried and none beat
-    the length rule. So this aims for recall instead -- 0.93 against the marks,
-    at 0.60 precision, measured over 144 marked turns drawn from the population
-    the ledger actually counts -- and the column is named `correction_candidates`
-    because
-    that is what it holds. The model reading a pack does the judging; a regex
-    cannot, and pretending otherwise put a number nobody should trust at the top
-    of the ranking.
-
-    Also measured and NOT adopted: whether the next assistant turn concedes
-    ("you're right", "my mistake") is a sharp signal on its own -- 0.85 precision
-    -- but it rescues only 2 more points of recall on top of the rule below, and
-    it would need the classifier to see the following turn. Not worth the
-    machinery; recorded so nobody re-derives it.
-    """
-    if _INTERRUPT.search(body):
-        return "interrupt"
-    reply = body.strip()
-    # The thresholds are arguments so the sweep can ask this same function what
-    # a different pair would have produced. They were a second copy of this rule
-    # for a while, and it drifted: the copy still answered "question" where this
-    # answers "correction", so a sweep table disagreed with the settled row
-    # printed directly above it.
-    max_chars = CORRECTION_MAX_CHARS if max_chars is None else max_chars
-    min_prior = CORRECTION_MIN_PRIOR_CHARS if min_prior is None else min_prior
-    short_reply = (0 < len(reply) <= max_chars
-                   and prior_assistant_chars >= min_prior)
-    if short_reply:
-        # A corrective signal wins every tie here, and the order was chosen by
-        # measurement rather than taste: it beat the alternative on two classes
-        # and lost on none. Both losing orderings misfiled the same shape --
-        # agreement wrapped around a complaint, and a complaint wearing a
-        # question mark. On the corrected sample the settled order measures
-        # approval 1.00/0.70, question 0.96/0.71, correction 0.60/0.93.
-        if _CORRECTIVE.search(reply):
-            return "correction"
-        if is_approval(reply):
-            return "approval"
-        if reply.endswith("?"):
-            return "question"
-        return "correction"
-    # Not short, but carries a corrective signal after a substantial turn: the
-    # class the length rule was blindest to. A question mark does not exclude it
-    # here -- "do all the tests still pass?" is a challenge, and treating every
-    # question as merely a question is what cost the most recall.
-    if (prior_assistant_chars >= CORRECTION_MIN_PRIOR_CHARS
-            and len(reply) <= CANDIDATE_MAX_CHARS
-            and _CORRECTIVE.search(reply)
-            and not is_approval(reply)):
-        return "correction"
-    return ""
 
 
 def is_error_record(rec):
@@ -803,6 +580,34 @@ def is_rollout(path):
     return False
 
 
+def valid_token_count(value):
+    """True for a finite, non-negative int or float (never a bool); callers
+    truncate a float with int(). The one rule retro and cache_ttl share."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and value == value and value not in (float("inf"), float("-inf"))
+            and value >= 0)
+
+
+def _token_count(value, skipped):
+    """A usage field as a non-negative int: absent or null is 0, a wrong-typed
+    value is 0 and tallied under `bad_token_count`."""
+    if value is None:
+        return 0
+    if not valid_token_count(value):
+        skipped["bad_token_count"] += 1
+        return 0
+    return int(value)
+
+
+def _dict_or_skip(value, skipped, reason):
+    """`value or {}` when it is a mapping; a present non-mapping is tallied."""
+    if isinstance(value, dict):
+        return value
+    if value:
+        skipped[reason] += 1
+    return {}
+
+
 def measure(path, harness="claude", root=None):
     """Reduce one transcript to a metrics row.
 
@@ -811,6 +616,7 @@ def measure(path, harness="claude", root=None):
     the three outcomes as a single value call measure_outcome() instead.
     """
     m = Counter()
+    skipped = Counter()
     session_id = project = branch = version = None
     first_ts = last_ts = None
     seen_sigs = set()
@@ -819,7 +625,7 @@ def measure(path, harness="claude", root=None):
     conversation = 0
     tokens_in = tokens_out = cache_read = 0
     prev_mode = None
-    prev_skill = None
+    prev_skill = ""
     tool_by_id = {}
     tools_used = set()
     open_tool_ids = set()
@@ -853,13 +659,19 @@ def measure(path, harness="claude", root=None):
 
         # attributionSkill is stamped on EVERY assistant record produced while a
         # skill is active, so counting records counts turns, not invocations.
-        # A run is one contiguous stretch of the same skill.
+        # A run is one contiguous stretch of assistant records carrying the
+        # same skill. Only assistant records start or end a run: tool results
+        # and prompts in between carry no stamp and leave the run open.
         skill = rec.get("attributionSkill")
         if skill:
             skills.add(str(skill))
-            if skill != prev_skill:
+        # The evaluation adapter ignores a record whose message is not an
+        # object and compares the stamp as text; the run count matches it.
+        if rtype == "assistant" and isinstance(rec.get("message"), dict):
+            stamp = str(skill or "")
+            if stamp and stamp != prev_skill:
                 m["skill_runs"] += 1
-        prev_skill = skill
+            prev_skill = stamp
 
         if rtype == "permission-mode":
             # These records are a repeated snapshot of the current mode, not a
@@ -876,13 +688,14 @@ def measure(path, harness="claude", root=None):
                 m["queued_prompts"] += 1
         elif rtype == "assistant":
             m["turns"] += 1
-            msg = rec.get("message") or {}
+            msg = _dict_or_skip(rec.get("message"), skipped, "bad_message")
             last_assistant = msg
-            usage = msg.get("usage") or {}
-            tokens_in += int(usage.get("input_tokens") or 0)
-            tokens_out += int(usage.get("output_tokens") or 0)
-            cache_read += int(usage.get("cache_read_input_tokens") or 0)
-            body = text_of(msg)
+            usage = _dict_or_skip(msg.get("usage"), skipped, "bad_usage")
+            tokens_in += _token_count(usage.get("input_tokens"), skipped)
+            tokens_out += _token_count(usage.get("output_tokens"), skipped)
+            cache_read += _token_count(usage.get("cache_read_input_tokens"),
+                                       skipped)
+            body = text_of(msg, skipped)
             # Accumulate, do not replace. One assistant turn is often several
             # records -- text, then a tool call, then more text -- and taking
             # only the last one asks "was the final fragment long" instead of
@@ -903,7 +716,7 @@ def measure(path, harness="claude", root=None):
                     m["repeat_calls"] += 1
                 seen_sigs.add(key)
         elif rtype == "user":
-            body = text_of(rec.get("message") or {})
+            body = text_of(rec.get("message") or {}, skipped)
             # Gate before classifying. Roughly 50,000 of 59,000 user records are
             # written by a tool or the harness, and flattening then classifying
             # each one only to discard the answer was 8% of a rebuild.
@@ -928,7 +741,7 @@ def measure(path, harness="claude", root=None):
         if rtype == "user":
             if is_error_record(rec):
                 m["tool_errors"] += 1
-            user_msg = rec.get("message") or {}
+            user_msg = _dict_or_skip(rec.get("message"), skipped, "bad_message")
             # An interrupt is the caller stopping the run. Read from the text
             # blocks only - a tool result that happens to quote the marker is
             # not the caller interrupting anything.
@@ -989,6 +802,8 @@ def measure(path, harness="claude", root=None):
         "skills_used": sorted(skills),
     }
     row["schema"] = SCHEMA_VERSION
+    if skipped:
+        row["skipped"] = dict(skipped)
     for key in COUNTERS:
         row[key] = m[key]
 
@@ -1291,8 +1106,10 @@ def measure_codex(path, root):
     return row
 
 
-# Antigravity transcripts expose conversation steps, not token accounting or
-# authoritative main/subagent metadata. Do not infer those from prose or paths.
+# Antigravity transcripts expose conversation steps but no authoritative
+# main/subagent metadata, and they do not carry token usage on every step: a
+# total over the steps that do would be a partial figure presented as a whole,
+# so token usage is not measured. Do not infer either from prose or paths.
 ANTIGRAVITY_INELIGIBLE = (
     "tokens_in", "tokens_out", "cache_read", "tool_errors", "queued_prompts",
     "permission_mode_changes", "skill_runs", "interrupts",
@@ -1401,6 +1218,33 @@ def measure_outcome(path, harness, root):
     return (MEASURED, row) if row is not None else (NOT_TRANSCRIPT, None)
 
 
+# --- progress --------------------------------------------------------------
+
+# Read at call time, so a test can substitute a clock that moves faster.
+progress_clock = time.monotonic
+
+
+class Progress:
+    """A stderr line every `every` seconds once a walk has run past `after`
+    seconds. A short run prints nothing; a long one is visibly alive.
+
+    Stderr only, so a --json caller's stdout stays one parseable document.
+    Whole lines rather than carriage-return redraws, because the reader is as
+    often an agent reading the stream as text as it is a terminal.
+    """
+
+    def __init__(self, label, total, after=3.0, every=5.0):
+        self.label, self.total, self.every = label, total, every
+        self.next = progress_clock() + after
+
+    def step(self, done, verb="scanned"):
+        now = progress_clock()
+        if now >= self.next:
+            print(f"{self.label}: {verb} {done}/{self.total} files",
+                  file=sys.stderr, flush=True)
+            self.next = now + self.every
+
+
 # --- extract ---------------------------------------------------------------
 
 def load_state():
@@ -1477,6 +1321,12 @@ def cmd_extract(args):
     stale = []
     unchanged = 0
     unreadable = 0
+    # Every file the walk found lands in exactly one bucket, on every run:
+    # files = measured + unchanged + not-transcripts + unreadable. A file
+    # fingerprinted earlier that has no ledger row was measured and held no
+    # conversation; it stays a not-transcript on later runs rather than
+    # moving into `unchanged`, so the count means the same thing each time.
+    not_transcripts = 0
     for path, harness, root in transcripts:
         try:
             stat = path.stat()
@@ -1487,11 +1337,21 @@ def cmd_extract(args):
             continue
         # A live session grows; re-measure when size or mtime moved.
         fingerprint = f"{stat.st_size}:{int(stat.st_mtime)}"
-        selected_row_exists = (harness != "antigravity" or
-                               (harness, path.relative_to(root).as_posix()) in rows)
-        if state.get(str(path)) == fingerprint and selected_row_exists:
-            unchanged += 1
-            continue
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            rel = path.name
+        # A rollout found under the Claude root is keyed as codex (measure_outcome).
+        has_row = (harness, rel) in rows or ("codex", rel) in rows
+        if state.get(str(path)) == fingerprint:
+            if has_row:
+                unchanged += 1
+                continue
+            if harness != "antigravity":
+                not_transcripts += 1
+                continue
+            # An Antigravity export with no row was displaced by its sibling
+            # export; re-measure it rather than retire it.
         stale.append((path, harness, root, fingerprint))
 
     # measure() shares no state, and the work is dominated by reading a
@@ -1499,13 +1359,15 @@ def cmd_extract(args):
     # concurrent I/O. Warm the redaction patterns first so the cache is not
     # raced by the workers.
     _redaction_patterns()
-    measured = not_transcripts = 0
+    measured = 0
     measured_by_harness = Counter()
+    progress = Progress("retro extract", len(stale))
     with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as pool:
-        for (path, harness, root, fingerprint), (outcome, row) in zip(
-                stale, pool.map(
+        for done, ((path, harness, root, fingerprint), (outcome, row)) in enumerate(
+                zip(stale, pool.map(
                     lambda item: measure_outcome(item[0], item[1], item[2]),
-                    stale)):
+                    stale)), 1):
+            progress.step(done, "measured")
             if outcome == UNREADABLE:
                 # Deliberately not fingerprinted. Recording one would retire
                 # the file until it changes, so a live transcript that was
@@ -1530,7 +1392,7 @@ def cmd_extract(args):
             fh.write(json.dumps(row) + "\n")
     STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
 
-    print(f"transcripts: {len(transcripts)}  measured: {measured}  "
+    print(f"files: {len(transcripts)}  measured: {measured}  "
           f"unchanged: {unchanged}  not-transcripts: {not_transcripts}  "
           f"unreadable: {unreadable}")
     for harness in HARNESSES:
@@ -1611,7 +1473,7 @@ def totals(rows):
             if key not in ineligible:
                 eligible_rows[key] += 1
         agg["tokens_out"] += int(row.get("tokens_out") or 0)
-        # Token accounting is absent from Antigravity transcript exports.
+        # Antigravity token usage is not measured (see ANTIGRAVITY_INELIGIBLE).
         if "tokens_out" not in ineligible:
             eligible_rows["tokens_out"] += 1
     return agg, eligible_rows
@@ -1839,8 +1701,9 @@ def cmd_pack(args):
                 now_counts, _ = totals(current_unknown)
                 prev_counts, _ = totals(prior_unknown)
                 lines += ["### antigravity — unclassified sessions", "",
-                          "Observed step counts only; main/child population and "
-                          "token accounting are unavailable. No per-session rates.", "",
+                          "Observed step counts only; main/child population is not "
+                          "recorded and token usage is not measured. No "
+                          "per-session rates.", "",
                           "| signal | this window | prior |",
                           "|---|---|---|",
                           f"| sessions | {len(current_unknown)} | {len(prior_unknown)} |"]
@@ -1960,13 +1823,13 @@ def cmd_pack(args):
 
 def installed_skills():
     """Per-harness skill inventories, by directory name. glob on a missing
-    directory yields nothing, so no existence guards. The Claude half keeps
-    CLAUDE_DIR deliberately — the spec sanctions adding Codex roots, not
-    moving the Claude one."""
+    directory yields nothing, so no existence guards. The Claude half reads
+    the same configuration directory as every other Claude-side reader."""
     codex_home = codex_home_dir()
-    claude = ({p.parent.name for p in (CLAUDE_DIR / "skills").glob("*/SKILL.md")}
+    claude_dir = claude_config_dir()
+    claude = ({p.parent.name for p in (claude_dir / "skills").glob("*/SKILL.md")}
               | {p.parent.name for p in
-                 (CLAUDE_DIR / "plugins" / "cache").rglob("skills/*/SKILL.md")})
+                 (claude_dir / "plugins" / "cache").rglob("skills/*/SKILL.md")})
     # rglob from the plugin store root, not a "cache" subdirectory: the
     # Codex store nests differently from Claude's, and rglob covers
     # whichever layout a version uses.
@@ -2010,7 +1873,7 @@ def cmd_skills(args):
         in_claude = name in installed["claude"]
         in_codex = name in installed["codex"]
         note = "" if (in_claude or in_codex) else "built-in command, or renamed"
-        print(f"| {name} | {used['claude'][name] or ''} "
+        print(f"| {strip_controls(name)} | {used['claude'][name] or ''} "
               f"| {used['codex'][name] or ''} | {note} |")
     if any_codex:
         print(f"\nCodex denominator: {signal_files['codex']} transcripts "
@@ -2130,6 +1993,11 @@ def concentration(rows, key):
     return by_project.most_common(1)[0][1] / total * 100
 
 
+# The table lib/skill_activation.py owns (format-ctl keeps a copy, pinned
+# equal by a test).
+HARNESS_SESSION_VARS = skill_activation.HARNESS_SESSION_VARS
+
+
 def reporting_session_ids(extra):
     """Session ids whose rows this report must not count.
 
@@ -2141,15 +2009,11 @@ def reporting_session_ids(extra):
     dispatched. The ids are read, matched and discarded - never printed.
     """
     ids = {value for value in (extra or []) if value}
-    current = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
-    if current:
-        ids.add(current)
-    # The same tuple format-ctl reads (plugins/p/bin/format-ctl); adding a
-    # harness means editing both.
-    for name in ("CODEX_SESSION_ID", "CODEX_THREAD_ID"):
-        value = os.environ.get(name) or ""
-        if value:
-            ids.add(value)
+    for _, names in HARNESS_SESSION_VARS:
+        for name in names:
+            value = os.environ.get(name) or ""
+            if value:
+                ids.add(value)
     return ids
 
 
@@ -2163,12 +2027,19 @@ def cmd_subagents(args):
     are on the row's `date`, which comes from the first timestamp inside the
     transcript.
     """
-    rows = [r for r in load_rows()
-            if (r.get("population") or "") == "subagent"]
+    rows = load_rows()
     if args.days:
         start = (datetime.now(timezone.utc).date()
                  - timedelta(days=args.days)).isoformat()
         rows = [r for r in rows if (r.get("date") or "") >= start]
+    # Antigravity rows carry population "unknown": their exports do not say
+    # whether a run was a child, so none can enter this lens. Count them so
+    # the report says what it left out instead of reading as complete.
+    uncovered = sum(1 for r in rows if row_harness(r) == "antigravity")
+    uncovered_line = (f"not covered: antigravity {uncovered} transcripts - "
+                      f"their exports do not say whether a run was a child"
+                      if uncovered else "")
+    rows = [r for r in rows if (r.get("population") or "") == "subagent"]
     skip = reporting_session_ids(args.exclude_session)
     dropped = sum(1 for r in rows
                   if r.get("session_id") in skip
@@ -2179,6 +2050,8 @@ def cmd_subagents(args):
     window = f"last {args.days} days" if args.days else "all history"
     if not rows:
         print(f"# Subagent lens - {window}\n\nNo subagent transcripts in window.")
+        if uncovered_line:
+            print(uncovered_line)
         return EXIT_CLEAN
 
     taken = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -2190,6 +2063,8 @@ def cmd_subagents(args):
     if dropped:
         print(f"\n{dropped} rows written by the session running this report "
               f"were left out - transcripts still being written.")
+    if uncovered_line:
+        print("\n" + uncovered_line)
 
     claude_rows = [r for r in rows if row_harness(r) == "claude"]
     codex_rows = [r for r in rows if r.get("harness") == "codex"]
@@ -2324,7 +2199,8 @@ def label_candidates():
             date = date or str(rec.get("timestamp") or "")[:10]
             rtype = rec.get("type")
             if rtype == "assistant":
-                msg = rec.get("message") or {}
+                msg = rec.get("message")
+                msg = msg if isinstance(msg, dict) else {}
                 # Accumulate across a turn's records, exactly as `measure` does.
                 # Replacing here meant the sweep argued from a different length
                 # than the ledger recorded for the same turn.
@@ -2414,28 +2290,6 @@ def read_labels(path):
     return out
 
 
-def _predict_at(sample, max_chars, min_prior):
-    """What the classifier would have said at a different pair of thresholds.
-
-    Calls the real rule rather than restating it. It restated it once, and the
-    copy went stale the next time the rule changed -- a sweep that disagrees
-    with the row it is meant to explain is worse than no sweep.
-
-    The stored lengths are used rather than the stored text because the text is
-    redacted and truncated while the numbers are the reply's real lengths.
-    """
-    if sample["predicted"] == "interrupt":
-        return "interrupt"
-    if not (0 < sample["reply_chars"] <= max_chars
-            and sample["prior_chars"] >= min_prior):
-        return "none"
-    # The stored text is redacted, which can only shorten it, so the length gate
-    # above is applied from the stored numbers and the wording rules from the
-    # text. A threshold pair is exactly those two numbers.
-    return classify_user_turn(sample["said"].strip(),
-                              sample["prior_chars"],
-                              max_chars=max_chars,
-                              min_prior=min_prior) or "none"
 
 
 def _weighted(marked, predict):
@@ -2556,15 +2410,37 @@ EFFECT_MIN_SESSIONS = 12
 # `effect` needs and what nobody remembers unaided.
 # Where the standing instructions live. Each is a thing whose edits should carry
 # a date, because `effect` can only compare either side of a date that exists.
-RULE_SOURCES = (
-    ("standing instructions", CLAUDE_DIR / "CLAUDE.md"),
-    ("memory store", CLAUDE_DIR / "memory"),
-    ("skills", CLAUDE_DIR / "skills"),
-)
+def rule_sources():
+    base = claude_config_dir()
+    return (
+        ("standing instructions", base / "CLAUDE.md"),
+        ("memory store", base / "memory"),
+        ("skills", base / "skills"),
+    )
+
+
 # Past this many days of uncommitted edits, the trail is broken badly enough to
 # say so: a fortnight of changes squashed into one commit is one date for many
 # different decisions, which is no better than none.
 RULES_STALE_DAYS = 7
+
+
+def other_harness_homes():
+    """Non-Claude harnesses whose home directory exists on this machine.
+
+    `rules` and the `effect` date list read Claude-side configuration only.
+    Naming the other harnesses present keeps that scope in the output rather
+    than letting a clean table read as covering every instruction source.
+    """
+    homes = (("codex", codex_home_dir()), ("antigravity", antigravity_home_dir()))
+    return [name for name, home in homes if home.is_dir()]
+
+
+def print_rule_scope():
+    others = other_harness_homes()
+    if others:
+        print("not inspected: " + ", ".join(others)
+              + " - only Claude-side configuration is read here\n")
 
 
 def _git(repo, *args):
@@ -2587,10 +2463,11 @@ def cmd_rules(args):
     compares against is never recorded.
     """
     print("# Rule sources\n")
+    print_rule_scope()
     print("| source | in a repo | uncommitted | last change |")
     print("|---|---|---|---|")
     problems = []
-    for name, path in RULE_SOURCES:
+    for name, path in rule_sources():
         if not path.exists():
             print(f"| {name} | absent | - | - |")
             continue
@@ -2644,10 +2521,11 @@ Two ways to fix it, and the second is the one that lasts:
     return EXIT_FLAGGED
 
 
-# Derived from RULE_SOURCES so the two cannot disagree. They did: one carried
+# Derived from rule_sources() so the two cannot disagree. They did: one carried
 # the settings file and the other did not, so a settings change could hand
 # `effect` a date while `rules` never checked whether it was recorded at all.
-RULE_PATHS = tuple(path.name for _, path in RULE_SOURCES)
+def rule_paths():
+    return tuple(path.name for _, path in rule_sources())
 
 
 def rule_change_dates(limit=25):
@@ -2657,8 +2535,8 @@ def rule_change_dates(limit=25):
     [(date, count, [subjects])], newest first. Empty if it is not a repository,
     which is not an error -- it just means this shortcut is unavailable.
     """
-    out = _git(CLAUDE_DIR, "log", "--date=short", "--format=%ad\t%s", "--",
-               *RULE_PATHS)
+    out = _git(claude_config_dir(), "log", "--date=short", "--format=%ad\t%s", "--",
+               *rule_paths())
     if out is None:
         return []
     by_date = {}
@@ -2673,8 +2551,9 @@ def print_candidates():
     """No date given: show the ones the machine knows about."""
     dates = rule_change_dates()
     print("# Dates something was deliberately changed\n")
+    print_rule_scope()
     if not dates:
-        print(f"No history found under {CLAUDE_DIR}. Either it is not a git "
+        print(f"No history found under {claude_config_dir()}. Either it is not a git "
               "repository, or the rule files have never been committed there.\n"
               "Pass a date yourself: retro effect --since YYYY-MM-DD")
         return EXIT_CANNOT_RUN
@@ -2713,6 +2592,14 @@ def cmd_effect(args):
         print(f"not a date: {args.since} - use YYYY-MM-DD", file=sys.stderr)
         return EXIT_CANNOT_RUN
 
+    if args.harness == "antigravity":
+        # Recorded in docs/plans/2026-09-24-antigravity-history-ingestion.md:
+        # the export provides no authoritative parent/main classification, so
+        # there is no main-session cohort to compare on either side.
+        print("cannot compare: antigravity exports do not say whether a session "
+              "was a main session or a child, and this comparison is over main "
+              "sessions only", file=sys.stderr)
+        return EXIT_CANNOT_RUN
     rows = [r for r in load_rows() if r.get("date")]
     if args.days:
         lo = (cut - timedelta(days=args.days)).isoformat()
@@ -2833,6 +2720,18 @@ def positive_int(value):
     return result
 
 
+def nonnegative_int(value):
+    """A window length where 0 means all history. A negative window would end
+    before it starts and report on nothing while looking like a result."""
+    try:
+        result = int(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError("must be 0 (all history) or a positive integer")
+    if result < 0:
+        raise argparse.ArgumentTypeError("must be 0 (all history) or a positive integer")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(prog="retro", description=__doc__)
     sub = parser.add_subparsers(required=True)
@@ -2843,7 +2742,9 @@ def main():
     p_extract.set_defaults(func=cmd_extract)
 
     p_pack = sub.add_parser("pack", help="build an evidence pack for a window")
-    p_pack.add_argument("--days", type=int, default=7)
+    # The pack compares its window with the one before it, so it has no
+    # all-history form: 0 would be a today-only window labelled "last 0 days".
+    p_pack.add_argument("--days", type=positive_int, default=7)
     p_pack.add_argument("--sessions", type=int, default=8,
                         help="how many top-friction sessions to quote")
     p_pack.add_argument("--moments-per-session", type=positive_int,
@@ -2852,13 +2753,13 @@ def main():
     p_pack.set_defaults(func=cmd_pack)
 
     p_skills = sub.add_parser("skills", help="which installed skills actually fire")
-    p_skills.add_argument("--days", type=int, default=0,
+    p_skills.add_argument("--days", type=nonnegative_int, default=0,
                           help="restrict to a window; 0 means all history")
     p_skills.set_defaults(func=cmd_skills)
 
     p_sub = sub.add_parser("subagents",
                            help="mechanical failures in subagent transcripts")
-    p_sub.add_argument("--days", type=int, default=30,
+    p_sub.add_argument("--days", type=nonnegative_int, default=30,
                        help="restrict to a window; 0 means all history")
     p_sub.add_argument("--exclude-session", action="append", default=[],
                        metavar="ID",
@@ -2879,7 +2780,7 @@ def main():
     p_effect.add_argument("--since", metavar="YYYY-MM-DD",
                           help="the date the change was made; omit to list the "
                                "dates the machine's own rule files changed")
-    p_effect.add_argument("--days", type=int, default=0,
+    p_effect.add_argument("--days", type=nonnegative_int, default=0,
                           help="limit to this many days either side; 0 means all")
     p_effect.add_argument("--harness", choices=HARNESSES + ("all",),
                           default="claude",
@@ -2894,7 +2795,12 @@ def main():
     p_rules.set_defaults(func=cmd_rules)
 
     args = parser.parse_args()
-    sys.exit(args.func(args) or EXIT_CLEAN)
+    try:
+        code = args.func(args)
+    except Exception as error:  # noqa: BLE001 -- the exit-code contract
+        sys.stderr.write("error: %s: %s\n" % (type(error).__name__, error))
+        sys.exit(EXIT_CANNOT_RUN)
+    sys.exit(code or EXIT_CLEAN)
 
 
 if __name__ == "__main__":

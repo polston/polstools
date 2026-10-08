@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from datetime import timedelta
 from pathlib import Path
 
+from .cli import command, full_commit
 from .catalog import load_metric_catalogue, load_rubric_catalogue
 from .dataset import DatasetManifest, load_dataset_policy
 from .scorers import default_scorers
@@ -189,6 +190,8 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
             "included_traces": len(traces),
             "main_traces": sum(record.main_or_subagent == "main" for record in traces),
             "subagent_traces": sum(record.main_or_subagent == "subagent" for record in traces),
+            "unclassified_traces": sum(record.main_or_subagent not in {"main", "subagent"}
+                                       for record in traces),
             "excluded_traces": raw_capabilities.get("excluded"),
             "discovered_files": raw_capabilities.get("files"),
             "snapshot_start": min(timestamps).isoformat() if timestamps else None,
@@ -225,11 +228,12 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
     return report
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--created-commit", required=True)
+    parser.add_argument("--created-commit", required=True, type=full_commit)
     parser.add_argument("--dataset-id", default="cross-harness-v1")
     args = parser.parse_args(argv)
     if _inside_repository(args.output.parent):
@@ -237,6 +241,9 @@ def main(argv=None):
     report = run_deterministic_report(
         args.work_dir, created_commit=args.created_commit,
         dataset_id=args.dataset_id)
+    if not report["manifest"]["traces"]:
+        raise ValueError("the snapshot has no traces; extract again with source "
+                         "roots that contain sessions")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
                            encoding="utf-8")

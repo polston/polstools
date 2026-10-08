@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Report, by name only, what this harness session exposes to p.
+
+Run from inside a Claude Code, Codex, or Antigravity session through the
+agent's ordinary shell tool. It prints which recognized session-id and
+plugin-root variables are present and every other harness-related variable
+NAME. On Antigravity, arm the hook trace first with --arm, let the
+conversation make a few model calls, then run the probe again: it reports
+whether the format hook ran for this session, with the invocation counters
+and payload key names it received, and removes the trace. Values, paths,
+and session ids are never printed.
+
+  p-session-probe --arm
+  p-session-probe [--json] [--harness claude|codex|antigravity]
+
+The Antigravity hook trace needs a POSIX state directory the format hook
+accepts, which Windows does not provide: on Windows, --arm and the antigravity
+report exit 2 as unsupported.
+
+Exit: 0 ran clean and found a session variable (and, on Antigravity, hook
+evidence for this session); 1 ran clean and flagged missing evidence; 2
+could not run (bad arguments, the state directory is not private, or the
+Antigravity trace on Windows). --help and -h exit 0.
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.dont_write_bytecode = True
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import session_probe  # noqa: E402
+
+HARNESSES = ("claude", "codex", "antigravity")
+WINDOWS = os.name == "nt"
+UNSUPPORTED = ("p-session-probe: the Antigravity hook trace is not supported on "
+               "Windows: the format hook refuses its state directory there")
+
+
+def collect(env, harness_flag):
+    variable = session_probe.session_variable(env)
+    harness = harness_flag or session_probe.HARNESS_BY_VARIABLE.get(variable, "")
+    names = session_probe.present_names(env)
+    report = {
+        "harness": harness or "unknown",
+        "harness_source": "flag" if harness_flag else (variable or "none"),
+        "session_variables": [n for n in session_probe.SESSION_VARIABLES if env.get(n)],
+        "plugin_root_variables": [n for n in session_probe.ROOT_VARIABLES if env.get(n)],
+        "other_variable_names": [
+            n for n in names
+            if n not in session_probe.SESSION_VARIABLES
+            and n not in session_probe.ROOT_VARIABLES
+        ],
+        "format_hook": None,
+    }
+    flagged = not variable
+    if harness == "antigravity" and WINDOWS:
+        return report, 2
+    if harness == "antigravity":
+        records = session_probe.consume(env)
+        record = records.get(session_probe.trace_key(env.get(variable))) if variable else None
+        hook = {"bound_to_this_session": bool(record), "traced_conversations": len(records)}
+        if record:
+            hook.update({
+                "invocations": record["invocations"],
+                "stdin_keys": record["stdin_keys"],
+                "hook_env_names": record["env_names"],
+                "gate": record["gate"],
+            })
+        report["format_hook"] = hook
+        flagged = flagged or not record
+    return report, (1 if flagged else 0)
+
+
+def render(report):
+    def names(values):
+        return ", ".join(values) if values else "(none)"
+
+    lines = [
+        "p session probe",
+        "harness: %s (from %s)" % (report["harness"], report["harness_source"]),
+        "session variables: " + names(report["session_variables"]),
+        "plugin-root variables: " + names(report["plugin_root_variables"]),
+        "other harness variable names: " + names(report["other_variable_names"]),
+    ]
+    hook = report["format_hook"]
+    if hook is None:
+        lines.append("format hook: not traced for this harness; p-doctor probes it")
+    elif hook["bound_to_this_session"]:
+        lines.append(
+            "format hook: ran for this session; gate %s; invocations %s"
+            % (hook["gate"], " ".join("%d/%d" % tuple(pair) for pair in hook["invocations"])))
+        lines.append("format hook stdin keys: " + names(hook["stdin_keys"]))
+        lines.append("format hook variable names: " + names(hook["hook_env_names"]))
+    else:
+        lines.append(
+            "format hook: no run traced for this session; %d conversation(s) traced; "
+            "arm with --arm, make a model call, then rerun" % hook["traced_conversations"])
+    if hook is not None:
+        lines.append("trace removed; the probe is disarmed")
+    return "\n".join(lines) + "\n"
+
+
+def main(argv=None, env=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--arm", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--harness", choices=HARNESSES)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as stop:
+        return 0 if stop.code == 0 else 2
+    env = os.environ if env is None else env
+    if args.arm:
+        if WINDOWS:
+            print(UNSUPPORTED, file=sys.stderr)
+            return 2
+        try:
+            session_probe.arm(env)
+        except (OSError, session_probe.ProbeError) as error:
+            print("p-session-probe: cannot arm: %s" % error, file=sys.stderr)
+            return 2
+        print("session probe armed: make a model call in this conversation, "
+              "then run p-session-probe again")
+        return 0
+    report, code = collect(env, args.harness)
+    if WINDOWS and report["harness"] == "antigravity":
+        print(UNSUPPORTED, file=sys.stderr)
+        return 2
+    if args.json:
+        sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
+    else:
+        sys.stdout.write(render(report))
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

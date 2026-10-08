@@ -1,12 +1,12 @@
 {
-  "description": "Injects the response-format spec at session start and a short reminder every turn (per-turn reinjection counters within-session drift). The gate script prints plain stdout, which becomes context, only when the session resolves on: a /p:fmt-on or /p:fmt-off session toggle wins, then the configured default (P_FORMAT_DEFAULT, per-harness, or global in polstools/format.json), then off. A missing payload shows a hook error without blocking the prompt.",
+  "description": "Injects the response-format spec at session start and a short reminder every turn (per-turn reinjection counters within-session drift). bin/format-gate prints the payload as plain stdout, which becomes context, only when the session resolves on: a /p:fmt-on or /p:fmt-off session toggle wins, then the configured default (P_FORMAT_DEFAULT, per-harness, or global in polstools/format.json), then off. When the shell can prove nothing turns the format on it exits 0 without starting Python. A missing payload or a missing Python shows a hook error without blocking the prompt; the gate never exits 2.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\" \"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate \"${CLAUDE_PLUGIN_ROOT}/style/response-format.md\" --hook-id format.session-start --hook-version 1 --trigger-kind SessionStart"
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/format-gate\" gate \"${CLAUDE_PLUGIN_ROOT}/style/response-format.md\" --hook-id format.session-start --hook-version 1 --trigger-kind SessionStart"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\" \"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate \"${CLAUDE_PLUGIN_ROOT}/style/turn-reminder.md\" --hook-id format.user-prompt-submit --hook-version 1 --trigger-kind UserPromptSubmit"
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/format-gate\" gate \"${CLAUDE_PLUGIN_ROOT}/style/turn-reminder.md\" --hook-id format.user-prompt-submit --hook-version 1 --trigger-kind UserPromptSubmit"
           }
         ]
       }

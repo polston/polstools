@@ -7,29 +7,45 @@ gate <payload>  hook entry: print <payload> when the resolved state is on
 off | on        toggle the current session (id from the active harness)
 status          print the current session's resolved state and its source
 default         show the configured defaults
-default on|off [--harness claude|codex]
+default on|off [--harness claude|codex|antigravity]
                 set the durable default globally or for one harness
-default clear [--harness claude|codex]
+                (agy is accepted for antigravity)
+default clear [--harness claude|codex|antigravity]
                 remove the global or one harness's configured default
+probe-paths [--create]
+                print the per-user state directory and the session-probe
+                arming marker, one per line, after checking (or with
+                --create, making) the state directory private; exit 2 when
+                it is not a real directory owned by this user
 
 Resolution order: session toggle, P_FORMAT_DEFAULT, the harness key, then
 the global key in the defaults file, then off. The defaults file is
 polstools/format.json under the user configuration directory
 (P_FORMAT_CONFIG_FILE overrides the path). Harness identity comes from
-P_FORMAT_HARNESS, then the Claude or Codex session variables.
+P_FORMAT_HARNESS (agy is accepted for antigravity), then the Claude, Codex, or
+Antigravity session variables.
+
+--help | -h    print this text and exit 0
 
 Exit: 0 ran clean; toggle and default subcommands exit 2 when they cannot
-run. gate exits 1 on a bad payload instead — exit 2 from a UserPromptSubmit
-hook blocks processing and erases the user's prompt, which a broken payload
-must never do.
+run. gate never exits 2: it exits 1 on bad arguments or a missing payload,
+because exit 2 from a UserPromptSubmit hook blocks the user's prompt in both
+Claude Code and Codex.
 """
-import hashlib
-import json
-import os
-import secrets
 import sys
-import tempfile
-import time
+
+# The plugin's Python floor. This must stay above every use of newer syntax
+# or library calls in this file, and before the ready token below.
+if sys.version_info < (3, 9):
+    sys.exit(1)
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import secrets  # noqa: E402
+import stat  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
 
 # The harness reads hook stdout as UTF-8, but on Windows a piped stdout
 # defaults to the ANSI code page, which mangles any non-ASCII payload byte.
@@ -37,25 +53,68 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8")
 
-# The flags are disposable session state. The OS temp directory is writable in
-# both harness sandboxes and keeps the files out of repositories and config.
-FLAG_DIR = os.environ.get("P_FORMAT_STATE_DIR") or os.path.join(
-    tempfile.gettempdir(), "p-format-toggle"
-)
+# python-launcher's single-start mode (used by bin/format-gate) accepts this
+# interpreter only if its output begins with the token it passed in.
+_ready_token = os.environ.pop("POLSTOOLS_READY_TOKEN", "")
+if _ready_token:
+    sys.stdout.write(_ready_token)
+    sys.stdout.flush()
+
+def _default_flag_dir():
+    # The one definition of the flag directory. bin/format-gate's shell fast
+    # path recomputes only the cases it can match exactly and otherwise
+    # defers to this gate; test_format_gate proves the two never disagree.
+    override = os.environ.get("P_FORMAT_STATE_DIR")
+    if override:
+        return override
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return os.path.join(runtime, "p-format-toggle")
+    suffix = str(os.getuid()) if hasattr(os, "getuid") else (os.environ.get("USERNAME") or "default")
+    return os.path.join(tempfile.gettempdir(), "p-format-toggle-" + suffix)
+
+
+FLAG_DIR = _default_flag_dir()
 STALE_SECONDS = 14 * 24 * 3600
+REFRESH_SECONDS = 24 * 3600
 # retro.py's reporting_session_ids() reads this same tuple of session-id env
 # vars to exclude the reporting session from a report; keep both in sync.
-HARNESSES = ("claude", "codex")
-SESSION_ENV_VARS = (
-    "CLAUDE_CODE_SESSION_ID",
-    "CODEX_SESSION_ID",
-    "CODEX_THREAD_ID",
+HARNESSES = ("claude", "codex", "antigravity")
+HARNESS_SESSION_VARS = (
+    ("claude", ("CLAUDE_CODE_SESSION_ID",)),
+    ("codex", ("CODEX_SESSION_ID", "CODEX_THREAD_ID")),
+    ("antigravity", ("ANTIGRAVITY_CONVERSATION_ID",)),
 )
+SESSION_ENV_VARS = tuple(
+    name for _, names in HARNESS_SESSION_VARS for name in names)
 STATES = ("on", "off")
 
 
 def flag_path(session_id, state):
-    return os.path.join(FLAG_DIR, session_id + "." + state)
+    # Hashing keeps any session id, including one with separators or "..",
+    # a single file name inside FLAG_DIR.
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    return os.path.join(FLAG_DIR, digest + "." + state)
+
+
+def private_dir(create):
+    """True when FLAG_DIR is a real directory owned by this user. With
+    create, make it (mode 0700) or tighten a looser mode first. Flags in an
+    untrusted directory are never read or written."""
+    if create:
+        os.makedirs(FLAG_DIR, mode=0o700, exist_ok=True)
+    try:
+        info = os.lstat(FLAG_DIR)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode):
+        return False
+    if hasattr(os, "getuid"):
+        if info.st_uid != os.getuid():
+            return False
+        if create and stat.S_IMODE(info.st_mode) != 0o700:
+            os.chmod(FLAG_DIR, 0o700)
+    return True
 
 
 def prune():
@@ -63,18 +122,36 @@ def prune():
         cutoff = time.time() - STALE_SECONDS
         for entry in os.scandir(FLAG_DIR):
             if (entry.name.endswith(".off") or entry.name.endswith(".on")) \
-                    and entry.stat().st_mtime < cutoff:
+                    and entry.is_file(follow_symlinks=False) \
+                    and entry.stat(follow_symlinks=False).st_mtime < cutoff:
                 os.unlink(entry.path)
     except OSError:
         pass
 
 
+def harness_override():
+    """P_FORMAT_HARNESS, with agy accepted for antigravity; "" when unset or
+    not a harness name."""
+    override = os.environ.get("P_FORMAT_HARNESS")
+    if override == "agy":
+        override = "antigravity"
+    return override if override in HARNESSES else ""
+
+
 def session_from_env():
-    for name in SESSION_ENV_VARS:
-        sid = os.environ.get(name)
-        if sid:
-            return sid
-    print("no supported harness session id is set", file=sys.stderr)
+    visible = visible_sessions()
+    override = harness_override()
+    if override:
+        visible = [entry for entry in visible if entry[0] == override]
+    if len(visible) == 1:
+        return visible[0][1]
+    if visible:
+        print("format-ctl: session ids for %s are all set, so this session "
+              "started inside another; rerun with P_FORMAT_HARNESS set to "
+              "this session's harness"
+              % " and ".join(harness for harness, _ in visible), file=sys.stderr)
+    else:
+        print("no supported harness session id is set", file=sys.stderr)
     sys.exit(2)
 
 
@@ -90,39 +167,87 @@ def config_path():
     return os.path.join(base, "polstools", "format.json")
 
 
-def read_config():
+class MalformedConfig(Exception):
+    pass
+
+
+def load_config():
+    """The configured defaults; MalformedConfig when the file exists but is
+    not a JSON object. A missing file is an empty configuration."""
     try:
         with open(config_path(), encoding="utf-8") as handle:
             data = json.load(handle)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as error:
+        raise MalformedConfig(str(error))
     if not isinstance(data, dict):
-        return {}
+        raise MalformedConfig("not a JSON object")
     return {key: value for key, value in data.items()
             if key in ("default",) + HARNESSES and value in STATES}
 
 
+def read_config():
+    # The hook path: an unreadable file follows the built-in default rather
+    # than failing the prompt; `default` reports it instead.
+    try:
+        return load_config()
+    except MalformedConfig:
+        return {}
+
+
+def editable_config():
+    try:
+        return load_config()
+    except MalformedConfig as error:
+        print("format-ctl: the defaults file %s is malformed (%s); fix or "
+              "remove it" % (config_path(), error), file=sys.stderr)
+        sys.exit(2)
+
+
 def write_config(config):
     path = config_path()
+    directory = os.path.dirname(path) or "."
+    data = json.dumps(config, indent=2, sort_keys=True) + "\n"
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(config, handle, indent=2, sort_keys=True)
-            handle.write("\n")
+        os.makedirs(directory, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix="." + os.path.basename(path) + ".", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(data)
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
     except OSError as error:
         print("format-ctl: cannot write defaults: %s" % error, file=sys.stderr)
         sys.exit(2)
 
 
+def visible_sessions():
+    """(harness, session id) for every harness whose session variable is
+    set. A harness started inside another inherits the outer one's variable,
+    so more than one entry means the environment alone cannot say which
+    session is running this command."""
+    found = []
+    for harness, names in HARNESS_SESSION_VARS:
+        for name in names:
+            if os.environ.get(name):
+                found.append((harness, os.environ[name]))
+                break
+    return found
+
+
 def harness_name():
-    override = os.environ.get("P_FORMAT_HARNESS")
-    if override in HARNESSES:
+    override = harness_override()
+    if override:
         return override
-    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
-        return "claude"
-    if os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_THREAD_ID"):
-        return "codex"
-    return ""
+    visible = visible_sessions()
+    return visible[0][0] if len(visible) == 1 else ""
 
 
 def default_state():
@@ -139,10 +264,23 @@ def default_state():
 
 
 def session_override(session_id):
-    if session_id and os.path.exists(flag_path(session_id, "off")):
-        return "off"
-    if session_id and os.path.exists(flag_path(session_id, "on")):
-        return "on"
+    if not session_id or not private_dir(create=False):
+        return ""
+    for state in ("off", "on"):
+        path = flag_path(session_id, state)
+        try:
+            modified = os.stat(path).st_mtime
+        except OSError:
+            continue
+        # Reading a toggle is use: refresh it (at most daily) so pruning
+        # removes only toggles no session has read for STALE_SECONDS.
+        now = time.time()
+        if now - modified > REFRESH_SECONDS:
+            try:
+                os.utime(path, (now, now))
+            except OSError:
+                pass
+        return state
     return ""
 
 
@@ -154,11 +292,14 @@ def resolve(session_id):
 
 
 def _telemetry_path():
+    """The owned hook-event log under RETRO_HOME, or "" when telemetry is off
+    or RETRO_HOME sits inside a Git checkout (telemetry never enters one).
+    gate() resolves it once per process and passes it to each event."""
     root = os.environ.get("RETRO_HOME")
     if not root:
         return ""
-    root = os.path.abspath(root)
-    current = root
+    resolved_root = os.path.abspath(root)
+    current = resolved_root
     while True:
         if os.path.isdir(os.path.join(current, ".git")):
             return ""
@@ -166,11 +307,10 @@ def _telemetry_path():
         if parent == current:
             break
         current = parent
-    return os.path.join(root, "telemetry", "owned-hook-events.jsonl")
+    return os.path.join(resolved_root, "telemetry", "owned-hook-events.jsonl")
 
 
-def _emit_hook_event(base, event, **values):
-    path = _telemetry_path()
+def _emit_hook_event(path, base, event, **values):
     if not path:
         return
     payload = {**base, "event": event, "observed_at_ns": time.time_ns(), **values}
@@ -187,6 +327,17 @@ def _emit_hook_event(base, event, **values):
         pass
 
 
+def hook_session_id():
+    """The hook input's session id, or None when the input does not carry a
+    usable one. Unusable input follows the configured default."""
+    try:
+        data = json.load(sys.stdin)
+    except (OSError, ValueError, RecursionError):
+        return None
+    sid = data.get("session_id") if isinstance(data, dict) else None
+    return sid if isinstance(sid, str) and sid else None
+
+
 def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
     started = time.perf_counter_ns()
     base = {
@@ -197,17 +348,13 @@ def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
         "trigger_kind": trigger_kind,
         "invocation_id": secrets.token_hex(12),
     }
-    _emit_hook_event(base, "opportunity")
-    _emit_hook_event(base, "start")
-    sid = None
-    try:
-        sid = json.load(sys.stdin).get("session_id")
-    except (json.JSONDecodeError, OSError, ValueError):
-        pass
-    state, _ = resolve(sid)
+    sink = _telemetry_path()
+    _emit_hook_event(sink, base, "opportunity")
+    _emit_hook_event(sink, base, "start")
+    state, _ = resolve(hook_session_id())
     if state == "off":
         _emit_hook_event(
-            base, "end", status="disabled", latency_ms=max(
+            sink, base, "end", status="disabled", latency_ms=max(
                 0, (time.perf_counter_ns() - started) // 1_000_000),
             injected_bytes=0, content_sha256=hashlib.sha256(b"").hexdigest())
         return 0
@@ -218,13 +365,13 @@ def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
     except OSError as e:
         print("format-ctl: cannot read payload: %s" % e, file=sys.stderr)
         _emit_hook_event(
-            base, "end", status="missing_payload", latency_ms=max(
+            sink, base, "end", status="missing_payload", latency_ms=max(
                 0, (time.perf_counter_ns() - started) // 1_000_000),
             injected_bytes=0, content_sha256=hashlib.sha256(b"").hexdigest())
         return 1
     encoded = content.encode("utf-8")
     _emit_hook_event(
-        base, "end", status="ok", latency_ms=max(
+        sink, base, "end", status="ok", latency_ms=max(
             0, (time.perf_counter_ns() - started) // 1_000_000),
         injected_bytes=len(encoded),
         content_sha256=hashlib.sha256(encoded).hexdigest())
@@ -232,11 +379,21 @@ def gate(payload, *, hook_id="", hook_version="", trigger_kind=""):
 
 
 def set_session(state):
-    os.makedirs(FLAG_DIR, exist_ok=True)
-    prune()
     sid = session_from_env()
-    with open(flag_path(sid, state), "w", encoding="utf-8"):
-        pass
+    try:
+        if not private_dir(create=True):
+            print("format-ctl: the toggle directory is not a private directory "
+                  "owned by this user; set P_FORMAT_STATE_DIR to one",
+                  file=sys.stderr)
+            sys.exit(2)
+        prune()
+        path = flag_path(sid, state)
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
+        os.utime(path, None)
+    except OSError as error:
+        print("format-ctl: cannot write the session toggle: %s" % error,
+              file=sys.stderr)
+        sys.exit(2)
     other = "on" if state == "off" else "off"
     try:
         os.unlink(flag_path(sid, other))
@@ -252,7 +409,7 @@ def show_status():
 
 def default_command(args):
     if not args or args == ["show"]:
-        config = read_config()
+        config = editable_config()
         for key, label in [("default", "global")] + [(h, h) for h in HARNESSES]:
             print("%s default: %s" % (label, config.get(key, "(unset)")))
         state, source = default_state()
@@ -260,12 +417,19 @@ def default_command(args):
         return
     action, rest = args[0], args[1:]
     harness = ""
-    if rest[:1] == ["--harness"] and len(rest) == 2 and rest[1] in HARNESSES:
-        harness = rest[1]
+    if rest[:1] == ["--harness"] and len(rest) == 2:
+        candidate = rest[1]
+        if candidate == "agy":
+            candidate = "antigravity"
+        if candidate in HARNESSES:
+            harness = candidate
+        else:
+            print(__doc__, file=sys.stderr)
+            sys.exit(2)
     elif rest:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    config = read_config()
+    config = editable_config()
     scope = ("for " + harness) if harness else "globally"
     if action in STATES:
         config[harness or "default"] = action
@@ -280,16 +444,35 @@ def default_command(args):
         sys.exit(2)
 
 
+def probe_paths(create):
+    """The session probe keeps its trace in the toggle directory, under the
+    same private-directory rule as the toggles."""
+    try:
+        private = private_dir(create=create)
+    except OSError:
+        private = False
+    if not private:
+        print("format-ctl: the per-user state directory is missing, not a real "
+              "directory, or not owned by this user", file=sys.stderr)
+        sys.exit(2)
+    print(FLAG_DIR)
+    print(os.path.join(os.path.dirname(config_path()), "session-probe.armed"))
+
+
 def main():
     args = sys.argv[1:]
+    if args in (["--help"], ["-h"]):
+        print(__doc__)
+        return
+    if args in (["probe-paths"], ["probe-paths", "--create"]):
+        probe_paths(create=len(args) == 2)
+        return
     if args and args[0] == "gate":
-        if len(args) not in {2, 8}:
-            print(__doc__, file=sys.stderr)
-            sys.exit(2)
         options = dict(zip(args[2::2], args[3::2]))
-        if set(options) - {"--hook-id", "--hook-version", "--trigger-kind"}:
+        if len(args) % 2 or set(options) - {
+                "--hook-id", "--hook-version", "--trigger-kind"}:
             print(__doc__, file=sys.stderr)
-            sys.exit(2)
+            sys.exit(1)
         sys.exit(gate(
             args[1], hook_id=options.get("--hook-id", ""),
             hook_version=options.get("--hook-version", ""),

@@ -5,9 +5,17 @@ description: Use for a monthly or periodic review of whether standing instructio
 
 # Auditing workflow rules against behavior
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check auditing-workflow-rules-against-behavior`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/auditing-workflow-rules-against-behavior`; take it from
+this file's own path, never from the working directory or an environment
+variable. `<python>` is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 ## Overview
 
@@ -33,10 +41,11 @@ not acquire new sources automatically.
 
 Antigravity moments are candidate-sampled across sessions of unknown
 main/child population, not friction-ranked or included in main-session rates.
-Its exported steps provide no token accounting, reliable tool-error markers,
-interrupt markers, permission changes, queued prompts, or skill attribution.
-Those fields are unavailable, not measured zeros. The separate evaluation
-adapters in `<plugin-root>/EVALUATION.md` still cover only Claude and Codex.
+Its exported steps do not carry token usage on every step, so token usage is
+not measured; they provide no reliable tool-error markers, interrupt markers,
+permission changes, queued prompts, or skill attribution. Those fields are
+unavailable, not measured zeros. The separate evaluation
+adapters in `<plugin-root>/EVALUATION.md` cover Claude, Codex, and Antigravity.
 
 Report observed sources, main and child populations, exclusions, snapshot or
 window bounds, and unavailable signals before drawing conclusions. Preserve
@@ -48,9 +57,9 @@ separate populations when inclusion rules differ. Use an isolated external
 **1. Measure and list skill firing.**
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" skills --days 30
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 30
+<python> <plugin-root>/bin/retro.py extract
+<python> <plugin-root>/bin/retro.py skills --days 30
+<python> <plugin-root>/bin/retro.py pack --days 30
 ```
 
 `extract` exits 1 when a transcript would not read. It still writes the ledger,

@@ -7,6 +7,7 @@ import csv
 import json
 from pathlib import Path
 
+from .cli import command
 from .annotation import _load_packet_manifest
 from .catalog import load_rubric_catalogue
 from .taxonomy_packets import (AdaptiveSamplingPlan, assess_label_support,
@@ -14,6 +15,7 @@ from .taxonomy_packets import (AdaptiveSamplingPlan, assess_label_support,
 from .private_evidence import collect_private_tool_evidence
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -69,8 +71,13 @@ def main(argv=None):
             args.traces, args.output_dir, size_overrides=overrides,
             round_number=args.round, prior_manifests=args.prior_manifest,
             private_evidence=private_evidence)
+        result["empty_packets"] = sorted(
+            Path(item["source"]).name for item in result["packets"]
+            if not item["population"])
         print(json.dumps(result, sort_keys=True))
-        return 0
+        # An empty packet is written so its fingerprint stays immutable, but
+        # it holds nothing to review: flag it instead of reporting success.
+        return 1 if result["empty_packets"] else 0
 
     plugin_root = Path(__file__).resolve().parents[1]
     catalogue = load_rubric_catalogue(

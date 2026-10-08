@@ -5,9 +5,17 @@ description: Blinded, grounded ensemble review that catches reinvention, over-co
 
 # Adequacy review
 
-Before any other action, resolve the plugin root and run
-`<python> <plugin-root>/bin/skill-profile-ctl check adequacy-review`. If it exits
-1 or 2, stop and report its output.
+Before any other action, run
+`<python> <plugin-root>/bin/skill-profile-ctl check adequacy-review`. If it
+exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute path
+two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/adequacy-review`; take it from this file's own path,
+never from the working directory or an environment variable. `<python>` is `sh
+<plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 The canonical policy is `<skill-root>/contract-v1.json`; the deterministic
 renderer and distiller is `<skill-root>/scripts/adequacy_review.py`. Do not
@@ -23,6 +31,7 @@ restate either in an adapter or improvise their behavior.
 2. Identify the active harness from session context. Read exactly one adapter:
    - Claude Code: `references/claude-code.md`
    - Codex: `references/codex.md`
+   - Antigravity: `references/antigravity.md`
 3. Follow that adapter with the filtered `target`, optional `spec`, inferred
    repository root, every exclusion, and optional reviewer count. The skill
    explicitly authorizes the adapter's native parallel subagent calls.

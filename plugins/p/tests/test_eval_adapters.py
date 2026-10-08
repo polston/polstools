@@ -11,6 +11,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
 from retro_eval.adapters import ClaudeAdapter, CodexAdapter  # noqa: E402
+from retro_eval.adapters.registry import default_registry  # noqa: E402
 from retro_eval.schema import CapabilityState, SpanKind  # noqa: E402
 
 
@@ -228,8 +229,13 @@ class CodexAdapterTests(unittest.TestCase):
         expected = set(json.loads(
             (PLUGIN_ROOT / "profiles" / "capabilities.json").read_text(encoding="utf-8")
         )["capabilities"])
-        self.assertEqual(expected, set(ClaudeAdapter(id_salt=b"local").capabilities))
-        self.assertEqual(expected, set(CodexAdapter(id_salt=b"local").capabilities))
+        registry = default_registry()
+        self.assertEqual({"antigravity", "claude", "codex"},
+                         {registration.name for registration in registry})
+        for registration in registry:
+            with self.subTest(source=registration.name):
+                adapter = registration.create(b"local")
+                self.assertEqual(expected, set(adapter.capabilities))
 
     def test_explicit_session_exclusion_and_handoff_span(self):
         with tempfile.TemporaryDirectory() as tmp:

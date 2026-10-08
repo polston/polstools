@@ -5,9 +5,17 @@ description: Use when asked what has been going wrong in how we work, for a week
 
 # Finding friction in recent sessions
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check finding-friction-in-recent-sessions`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/finding-friction-in-recent-sessions`; take it from this
+file's own path, never from the working directory or an environment variable.
+`<python>` is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 ## Overview
 
@@ -28,10 +36,11 @@ not acquire new sources automatically.
 
 Antigravity moments are candidate-sampled across sessions of unknown
 main/child population, not friction-ranked or included in main-session rates.
-Its exported steps provide no token accounting, reliable tool-error markers,
-interrupt markers, permission changes, queued prompts, or skill attribution.
-Those fields are unavailable, not measured zeros. The separate evaluation
-adapters in `<plugin-root>/EVALUATION.md` still cover only Claude and Codex.
+Its exported steps do not carry token usage on every step, so token usage is
+not measured; they provide no reliable tool-error markers, interrupt markers,
+permission changes, queued prompts, or skill attribution. Those fields are
+unavailable, not measured zeros. The separate evaluation
+adapters in `<plugin-root>/EVALUATION.md` cover Claude, Codex, and Antigravity.
 
 Report observed sources, main and child populations, exclusions, snapshot or
 window bounds, and unavailable signals before drawing conclusions. Preserve
@@ -44,8 +53,8 @@ separate populations when inclusion rules differ. Use an isolated external
 re-read, so a routine run costs a fraction of a first build.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" extract
-"${CLAUDE_PLUGIN_ROOT}/bin/retro.py" pack --days 7 --moments-per-session 3
+<python> <plugin-root>/bin/retro.py extract
+<python> <plugin-root>/bin/retro.py pack --days 7 --moments-per-session 3
 ```
 
 `extract` exits 1 when a transcript would not read. It still writes the ledger,
@@ -117,9 +126,10 @@ reading does not silently promote the rubric into decision support.
 | `permission_mode_changes` | rare by nature — expect long stretches of zero. Any nonzero week is worth a look; do not expect a trend line |
 
 Two of these carry a known measurement caveat. `skill_runs` counts contiguous
-stretches of the same skill being active, which is not the same as the number of
-times it was deliberately invoked, and the field it derives from is absent from
-transcripts written by older CLI versions. `tool_errors` counts records carrying
+stretches of assistant turns attributed to the same skill, which is not the same
+as the number of times it was deliberately invoked, and the field it derives
+from is absent from transcripts written by older CLI versions. For Codex rows
+`skill_runs` counts injected skill messages instead, one per message. `tool_errors` counts records carrying
 a failure marker, which includes failures that were expected and handled. On a
 mixed corpus, `tool_errors`, `queued_prompts`, and `permission_mode_changes` are
 not observable for Codex rows; the pack marks those lines with the observable

@@ -5,9 +5,17 @@ description: Use when checking whether announced work actually ran — a session
 
 # Counting stopped promises
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check counting-stopped-promises`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/counting-stopped-promises`; take it from this file's own
+path, never from the working directory or an environment variable. `<python>`
+is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 ## Overview
 
@@ -31,14 +39,14 @@ events among turn-ending messages is immune to that.
 is written to the repository or to any configuration directory.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/stopped-promises.py" --selftest
+<python> <plugin-root>/bin/stopped-promises.py --selftest
 ```
 
 **2. Measure a closed window.** Both dates, always — the corpus is appended to
 while you read it, so an open window is not reproducible.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/stopped-promises.py" \
+<python> <plugin-root>/bin/stopped-promises.py \
     --since 2026-08-01 --until 2026-08-31 \
     --candidates "$SOMEWHERE_OUTSIDE_ANY_REPO/candidates.txt"
 ```
@@ -51,7 +59,7 @@ a1b2c3d4e5f6 real
 ```
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/stopped-promises.py" \
+<python> <plugin-root>/bin/stopped-promises.py \
     --since 2026-08-01 --until 2026-08-31 \
     --candidates "$SOMEWHERE_OUTSIDE_ANY_REPO/candidates.txt" \
     --verdicts  "$SOMEWHERE_OUTSIDE_ANY_REPO/verdicts.txt"
@@ -96,13 +104,21 @@ The parser measures Claude-format transcripts. Extra roots are supported only
 when their record schema is compatible. Codex and Antigravity directories do
 not become supported by passing `--root`: unknown formats are counted as
 unsupported. A mixed corpus reports partial coverage; no supported transcripts
-in the window is a cannot-run result, never a clean zero.
+in the window is a cannot-run result, never a clean zero. Every run also names
+the Codex and Antigravity history present on the machine that it did not
+measure (`coverage.unmeasured_harness_corpora` in `--json`).
+
+With `--since`, a file last modified more than a day before that date is not
+opened: it cannot hold a record inside the window. The census counts it under
+`files_outside_window` and `files_skipped_by_mtime`.
 
 A value that is empty or only whitespace counts as unset, so a misconfigured
 shell cannot redirect the walk. Both `.jsonl` and `.jsonl.gz` are read. The
-candidates file defaults into the system temporary directory and the tool
-refuses to write it inside a git work tree — it is the only file carrying
-message text, and it carries it redacted.
+candidates file defaults to `stopped-promises-candidates.txt` under
+`RETRO_HOME` (else `~/.retro`), created readable by the owner only, and the
+tool refuses to write it inside a git work tree — it is the only file carrying
+message text, and it carries it redacted. A run that cannot run writes no
+candidates file. The stderr line names the file's path.
 
 Exit codes follow the other scripts here: `0` every candidate has a verdict,
 `1` some are unreviewed or coverage is partial, `2` could not run.

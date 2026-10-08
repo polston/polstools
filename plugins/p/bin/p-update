@@ -1,29 +1,66 @@
 #!/usr/bin/env python3
 """Update p across available harnesses without breaking live Codex sessions.
 
-Codex reinstalls replace its versioned plugin cache. Before that mutation this
-command copies every existing p snapshot to a durable recovery directory and
-restores any removed versions afterward. Sessions already using those paths
-therefore keep their original files; new sessions discover the new version.
+Every harness is queried before anything changes; a harness without p is
+skipped, and an unreadable harness stops the update before any mutation.
+Codex reinstalls replace its versioned plugin cache, so every existing p
+snapshot is first copied to a durable recovery directory and removed versions
+are restored afterward. Antigravity records no install source, so it is
+reinstalled from the copy another harness now loads, or from --agy-source.
 
-Exit: 0 updated and verified, 1 updated but doctor flagged drift, 2 could not
-complete safely.
+Exit: 0 updated and verified, 1 updated but doctor or the statusline sync
+flagged drift, 2 could not complete safely.
 """
 
 from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 
 
 PLUGIN_ID = "p@polstools"
 MARKETPLACE = "polstools"
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+LABELS = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity"}
+PARTIAL_SUFFIX = ".p-update-partial"
+COMMAND_TIMEOUT = 600  # seconds for one harness CLI command
+SNAPSHOT_RETENTION_SECONDS = 30 * 24 * 3600
+
+
+def run_utf8(argv, **kwargs):
+    """Run like subprocess.run, decoding text as strict UTF-8 in this thread.
+
+    On Windows, text-mode capture decodes inside communicate()'s reader
+    threads, where a decode error is printed and dropped and the output comes
+    back as None. Capturing bytes and decoding here raises UnicodeDecodeError
+    to the caller on every platform.
+    """
+    encoding = kwargs.pop("encoding", None)
+    text = kwargs.pop("text", False) or encoding is not None
+    if not text:
+        return subprocess.run(argv, **kwargs)
+    encoding = encoding or "utf-8"
+    if isinstance(kwargs.get("input"), str):
+        kwargs["input"] = kwargs["input"].encode(encoding)
+    completed = subprocess.run(argv, **kwargs)
+    for name in ("stdout", "stderr"):
+        value = getattr(completed, name)
+        if isinstance(value, bytes):
+            value = value.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+            setattr(completed, name, value)
+    return completed
+
+
+RUN = run_utf8  # harness CLI runner; tests substitute a fake harness
 
 
 class UpdateError(RuntimeError):
@@ -36,12 +73,24 @@ def _command_label(argv):
 
 
 def run_checked(argv):
-    completed = subprocess.run(
+    try:
+        return _run_checked(argv)
+    except subprocess.TimeoutExpired as error:
+        raise UpdateError(
+            "%s did not finish within %d seconds" % (_command_label(argv), COMMAND_TIMEOUT)
+        ) from error
+    except UnicodeError as error:
+        raise UpdateError("%s output is not valid UTF-8" % _command_label(argv)) from error
+
+
+def _run_checked(argv):
+    completed = RUN(
         argv,
         text=True,
         encoding="utf-8",
         capture_output=True,
         check=False,
+        timeout=COMMAND_TIMEOUT,
     )
     if completed.returncode != 0:
         raise UpdateError(
@@ -58,15 +107,34 @@ def run_json(executable, args):
         raise UpdateError("%s returned invalid JSON" % _command_label([executable, *args])) from error
 
 
+def load_doctor():
+    """Load the sibling p-doctor so both tools read harness state one way."""
+    path = Path(__file__).resolve().parent / "p-doctor"
+    loader = importlib.machinery.SourceFileLoader("p_doctor_for_update", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _load_activation():
+    """Load lib/skill_activation.py, the rule skill-profile-ctl resolves paths by."""
+    path = PLUGIN_ROOT / "lib" / "skill_activation.py"
+    spec = importlib.util.spec_from_file_location("skill_activation_for_update", str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _installed(payload, harness):
-    items = payload if harness == "claude" else payload.get("installed", [])
+    """Return every p installation a Claude or Codex plugin list reports."""
+    items = payload if harness == "claude" else (
+        payload.get("installed") if isinstance(payload, dict) else None
+    )
     if not isinstance(items, list):
         raise UpdateError("%s plugin list has an unsupported shape" % harness.capitalize())
     key = "id" if harness == "claude" else "pluginId"
-    matches = [item for item in items if isinstance(item, dict) and item.get(key) == PLUGIN_ID]
-    if len(matches) != 1:
-        raise UpdateError("%s must have exactly one p installation" % harness.capitalize())
-    return matches[0]
+    return [item for item in items if isinstance(item, dict) and item.get(key) == PLUGIN_ID]
 
 
 def _codex_marketplace_is_git(payload):
@@ -89,6 +157,24 @@ def codex_cache_root(env=None):
     return home / "plugins" / "cache" / MARKETPLACE / "p"
 
 
+def codex_readd_marker():
+    """Present while Codex has had p removed and not yet had it added back."""
+    return update_state_root() / "codex-readd-pending"
+
+
+def recover_codex(runner, executable="codex"):
+    """Add p back to Codex after an update stopped between remove and add."""
+    marker = codex_readd_marker()
+    try:
+        runner([executable, "plugin", "add", PLUGIN_ID])
+    except UpdateError as error:
+        raise UpdateError(
+            "%s; Codex has no p installed, run `codex plugin add %s` once the "
+            "cause is fixed" % (error, PLUGIN_ID)
+        ) from error
+    marker.unlink(missing_ok=True)
+
+
 def update_state_root(env=None):
     env = os.environ if env is None else env
     override = env.get("P_UPDATE_STATE_DIR")
@@ -98,6 +184,25 @@ def update_state_root(env=None):
     return home / "p-update"
 
 
+def _snapshots(root):
+    """Complete version directories; staging copies are never snapshots."""
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    for stale in root.glob("*" + PARTIAL_SUFFIX):
+        shutil.rmtree(stale, ignore_errors=True)
+    return sorted(path for path in root.iterdir() if path.is_dir())
+
+
+def _atomic_copytree(source, target):
+    """Copy source to target so target is either absent or complete."""
+    staging = target.with_name(target.name + PARTIAL_SUFFIX)
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(source, staging, symlinks=True)
+    os.replace(staging, target)
+
+
 def reconcile_cache_versions(cache_root, backup_root):
     cache_root = Path(cache_root)
     backup_root = Path(backup_root)
@@ -105,10 +210,11 @@ def reconcile_cache_versions(cache_root, backup_root):
     if not backup_root.is_dir():
         return restored
     cache_root.mkdir(parents=True, exist_ok=True)
-    for source in sorted(path for path in backup_root.iterdir() if path.is_dir()):
+    _snapshots(cache_root)
+    for source in _snapshots(backup_root):
         target = cache_root / source.name
         if not target.exists():
-            shutil.copytree(source, target, symlinks=True)
+            _atomic_copytree(source, target)
             restored.append(source.name)
     return restored
 
@@ -119,14 +225,46 @@ def preserve_cache_versions(cache_root, backup_root):
     backup_root = Path(backup_root)
     reconcile_cache_versions(cache_root, backup_root)
     backup_root.mkdir(parents=True, exist_ok=True)
-    for source in sorted(path for path in cache_root.iterdir() if path.is_dir()):
+    for source in _snapshots(cache_root):
         target = backup_root / source.name
         if not target.exists():
-            shutil.copytree(source, target, symlinks=True)
+            _atomic_copytree(source, target)
     try:
         yield
     finally:
         reconcile_cache_versions(cache_root, backup_root)
+
+
+def prune_superseded_snapshots(cache_root, backup_root, keep, now=None):
+    """Delete snapshots superseded longer ago than the retention window.
+
+    A version is first recorded as superseded when an update finds it is no
+    longer installed; it is removed from the cache and the recovery directory
+    once that record is older than SNAPSHOT_RETENTION_SECONDS. Versions in
+    keep are never removed. Returns the pruned version names.
+    """
+    now = time.time() if now is None else now
+    cache_root, backup_root = Path(cache_root), Path(backup_root)
+    ledger_path = backup_root / "superseded.json"
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        ledger = {}
+    if not isinstance(ledger, dict):
+        ledger = {}
+    present = {path.name for root in (cache_root, backup_root) for path in _snapshots(root)}
+    ledger = {name: when for name, when in ledger.items() if name in present and name not in keep}
+    pruned = []
+    for name in sorted(present - set(keep)):
+        first_seen = ledger.setdefault(name, now)
+        if now - first_seen >= SNAPSHOT_RETENTION_SECONDS:
+            for root in (cache_root, backup_root):
+                shutil.rmtree(root / name, ignore_errors=True)
+            ledger.pop(name)
+            pruned.append(name)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return pruned
 
 
 def update_codex(
@@ -140,6 +278,8 @@ def update_codex(
     cache_root = Path(cache_root)
     backup_root = Path(backup_root or (update_state_root() / "cache-snapshots"))
     reconcile_cache_versions(cache_root, backup_root)
+    if not installed_version:
+        raise UpdateError("Codex does not report p's installed version; refusing removal")
     snapshot = cache_root / installed_version
     if not snapshot.is_dir():
         raise UpdateError(
@@ -149,8 +289,18 @@ def update_codex(
     with preserve_cache_versions(cache_root, backup_root):
         if refresh_marketplace:
             runner([executable, "plugin", "marketplace", "upgrade", MARKETPLACE])
+        marker = codex_readd_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("pending\n", encoding="utf-8")
         runner([executable, "plugin", "remove", PLUGIN_ID])
-        runner([executable, "plugin", "add", PLUGIN_ID])
+        try:
+            runner([executable, "plugin", "add", PLUGIN_ID])
+            marker.unlink(missing_ok=True)
+        except UpdateError as error:
+            raise UpdateError(
+                "%s after p was removed, so Codex has no p installed now; "
+                "run `codex plugin add %s` once the cause is fixed" % (error, PLUGIN_ID)
+            ) from error
 
 
 def update_claude(runner, scope, executable="claude"):
@@ -158,132 +308,304 @@ def update_claude(runner, scope, executable="claude"):
     runner([executable, "plugin", "update", PLUGIN_ID, "--scope", safe_scope])
 
 
-def _find_executable(name):
-    override = os.environ.get("P_UPDATE_" + name.upper())
-    if override:
-        return override if Path(override).is_file() else None
-    found = shutil.which(name)
-    if found:
-        return found
-    if os.name != "nt":
-        candidate = Path.home() / ".local" / "bin" / name
-        return str(candidate) if candidate.is_file() else None
-    return None
+def update_agy(runner, source, executable="agy"):
+    runner([executable, "plugin", "install", str(source)])
 
 
-def update_agy(runner, plugin_root, executable="agy"):
-    runner([executable, "plugin", "install", str(plugin_root)])
+def _plugin_root_of(harness, item, doctor):
+    """The directory a harness loads p from; the doctor's rule for Codex's cache."""
+    if harness == "claude":
+        root = item.get("installPath")
+    elif harness == "codex":
+        root = doctor.codex_installed_root(item)
+    else:
+        root = item.get("root")
+    return Path(root) if root and (Path(root) / "bin" / "p-doctor").is_file() else None
 
 
-def _agy_has_p(executable):
-    try:
-        completed = subprocess.run(
-            [executable, "plugin", "list"],
-            text=True, encoding="utf-8", capture_output=True, check=False,
-        )
-        out = completed.stdout.strip()
-        if not out or out == "No imported plugins.":
-            return False
-        data = json.loads(out)
-        imports = data.get("imports") or []
-        return any(isinstance(x, dict) and x.get("name") == "p" for x in imports)
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
-        return False
+def _agy_installed(doctor, executable):
+    plugins = doctor.normalize_agy_plugins(doctor.query_agy(executable, RUN))
+    return [item for item in plugins if item.get("id") == PLUGIN_ID]
 
 
-def _new_doctor_root(claude_item, codex_item):
-    if claude_item:
-        root = claude_item.get("installPath")
-        if root and (Path(root) / "bin" / "p-doctor").is_file():
-            return Path(root)
-    if codex_item:
-        source = codex_item.get("source")
-        root = source.get("path") if isinstance(source, dict) else None
-        if root and (Path(root) / "bin" / "p-doctor").is_file():
-            return Path(root)
-    raise UpdateError("updated p doctor could not be located")
+def survey(doctor, executables):
+    """Read every available harness; return (state, errors) without mutating."""
+    state, errors = {}, []
+    for harness, executable in executables.items():
+        if not executable:
+            continue
+        try:
+            if harness == "agy":
+                items = _agy_installed(doctor, executable)
+                extra = None
+            else:
+                items = _installed(run_json(executable, ["plugin", "list", "--json"]), harness)
+                extra = None
+                if harness == "codex" and items:
+                    extra = _codex_marketplace_is_git(
+                        run_json(executable, ["plugin", "marketplace", "list", "--json"])
+                    )
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            errors.append("%s could not be read: %s" % (LABELS[harness], error))
+            continue
+        if harness != "claude" and len(items) > 1:
+            errors.append("%s reports %d p installations" % (LABELS[harness], len(items)))
+            continue
+        state[harness] = {"executable": executable, "items": items, "extra": extra}
+    return state, errors
 
 
-def _verify_versions(claude, codex):
-    installed = []
-    if claude:
-        installed.append(_installed(run_json(claude, ["plugin", "list", "--json"]), "claude"))
-    if codex:
-        installed.append(_installed(run_json(codex, ["plugin", "list", "--json"]), "codex"))
-    versions = {str(item.get("version") or "") for item in installed}
-    if len(versions) != 1 or "" in versions:
-        raise UpdateError("Claude and Codex did not converge on one p version")
-    return next(iter(versions))
+def _versions(doctor, state):
+    """Return {harness: version} for every harness that has p after the update."""
+    versions = {}
+    for harness, entry in state.items():
+        executable = entry["executable"]
+        if harness == "agy":
+            items = _agy_installed(doctor, executable)
+        else:
+            items = _installed(run_json(executable, ["plugin", "list", "--json"]), harness)
+        entry["items"] = items
+        for item in items:
+            versions.setdefault(harness, set()).add(str(item.get("version") or ""))
+    return versions
 
 
-def run_doctor(plugin_root, runner=subprocess.run, stream=None):
+def run_doctor(plugin_root, runner=run_utf8, stream=None):
     stream = sys.stdout if stream is None else stream
-    completed = runner(
-        [sys.executable, str(Path(plugin_root) / "bin" / "p-doctor")],
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-        check=False,
-    )
+    try:
+        completed = runner(
+            [sys.executable, str(Path(plugin_root) / "bin" / "p-doctor")],
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+    except UnicodeError:
+        return 2
     if completed.stdout:
         stream.write(completed.stdout)
     return completed.returncode if completed.returncode in {0, 1, 2} else 2
 
 
+def sync_status_indicator(plugin_root, runner=run_utf8):
+    """Refresh p's Claude status indicator from the updated copy.
+
+    Returns 0 synchronized, 1 not managed by p (nothing to refresh), 2 failed.
+    """
+    try:
+        completed = runner(
+            [sys.executable, "-B", str(Path(plugin_root) / "bin" / "statusline-ctl"), "profile-sync"],
+            text=True, encoding="utf-8", capture_output=True, check=False,
+        )
+    except (OSError, UnicodeError):
+        return 2
+    return completed.returncode if completed.returncode in {0, 1} else 2
+
+
+NATIVE_REGION_BEGIN = "# p-skill-activation begin"
+
+
+def native_region_present(env=None):
+    """True when Codex config holds p's skill-activation region.
+
+    That region lists exact skill paths inside one cached p version, so it must
+    be regenerated from the updated copy. The path rule matches the one
+    skill-profile-ctl uses.
+    """
+    env = os.environ if env is None else env
+    path = _load_activation().codex_config_path(env)
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return False
+    return any(line.rstrip() == NATIVE_REGION_BEGIN for line in text.splitlines())
+
+
+def resync_native(plugin_root, runner=run_utf8):
+    """Run skill-profile-ctl sync-native from plugin_root; return its exit code."""
+    try:
+        completed = runner(
+            [sys.executable, "-B", str(Path(plugin_root) / "bin" / "skill-profile-ctl"), "sync-native"],
+            text=True, encoding="utf-8", capture_output=True, check=False,
+        )
+    except (OSError, UnicodeError):
+        return 2
+    return completed.returncode
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
-    claude = _find_executable("claude")
-    codex = _find_executable("codex")
-    agy = _find_executable("agy")
-    if not claude and not codex and not agy:
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="read every harness and print the planned commands without running them",
+    )
+    parser.add_argument(
+        "--agy-source", type=Path,
+        help="plugin directory to reinstall Antigravity from when no other harness has p",
+    )
+    args = parser.parse_args(argv)
+    try:
+        doctor = load_doctor()
+        executables = {
+            name: doctor._find_executable(name, "P_UPDATE_") for name in ("claude", "codex", "agy")
+        }
+    except (OSError, ImportError, SyntaxError) as error:
+        print("p update: p doctor could not be loaded: %s" % type(error).__name__, file=sys.stderr)
+        return 2
+    if not any(executables.values()):
         print("p update: no supported harness CLI is available", file=sys.stderr)
         return 2
+    try:
+        state, errors = survey(doctor, executables)
+    except (OSError, ImportError, SyntaxError) as error:
+        print("p update: p doctor could not be loaded: %s" % type(error).__name__, file=sys.stderr)
+        return 2
+    pending_readd = (
+        "codex" in state and not state["codex"]["items"] and codex_readd_marker().is_file()
+    )
+    if pending_readd and not errors and not args.dry_run:
+        try:
+            recover_codex(run_checked, state["codex"]["executable"])
+        except (OSError, ValueError, RuntimeError) as error:
+            print("p update: %s" % error, file=sys.stderr)
+            return 2
+        print("PASS Codex p added back after an interrupted update")
+        del state["codex"]
+    elif "codex" in state and state["codex"]["items"]:
+        codex_readd_marker().unlink(missing_ok=True)
+    if args.agy_source and not (args.agy_source / "plugin.json").is_file():
+        errors.append("--agy-source is not a p plugin directory")
+    with_p = [harness for harness, entry in state.items() if entry["items"]]
+    if "agy" in with_p and not args.agy_source and not {"claude", "codex"} & set(with_p):
+        errors.append(
+            "Antigravity does not record where p was installed from; "
+            "rerun with --agy-source <plugin directory>"
+        )
+    if not with_p and not errors and not pending_readd:
+        errors.append("no available harness has p installed")
+    if errors:
+        for error in errors:
+            print("p update: " + error, file=sys.stderr)
+        print("p update: nothing was changed", file=sys.stderr)
+        return 2
+
+    if pending_readd and not args.dry_run and not with_p:
+        print("PASS p added back to Codex; run `p-doctor` and start new sessions")
+        return 0
+    if args.dry_run and pending_readd:
+        print("PLAN codex plugin add %s, because an earlier update removed it" % PLUGIN_ID)
+    for harness in sorted(set(state) - set(with_p)):
+        print("SKIP %s does not have p installed" % LABELS[harness])
+    if args.dry_run:
+        for harness in ("claude", "codex", "agy"):
+            entry = state.get(harness)
+            if not entry or not entry["items"]:
+                continue
+            if harness == "claude":
+                for scope in sorted({item.get("scope", "user") for item in entry["items"]}):
+                    print("PLAN claude plugin update %s --scope %s" % (PLUGIN_ID, scope))
+            elif harness == "codex":
+                if entry["extra"]:
+                    print("PLAN codex plugin marketplace upgrade %s" % MARKETPLACE)
+                print("PLAN codex plugin remove %s, then add it, preserving cache snapshots" % PLUGIN_ID)
+            else:
+                origin = "--agy-source" if args.agy_source else "the updated Claude or Codex copy"
+                print("PLAN agy plugin install from %s" % origin)
+        if "claude" in with_p:
+            print("PLAN statusline-ctl profile-sync from the updated copy")
+        if native_region_present():
+            print("PLAN skill-profile-ctl sync-native from the updated copy")
+        return 0
 
     try:
-        claude_item = None
-        codex_item = None
-        if claude:
-            claude_item = _installed(
-                run_json(claude, ["plugin", "list", "--json"]), "claude"
-            )
-            update_claude(run_checked, claude_item.get("scope", "user"), claude)
+        if "claude" in with_p:
+            entry = state["claude"]
+            for scope in sorted({item.get("scope", "user") for item in entry["items"]}):
+                update_claude(run_checked, scope, entry["executable"])
             print("PASS Claude p update")
-
-        if codex:
-            codex_item = _installed(
-                run_json(codex, ["plugin", "list", "--json"]), "codex"
-            )
-            marketplaces = run_json(codex, ["plugin", "marketplace", "list", "--json"])
+        if "codex" in with_p:
+            entry = state["codex"]
+            cache_root = codex_cache_root()
+            backup_root = update_state_root() / "cache-snapshots"
             update_codex(
                 run_checked,
-                codex_cache_root(),
-                str(codex_item.get("version") or ""),
-                _codex_marketplace_is_git(marketplaces),
-                codex,
+                cache_root,
+                str(entry["items"][0].get("version") or ""),
+                entry["extra"],
+                entry["executable"],
+                backup_root,
             )
             print("PASS Codex p update with live-session cache preservation")
-
-        if agy and _agy_has_p(agy):
-            update_agy(run_checked, Path(__file__).resolve().parent.parent, agy)
+        if "agy" in with_p:
+            source = args.agy_source
+            if source is None:
+                _versions(doctor, {h: state[h] for h in ("claude", "codex") if h in with_p})
+                source = next(
+                    (root for harness in ("claude", "codex") if harness in with_p
+                     for root in [_plugin_root_of(harness, state[harness]["items"][0], doctor)]
+                     if root is not None),
+                    None,
+                )
+                if source is None:
+                    raise UpdateError("no updated Claude or Codex copy to install Antigravity from")
+            update_agy(run_checked, source, state["agy"]["executable"])
             print("PASS Antigravity p update")
 
-        version = _verify_versions(claude, codex)
-        current_claude = (
-            _installed(run_json(claude, ["plugin", "list", "--json"]), "claude")
-            if claude else None
+        versions = _versions(doctor, {h: state[h] for h in with_p})
+        missing = sorted(set(with_p) - set(versions))
+        if missing:
+            raise UpdateError(
+                "p is no longer installed in: %s" % ", ".join(LABELS[h] for h in missing)
+            )
+        found = set().union(*versions.values())
+        if len(found) != 1 or "" in found:
+            detail = ", ".join(
+                "%s (%s)" % (LABELS[h], "/".join(sorted(v)) or "unknown")
+                for h, v in sorted(versions.items())
+            )
+            raise UpdateError("installed harnesses did not converge on one p version: " + detail)
+        version = next(iter(found))
+        if "codex" in with_p:
+            pruned = prune_superseded_snapshots(
+                codex_cache_root(), update_state_root() / "cache-snapshots", {version}
+            )
+            if pruned:
+                print("PASS pruned Codex snapshots superseded over 30 days ago: " + ", ".join(pruned))
+        new_root = next(
+            (root for harness in ("claude", "codex", "agy") if harness in with_p
+             for root in [_plugin_root_of(harness, state[harness]["items"][0], doctor)]
+             if root is not None),
+            None,
         )
-        current_codex = (
-            _installed(run_json(codex, ["plugin", "list", "--json"]), "codex")
-            if codex else None
-        )
-        doctor_root = _new_doctor_root(current_claude, current_codex)
-        doctor_code = run_doctor(doctor_root)
-        if doctor_code:
-            return doctor_code
+        if new_root is None:
+            raise UpdateError("updated p doctor could not be located")
+        sync_code = 0
+        if "claude" in with_p:
+            sync_code = sync_status_indicator(new_root)
+            if sync_code == 0:
+                print("PASS status indicator synchronized from the updated copy")
+            elif sync_code == 1:
+                print("SKIP status indicator: p does not manage the Claude statusline")
+                sync_code = 0
+            else:
+                print("FAIL status indicator could not be synchronized; run the statusline-check skill")
+                sync_code = 1
+        if native_region_present():
+            codex_root = (
+                _plugin_root_of("codex", state["codex"]["items"][0], doctor) if "codex" in with_p else None
+            )
+            if resync_native(codex_root or new_root) == 0:
+                print("PASS Codex skill-activation entries regenerated from the updated copy")
+            else:
+                print("FAIL Codex skill-activation entries could not be regenerated; "
+                      "run skill-profile-ctl sync-native")
+                sync_code = 1
+        doctor_code = run_doctor(new_root)
+        if doctor_code or sync_code:
+            return max(doctor_code, sync_code)
         print("PASS p update verified at %s; start new sessions to load it" % version)
         return 0
-    except (OSError, UpdateError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         print("p update: %s" % error, file=sys.stderr)
         return 2
 

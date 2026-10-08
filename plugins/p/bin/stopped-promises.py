@@ -30,9 +30,16 @@ import os
 import re
 import sys
 import tempfile
+import time
 from collections import namedtuple
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+from retro_eval.text_rules import strip_controls  # noqa: E402
 
 SELFTESTS = []
 
@@ -91,6 +98,24 @@ def usable_roots(roots):
         else:
             good.append(root)
     return good, complaints
+
+
+def other_harness_corpora():
+    """Codex and Antigravity session directories present on this machine.
+
+    Their formats are not read here (docs/plans/2026-09-07-workflow-
+    improvement-goals.md, Goal 1: honest coverage does not require a new
+    adapter). Naming the ones that exist keeps a Claude-only run from reading
+    as the machine's whole history. Resolved as the sibling resolves them.
+    """
+    codex = (os.environ.get("CODEX_HOME") or "").strip()
+    agy = (os.environ.get("RETRO_ANTIGRAVITY_HOME") or "").strip()
+    dirs = (("codex", (Path(codex).expanduser() if codex
+                       else Path.home() / ".codex") / "sessions"),
+            ("antigravity", (Path(agy).expanduser() if agy
+                             else Path.home() / ".gemini" / "antigravity-cli")
+             / "brain"))
+    return [name for name, directory in dirs if directory.is_dir()]
 
 
 def walk_transcripts(roots):
@@ -221,6 +246,7 @@ def redact(text):
     """
     if not text:
         return ""
+    text = strip_controls(text)
     for pattern, replacement in _redaction_patterns():
         text = pattern.sub(replacement, text)
     return text
@@ -639,7 +665,27 @@ def score(candidates, verdicts, turn_ends_total):
 # --- Reporting -------------------------------------------------------------
 
 def default_candidates_path():
-    return Path(tempfile.gettempdir()) / "stopped-promises-candidates.txt"
+    """The operator's private work directory, the one the sibling uses for
+    every file that quotes a conversation: RETRO_HOME, else ~/.retro. Never
+    the system temp directory, which is shared on a multi-user machine and
+    whose path the redactor cannot render in a form anyone could open."""
+    work = (os.environ.get("RETRO_HOME") or "").strip()
+    base = Path(work).expanduser() if work else Path.home() / ".retro"
+    return base / "stopped-promises-candidates.txt"
+
+
+def display_path(path):
+    """A path the operator can open, with only the home prefix collapsed.
+
+    redact() turns any absolute path outside home into "<path>", which made the
+    one line saying where the message text went useless. Every path printed
+    here is one the operator chose (an argument or RETRO_HOME), so the account
+    name inside home is the only part worth hiding.
+    """
+    text, home = str(path), str(Path.home())
+    if text == home or text.startswith(home + os.sep):
+        return "~" + text[len(home):]
+    return text
 
 
 def refuse_if_in_repo(path):
@@ -653,6 +699,8 @@ def refuse_if_in_repo(path):
 
 
 def write_candidates(path, candidates, meta):
+    """Owner-only: the file quotes the operator's conversations."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     lines = [
         "# stopped-promise candidates - UNVERIFIED",
         "#",
@@ -667,7 +715,10 @@ def write_candidates(path, candidates, meta):
     ]
     for candidate in candidates:
         lines.append(f"{candidate.id}  {(candidate.timestamp or '')[:10]}  ...{candidate.tail}")
-    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(path, 0o600)   # O_CREAT's mode does not apply to an existing file
 
 
 def _session_in_window(records, since, until):
@@ -691,6 +742,48 @@ def _session_in_window(records, since, until):
     return True, first, last
 
 
+# --- Progress and the mtime prefilter --------------------------------------
+# Duplicated from the sibling rather than imported, for the reason recorded
+# in docs/plans/2026-08-19-stopped-promises.md ("Not importing the sibling
+# script"). Keep the two in step.
+
+# Read at call time, so a test can substitute a clock that moves faster.
+progress_clock = time.monotonic
+
+
+class Progress:
+    """A stderr line every `every` seconds once the walk has run past `after`
+    seconds. Stderr only, so --json stdout stays one parseable document;
+    whole lines, because an agent reads the stream as text."""
+
+    def __init__(self, label, total, after=3.0, every=5.0):
+        self.label, self.total, self.every = label, total, every
+        self.next = progress_clock() + after
+
+    def step(self, done):
+        now = progress_clock()
+        if now >= self.next:
+            print(f"{self.label}: scanned {done}/{self.total} files",
+                  file=sys.stderr, flush=True)
+            self.next = now + self.every
+
+
+# A file last modified before --since cannot hold a record dated inside the
+# window: a record's timestamp is taken when it is appended, and appending
+# moves the mtime to at least that moment. One day of slack absorbs clock
+# skew between writer and filesystem. Such a file is outside the window
+# exactly as a full read would have found it.
+MTIME_SLACK_SECONDS = 86400.0
+
+
+def _mtime_floor(since):
+    try:
+        start = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return start.timestamp() - MTIME_SLACK_SECONDS
+
+
 # The walk is serial on purpose, and this is measured rather than assumed:
 # a thread pool over this script took the same corpus from 3.99 s to 5.35 s,
 # 34% SLOWER. json.loads is 93% of the run and holds the GIL, so workers only
@@ -699,14 +792,27 @@ def _session_in_window(records, since, until):
 def collect(roots, since, until):
     census = {"roots": len(roots), "files_seen": 0, "files_unreadable": 0,
               "files_empty": 0, "files_outside_window": 0, "files_measured": 0,
-              "files_unsupported": 0,
+              "files_unsupported": 0, "files_skipped_by_mtime": 0,
               "files_unknown_window": 0, "files_without_eligible_turn_ends": 0,
               "sidechain_records_excluded": 0, "sdk_records_excluded": 0,
               "sessions": set(), "first_day": None, "last_day": None,
               "active_days": set()}
     candidates, totals, seen = [], new_counts(), set()
-    for _, path in walk_transcripts(roots):
+    paths = walk_transcripts(roots)
+    floor = _mtime_floor(since) if since else None
+    progress = Progress("stopped-promises", len(paths))
+    for done, (_, path) in enumerate(paths, 1):
+        progress.step(done)
         census["files_seen"] += 1
+        if floor is not None:
+            try:
+                before_window = path.stat().st_mtime < floor
+            except OSError:
+                before_window = False   # read_transcript reports it
+            if before_window:
+                census["files_skipped_by_mtime"] += 1
+                census["files_outside_window"] += 1
+                continue
         records, status = read_transcript(path)
         if status == "unreadable":
             census["files_unreadable"] += 1
@@ -784,19 +890,13 @@ def main(argv=None):
     window = f"{args.since or 'start'}..{args.until or 'now'}"
     path = Path(args.candidates) if args.candidates else default_candidates_path()
     refuse_if_in_repo(path)
-    try:
-        write_candidates(path, candidates, {"classifier": _classifier_version(),
-                                            "window": window})
-    except OSError as exc:
-        print(f"cannot write candidates file: {type(exc).__name__}", file=sys.stderr)
-        return EXIT_CANNOT_RUN
-    print(f"candidates written to {redact(str(path))}", file=sys.stderr)
 
     payload = {"classifier": _classifier_version(), "window": window,
                "census": report["census"], "counts": report["counts"],
                "candidates": len(candidates),
                "coverage": {"supported_format": "claude",
-                            "unsupported_formats": "excluded; not measured as zero"}}
+                            "unsupported_formats": "excluded; not measured as zero",
+                            "unmeasured_harness_corpora": other_harness_corpora()}}
 
     status = EXIT_FLAGGED if candidates else EXIT_CLEAN
     if args.verdicts:
@@ -813,23 +913,37 @@ def main(argv=None):
 
     census = report["census"]
     if not report["counts"]["ended_by_speaker"]:
+        # Nothing was measured, so nothing is written: a file of zero
+        # candidates beside an exit 2 reads as a result.
         status = EXIT_CANNOT_RUN
         payload["coverage"]["status"] = "cannot_run"
         print("no eligible main-thread turn ends in the selected window", file=sys.stderr)
-    elif (census["files_unsupported"] or census["files_unreadable"]
-          or census["files_unknown_window"] or complaints):
-        status = EXIT_FLAGGED
-        payload["coverage"]["status"] = "partial"
-        print("partial coverage: unsupported, unreadable, or unscoped inputs were excluded",
-              file=sys.stderr)
     else:
-        payload["coverage"]["status"] = "supported"
+        try:
+            write_candidates(path, candidates, {"classifier": _classifier_version(),
+                                                "window": window})
+        except OSError as exc:
+            print(f"cannot write candidates file: {type(exc).__name__}", file=sys.stderr)
+            return EXIT_CANNOT_RUN
+        print(f"candidates written to {display_path(path)}", file=sys.stderr)
+        if (census["files_unsupported"] or census["files_unreadable"]
+                or census["files_unknown_window"] or complaints):
+            status = EXIT_FLAGGED
+            payload["coverage"]["status"] = "partial"
+            print("partial coverage: unsupported, unreadable, or unscoped inputs "
+                  "were excluded", file=sys.stderr)
+        else:
+            payload["coverage"]["status"] = "supported"
 
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         print(f"classifier {_classifier_version()}   window {window}")
         print(f"  source: Claude; coverage: {payload['coverage']['status']}")
+        unmeasured = payload["coverage"]["unmeasured_harness_corpora"]
+        if unmeasured:
+            print(f"  not measured: {', '.join(unmeasured)} history is present "
+                  f"on this machine in a format this tool does not read")
         print("  -- census (structural, quotable) --")
         for key, value in report["census"].items():
             print(f"    {key:22s} {value}")
@@ -967,9 +1081,15 @@ def test_redaction_leaves_the_rest_of_the_sentence_alone(tmp):
     silently emptied every candidate tail containing a path."""
     probe = "I will run it on " + "D:" + "/data" + " now and report the counts."
     out = redact(probe)
-    assert out.startswith("I will run it on "), out
-    assert out.endswith(" now and report the counts."), f"sentence tail eaten: {out}"
-    assert "data" not in out, f"path survived: {out}"
+    # The account-name rule may legitimately rewrite any ordinary word of the
+    # sentence when the home directory is named after it, so the expectation is
+    # the path-only redaction run through that same last rule.
+    expected = "I will run it on <path> now and report the counts."
+    account = Path.home().name
+    if len(account) > 2:
+        expected = re.sub(r"\b" + re.escape(account) + r"\b", "<user>", expected,
+                          flags=re.I)
+    assert out == expected, f"sentence not preserved around the path: {out}"
 
 
 @selftest_case
@@ -1234,7 +1354,11 @@ def test_candidate_tail_is_redacted(tmp):
     text = "Done at " + str(Path.home()) + ". I'll run the tests now."
     msg = Message("s", "m1", text, False, [], "t")
     found, _ = find_candidates([TurnEnd(msg, "prompt", False, "s")])
-    assert Path.home().name.lower() not in found[0].tail.lower()
+    tail = found[0].tail
+    # The whole home path, not its basename: a short or common basename
+    # ("h", "run") is a substring of ordinary text.
+    assert str(Path.home()) not in tail, tail
+    assert "~" in tail, tail
 
 
 @selftest_case

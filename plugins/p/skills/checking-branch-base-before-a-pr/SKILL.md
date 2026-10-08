@@ -5,9 +5,17 @@ description: Use before cutting a branch that will become a pull request, and ag
 
 # Checking a branch's base before a PR
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check checking-branch-base-before-a-pr`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/checking-branch-base-before-a-pr`; take it from this
+file's own path, never from the working directory or an environment variable.
+`<python>` is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 ## Overview
 
@@ -20,7 +28,22 @@ the remote history ends up mislabeled.
 
 ## The check
 
-Two numbers, before branching and again before opening or merging:
+Two numbers, before branching and again before opening or merging. The script
+fetches, finds the base, and counts both:
+
+```sh
+sh <plugin-root>/bin/branch-base-check -C <repo> [-b <base>] [-r <remote>]
+```
+
+Exit 0 is in sync. Exit 1 is ahead, behind, or a base that was never pushed.
+Exit 2 means it could not compare: an unusable argument, several remotes and
+none named `origin` (pass `-r`), or a fetch that failed -- comparing against
+refs that a failed fetch left behind can report "in sync" while the remote has
+moved. `-n` skips the fetch and says the comparison is against the refs as last
+fetched. The base defaults to the remote's HEAD, asked of the remote when the
+clone never recorded it, then `main`, then `master`.
+
+By hand, the same two numbers:
 
 ```bash
 git fetch origin
@@ -72,4 +95,4 @@ the first time you commit locally without pushing.
 - "I'll check when I open the PR"
 - "The diff looks big but that's probably the formatter"
 
-All of these mean: run the two counts.
+All of these mean: run the check.

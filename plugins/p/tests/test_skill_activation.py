@@ -111,6 +111,31 @@ class ActivationPolicyTests(unittest.TestCase):
             names = [path.name for path in (root / "sessions").iterdir()]
             self.assertFalse(any("session-private-marker" in name for name in names))
 
+    def test_nested_harness_sessions_fail_closed_until_one_is_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env(root, session="inner-codex")
+            env["CLAUDE_CODE_SESSION_ID"] = "outer-claude"
+            with self.assertRaises(self.activation.PolicyError):
+                self.activation.set_profile(self.manifest, "work", "session", env=env)
+            self.assertFalse((root / "sessions").exists())
+            with self.assertRaises(self.activation.PolicyError):
+                self.activation.resolve(self.manifest, env=env)
+            env["P_SKILL_HARNESS"] = "codex"
+            self.activation.set_profile(self.manifest, "work", "session", env=env)
+            self.assertEqual(self.activation.resolve(self.manifest, env=env)["profile"], "work")
+            outer = dict(env, P_SKILL_HARNESS="claude")
+            self.assertEqual(self.activation.resolve(self.manifest, env=outer)["profile"], "home")
+
+    def test_the_harness_override_accepts_agy_for_antigravity(self):
+        env = {"CLAUDE_CODE_SESSION_ID": "outer-claude",
+               "ANTIGRAVITY_CONVERSATION_ID": "inner-agy"}
+        with self.assertRaises(self.activation.PolicyError):
+            self.activation.session_id_from_env(env)
+        for name in ("agy", "antigravity"):
+            self.assertEqual(self.activation.session_id_from_env(
+                dict(env, P_SKILL_HARNESS=name)), "inner-agy")
+
     def test_overrides_enable_disable_and_cannot_change_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = self.env(Path(tmp))
@@ -301,6 +326,54 @@ class NativeAdapterTests(unittest.TestCase):
         self.assertEqual(restored, original)
 
 
+class NativeSyncFileTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.activation = load_activation()
+        cls.manifest = cls.activation.load_manifest(MANIFEST_PATH)
+
+    def sync(self, root, config, profile):
+        env = {
+            "P_SKILL_CONFIG_FILE": str(root / "global.json"),
+            "P_SKILL_STATE_DIR": str(root / "sessions"),
+            "P_CODEX_CONFIG_FILE": str(config),
+        }
+        self.activation.set_profile(self.manifest, profile, "global", env=env)
+        return self.activation.sync_native(self.manifest, PLUGIN_ROOT, env=env)
+
+    def test_sync_writes_through_a_symlinked_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "dotfiles").mkdir()
+            real = root / "dotfiles" / "config.toml"
+            real.write_text('model = "example"\n', encoding="utf-8")
+            link = root / "config.toml"
+            try:
+                link.symlink_to(real)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks are unavailable")
+            self.assertTrue(self.sync(root, link, "work"))
+            self.assertTrue(link.is_symlink())
+            self.assertIn(self.activation.NATIVE_BEGIN, real.read_text("utf-8"))
+
+    def test_sync_round_trip_preserves_crlf_and_bom_bytes(self):
+        for original in (
+            b'[tui]\r\nstatus_line = ["model"]\r\n',
+            b'\xef\xbb\xbf[tui]\nstatus_line = ["model"]\n',
+        ):
+            with self.subTest(original=original), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config = root / "config.toml"
+                config.write_bytes(original)
+                self.assertTrue(self.sync(root, config, "work"))
+                synced = config.read_bytes()
+                self.assertTrue(synced.startswith(original))
+                if b"\r\n" in original:
+                    self.assertNotIn(b"\n", synced.replace(b"\r\n", b""))
+                self.assertTrue(self.sync(root, config, "home"))
+                self.assertEqual(config.read_bytes(), original)
+
+
 class ActivationCliTests(unittest.TestCase):
     def env(self, root, session="session-a"):
         env = dict(os.environ)
@@ -377,7 +450,10 @@ class ActivationCliTests(unittest.TestCase):
             synced = self.run_ctl(["sync-native"], env)
             self.assertEqual(synced.returncode, 0, synced.stderr)
             self.assertIn("p-skill-activation begin", config.read_text("utf-8"))
-            self.assertEqual(self.run_ctl(["use", "home", "--global"], env).returncode, 0)
+            self.assertNotIn("sync-native", selected.stdout)
+            home = self.run_ctl(["use", "home", "--global"], env)
+            self.assertEqual(home.returncode, 0)
+            self.assertIn("sync-native", home.stdout)
             self.assertIn("p-skill-activation begin", config.read_text("utf-8"))
             self.assertEqual(self.run_ctl(["sync-native"], env).returncode, 0)
             self.assertEqual(config.read_text("utf-8"), original)
@@ -414,6 +490,92 @@ class ActivationCliTests(unittest.TestCase):
             self.assertNotIn("CLAUDE_PLUGIN_ROOT", text)
 
 
+class ControllerExitContractTests(unittest.TestCase):
+    """Runs a copy of the controller in a scratch plugin layout so its
+    sibling statusline-ctl and its source tree can be substituted."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.plugin = self.root / "plugin"
+        for relative in ("bin/skill-profile-ctl", "lib/skill_activation.py",
+                         "profiles/skill-activation-v1.json"):
+            target = self.plugin / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((PLUGIN_ROOT / relative).read_bytes())
+        manifest = json.loads(MANIFEST_PATH.read_text("utf-8"))
+        for component, details in manifest["components"].items():
+            if details["source"] == "skill":
+                path = self.plugin / "skills" / component / "SKILL.md"
+            else:
+                path = self.plugin / "commands" / (component + ".md")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("x\n", encoding="utf-8")
+        self.env = {k: v for k, v in os.environ.items()
+                    if k not in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID",
+                                 "P_SKILL_PROFILE", "P_SKILL_SKIP_STATUS_SYNC")}
+        self.env.update({
+            "P_SKILL_CONFIG_FILE": str(self.root / "global.json"),
+            "P_SKILL_STATE_DIR": str(self.root / "sessions"),
+            "P_CODEX_CONFIG_FILE": str(self.root / "config.toml"),
+            "CODEX_THREAD_ID": "session-a",
+        })
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_ctl(self, *args, **extra):
+        return subprocess.run(
+            [sys.executable, str(self.plugin / "bin" / "skill-profile-ctl"), *args],
+            text=True, encoding="utf-8", capture_output=True,
+            env=dict(self.env, P_SKILL_SKIP_STATUS_SYNC="1", **extra))
+
+    def test_check_names_the_ambiguous_session_for_a_core_component(self):
+        result = self.run_ctl("check", "home", CLAUDE_CODE_SESSION_ID="outer-claude")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("P_SKILL_HARNESS", result.stderr)
+        self.assertNotIn("policy is invalid", result.stderr)
+        result = self.run_ctl("check-capability", "core",
+                              CLAUDE_CODE_SESSION_ID="outer-claude")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("P_SKILL_HARNESS", result.stderr)
+        self.assertNotIn("policy is invalid", result.stderr)
+
+    def test_validate_flags_a_coverage_mismatch_with_exit_1(self):
+        self.assertEqual(self.run_ctl("validate").returncode, 0)
+        (self.plugin / "skills" / "unclassified-skill").mkdir()
+        (self.plugin / "skills" / "unclassified-skill" / "SKILL.md").write_text("x\n")
+        self.assertEqual(self.run_ctl("validate").returncode, 1)
+        (self.plugin / "profiles" / "skill-activation-v1.json").write_text("{broken")
+        self.assertEqual(self.run_ctl("validate").returncode, 2)
+
+    def test_lock_refuses_session_overrides_and_flags_global_writes(self):
+        locked = self.run_ctl("disable", "auditing-a-repo-for-private-data",
+                              "--session", P_SKILL_PROFILE="home")
+        self.assertEqual(locked.returncode, 2)
+        self.assertFalse((self.root / "sessions").exists())
+        for args in (("use", "work", "--global"),
+                     ("disable", "auditing-a-repo-for-private-data", "--global")):
+            with self.subTest(args=args):
+                result = self.run_ctl(*args, P_SKILL_PROFILE="home")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("P_SKILL_PROFILE", result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.root / "global.json").read_text("utf-8"))["profile"],
+                         "work")
+
+    def test_no_renderer_to_update_is_not_a_warning(self):
+        status = self.plugin / "bin" / "statusline-ctl"
+        for code, warned in ((0, False), (1, False), (2, True)):
+            with self.subTest(code=code):
+                status.write_text("import sys\nprint('detail')\nsys.exit(%d)\n" % code)
+                env = {k: v for k, v in self.env.items() if k != "P_SKILL_SKIP_STATUS_SYNC"}
+                result = subprocess.run(
+                    [sys.executable, str(self.plugin / "bin" / "skill-profile-ctl"), "home"],
+                    text=True, encoding="utf-8", capture_output=True, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(bool(result.stderr.strip()), warned, result.stderr)
+
+
 class ActivationInstrumentationTests(unittest.TestCase):
     def test_every_skill_and_command_declares_its_gate(self):
         manifest = json.loads(MANIFEST_PATH.read_text("utf-8"))
@@ -442,6 +604,80 @@ class ActivationInstrumentationTests(unittest.TestCase):
         hooks = (PLUGIN_ROOT / "hooks" / "hooks.json").read_text("utf-8")
         self.assertNotIn("skill-profile-ctl", hooks)
 
+
+class MultiUserStateIsolationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.activation = load_activation()
+
+    def test_state_dir_respects_explicit_override(self):
+        env = {"P_SKILL_STATE_DIR": "/custom/path"}
+        self.assertEqual(self.activation._state_dir(env), Path("/custom/path"))
+
+    def test_state_dir_prefers_xdg_runtime_dir(self):
+        env = {"XDG_RUNTIME_DIR": "/run/user/1000"}
+        self.assertEqual(
+            self.activation._state_dir(env),
+            Path("/run/user/1000/p-skill-activation"),
+        )
+
+    def test_state_dir_is_distinct_per_user(self):
+        def directory_for(user):
+            if hasattr(os, "getuid"):
+                with mock.patch.object(self.activation.os, "getuid", return_value=user):
+                    return self.activation._state_dir({})
+            return self.activation._state_dir({"USERNAME": "user%d" % user})
+
+        first, second = directory_for(1001), directory_for(1002)
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, directory_for(1001))
+        self.assertEqual(first.parent, second.parent)
+
+    def env(self, root, session="session-a"):
+        return {
+            "P_SKILL_CONFIG_FILE": str(root / "global.json"),
+            "P_SKILL_STATE_DIR": str(root / "sessions"),
+            "CODEX_THREAD_ID": session,
+        }
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_session_writes_make_the_state_directory_private(self):
+        manifest = self.activation.load_manifest(MANIFEST_PATH)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "sessions").mkdir(mode=0o755)
+            os.chmod(root / "sessions", 0o755)
+            self.activation.set_profile(manifest, "work", "session", env=self.env(root))
+            self.assertEqual((root / "sessions").stat().st_mode & 0o777, 0o700)
+
+    def test_symlinked_state_directory_fails_closed(self):
+        manifest = self.activation.load_manifest(MANIFEST_PATH)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "elsewhere").mkdir()
+            try:
+                (root / "sessions").symlink_to(root / "elsewhere", target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks are unavailable")
+            env = self.env(root)
+            with self.assertRaises(self.activation.PolicyError):
+                self.activation.set_profile(manifest, "work", "session", env=env)
+            with self.assertRaises(self.activation.PolicyError):
+                self.activation.resolve(manifest, env=env)
+            self.assertEqual(list((root / "elsewhere").iterdir()), [])
+
+    def test_a_session_that_keeps_resolving_survives_pruning(self):
+        manifest = self.activation.load_manifest(MANIFEST_PATH)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env(root, "long-lived")
+            self.activation.set_profile(manifest, "work", "session", env=env)
+            (state,) = list((root / "sessions").iterdir())
+            old = time.time() - 15 * 24 * 3600
+            os.utime(state, (old, old))
+            self.assertEqual(self.activation.resolve(manifest, env=env)["profile"], "work")
+            self.activation.set_profile(manifest, "home", "session", env=self.env(root, "other"))
+            self.assertEqual(self.activation.resolve(manifest, env=env)["profile"], "work")
 
 if __name__ == "__main__":
     unittest.main()

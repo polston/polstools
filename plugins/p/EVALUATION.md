@@ -4,25 +4,48 @@ Use this layer when a seven-day Retro pack is too narrow: cross-harness
 comparison, scorer calibration, held-out labels, cost analysis, capability
 gaps, or reversible improvement proposals. The original `retro.py` commands
 remain the dependency-free workflow for Claude, Codex, and Antigravity
-transcripts. Antigravity supplies candidate moments with unknown session
-population and unavailable token accounting; the evaluation layer does not
-yet have an Antigravity adapter. The evaluation adapters exclude non-user
+transcripts. The evaluation layer has adapters for all three. Antigravity
+traces carry population `unknown` (counted as unclassified, never main) and
+`unavailable` token, cache, and tool-result status capabilities, so those
+metrics report `not_observable` rather than zero. The adapters exclude non-user
 Codex threads, so an evaluation report and a pack may legitimately disagree
 about corpus size. They may also disagree on token totals for the handful of
 rollouts whose cumulative token counter resets mid-file: the ledger banks
 across resets, the adapter takes the last count.
 
+The adapters and the `retro.py` ledger share the redaction and user-turn rules
+(`retro_eval/text_rules.py`) and otherwise differ on four deliberate points,
+each pinned by `tests/test_eval_ledger_parity.py`:
+
+1. The Claude adapter counts a prompt only when `promptSource` names a person
+   or `origin.kind` is `human`. Unsourced legacy records and `isMeta` records
+   are excluded, not guessed.
+2. A Codex rollout holding only harness wrappers is a ledger row with zero
+   prompts, but it is not an evaluation trace.
+3. The adapters drop timestamps that carry no zone. The ledger keeps them.
+4. Ledger failure columns and the tool-failure taxonomy are different
+   vocabularies. Compare them only through the pinned mapping.
+
+Every `retro-eval-*` command uses the plugin's exit-code convention: 0 ran
+clean and flagged nothing, 1 ran clean and flagged something (for example a
+taxonomy assessment that is not ready), 2 could not run. A missing source root,
+an unregistered source name, an abbreviated commit, or an input that yields no
+cases is a 2 with one `error:` line, never an empty success. For `retro-eval-extract`
+that includes any requested source root that yields no included trace: nothing is
+written and the previous snapshot is left as it was. `retro-eval-report` refuses a
+snapshot with no traces.
+
 ## Architecture
 
 | Boundary | Versioned definition | Implementation shipped in v1 |
 |---|---|---|
-| Sources | `profiles/sources.json` | Claude and Codex adapters |
-| Trace projection | `profiles/semconv.json` | OpenTelemetry GenAI and OpenInference attributes |
+| Sources | `profiles/sources.json` | Claude, Codex, and Antigravity adapters; `profiles/capabilities.json` is the capability vocabulary every adapter must declare in full |
+| Trace projection | `profiles/semconv.json` | reserved seam: `retro_eval/semconv.py` maps records onto OpenTelemetry GenAI and OpenInference attributes; no command emits projected spans yet |
 | Storage | injected trace-store and benchmark registries | canonical JSONL; optional regenerable Parquet cache |
 | Metrics and rubrics | `rubrics/metrics.json`, `rubrics/rubrics.json` | provisional catalogues with explicit denominators and abstention |
 | Scorers | `rubrics/scorers.json` | repetition, outcomes, tool failure, and input cost |
 | Evaluation policy | `rubrics/policy.json` | splits, evidence gates, ranking order, and evidence limits |
-| Labels | external JSONL plus manifest | human, deterministic, and model-judge records; loopback review UI |
+| Labels | external JSONL plus manifest | human, deterministic, and model-judge records; loopback review UI. `retro_eval/judge.py` is the provider-neutral judge interface; no shipped command calls a provider, and live judge predictions need separate authority |
 | Coverage | metric catalogue joined to source capabilities and scorer results | every metric is measured, insufficient, unavailable, or unscored per source |
 | Instruction provenance | external versioned manifest | generic source kinds, activation boundary, privacy class, and content hashes; reports carry only the manifest SHA-256 |
 
@@ -213,20 +236,29 @@ Resolve a Python 3 interpreter and the plugin root first. The examples use
   --work-dir <RETRO_HOME>/cross-harness-v1 \
   --root claude=<claude-session-root> \
   --root codex=<codex-session-root> \
+  --root antigravity=<antigravity-brain-root> \
   --instruction-manifest <RETRO_HOME>/instructions/<version>.json \
   --exclude-session-id <active-session-id>
 
 <python> <plugin-root>/bin/retro-eval-report \
   --work-dir <RETRO_HOME>/cross-harness-v1 \
   --output <RETRO_HOME>/cross-harness-v1/deterministic-report.json \
-  --created-commit <commit> \
+  --created-commit <full-commit-id> \
   --dataset-id <dataset-id>
 ```
+
+`--exclude-session-id` applies to every adapter: the Claude transcript or
+subagent directory name, the Codex `session_meta` id, or the Antigravity
+session directory. `--created-commit` takes the full id that
+`git rev-parse HEAD` prints; abbreviated ids are refused.
 
 Install optional analytics into an isolated environment from
 `requirements-eval.txt`; do not add them to the plugin's stdlib runtime. Then
 benchmark the same trace file through `jsonl`, `duckdb-json`, and
-`duckdb-parquet`:
+`duckdb-parquet`. Each result carries the warm-up `answers` of every workload;
+a backend measures the same workload only when its answers equal the `jsonl`
+reference. Run the optional-dependency tests with
+`RETRO_EVAL_REQUIRE_OPTIONAL=1` so a missing package fails instead of skipping. The benchmark itself:
 
 ```text
 <python-with-eval-deps> <plugin-root>/bin/retro-eval-benchmark \
@@ -238,7 +270,11 @@ benchmark the same trace file through `jsonl`, `duckdb-json`, and
 ```
 
 Import existing human marks as calibration-only, draw a fresh cross-harness
-test set, and import it after the human fills `human_label`:
+test set, and import it after the human fills `human_label`. `sample` draws
+direct-human prompts from the extracted snapshot; like taxonomy packets it
+rereads the same source roots with the same ID salt, and only the packet
+receives the redacted turns. Every source in the snapshot must contribute at
+least one case, or nothing is written:
 
 ```text
 <python> <plugin-root>/bin/retro-eval-labels import-legacy \
@@ -247,7 +283,11 @@ test set, and import it after the human fills `human_label`:
   --predictions <RETRO_HOME>/labels/rule-calibration.jsonl
 
 <python> <plugin-root>/bin/retro-eval-labels sample \
-  --extract <claude-extract.json> --extract <codex-extract.json> \
+  --traces <RETRO_HOME>/cross-harness-v1/traces.jsonl \
+  --id-salt <RETRO_HOME>/cross-harness-v1/id-salt.bin \
+  --source-root claude=<claude-session-root> \
+  --source-root codex=<codex-session-root> \
+  --source-root antigravity=<antigravity-brain-root> \
   --output <RETRO_HOME>/labels/heldout.csv \
   --manifest <RETRO_HOME>/labels/heldout-manifest.json \
   --per-source 20
@@ -257,7 +297,7 @@ test set, and import it after the human fills `human_label`:
   --manifest <RETRO_HOME>/labels/heldout-manifest.json \
   --predictions <RETRO_HOME>/labels/rule-test.jsonl \
   --prediction-manifest <RETRO_HOME>/labels/rule-test-manifest.json \
-  --created-commit <commit>
+  --created-commit <full-commit-id>
 
 <python> <plugin-root>/bin/retro-eval-labels import-annotations \
   --source <RETRO_HOME>/labels/heldout.csv \
@@ -274,6 +314,13 @@ test set, and import it after the human fills `human_label`:
   --output <RETRO_HOME>/labels/heldout-comparison.json \
   --split test
 ```
+
+`sample --extract <file>` remains for externally produced extracts (one JSON
+object with `source_system` and `sessions[].messages[]`); nothing in this
+plugin writes that format. It obeys the same refusal rule: a run with no
+annotatable case exits 2 and writes nothing. The `judge` pair is optional: no
+shipped command produces model-judge predictions, which require separate
+authority.
 
 Freeze both prediction sets before importing truth. The comparison command then
 requires exact case coverage and verifies every prediction fingerprint before it
@@ -303,7 +350,15 @@ shows a bounded plain-language situation, interpretation, reason, and expected
 action. Cards may check understanding of a direct-human reply or an assessment
 of agent behavior. The operator chooses Accurate, Partly accurate, Wrong, or
 Not enough context; notes and raw-evidence expansion are optional. This rubric
-is calibration-only and cannot support decisions.
+is calibration-only and cannot support decisions. Build the packet from an
+authored card file into the review directory:
+
+```text
+<python> <plugin-root>/bin/retro-eval-interpretations build \
+  --cards <RETRO_HOME>/annotations/interpretation-cards.json \
+  --output-dir <RETRO_HOME>/annotations/proposal-taxonomies \
+  --round 1
+```
 
 The same UI also supports older label-first protocols. Questions, choices,
 definitions, and overlap rules always come from the packet's bound versioned
@@ -317,7 +372,10 @@ annotation protocol; they are not hard-coded in the browser client.
 
 Use `--no-open` when another process will open the printed loopback URL. A
 non-loopback `--host` is rejected; this interface is deliberately not a shared
-or remotely hosted annotation service.
+or remotely hosted annotation service. Label packets are served only by
+`retro-eval-labels serve`; `retro-eval-review` serves taxonomy and
+interpretation packets and names any label packet it finds instead of
+reading it.
 
 Generate proposal reviews in strict mode so every trace reference resolves in
 the selected normalized snapshot and every named aggregate resolves through a

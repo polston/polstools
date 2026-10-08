@@ -8,7 +8,8 @@
     "five-hour-limit",
     "weekly-limit"
   ],
-  "claudeRenderer": "renderer/claude-statusline.ps1",
+  "claudeRenderer": "renderer/claude-statusline.py",
+  "claudeRendererWindows": "renderer/claude-statusline.ps1",
   "claudeSettings": {
     "type": "command"
   }

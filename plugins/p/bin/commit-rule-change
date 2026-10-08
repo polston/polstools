@@ -10,42 +10,66 @@
 # Called from a PostToolUse hook with the edited path as $1, or by hand.
 #
 # Deliberately narrow:
-#   - commits ONLY the path it was given, never `git add -A`. The repository may
-#     hold unrelated work in progress and this must not sweep it up.
+#   - commits ONLY the one file it was given, never `git add -A`, never a
+#     directory, and never a glob: the name is taken literally. The repository
+#     may hold unrelated work in progress and this must not sweep it up.
 #   - respects the repository's own gitignore, so a whitelist that excludes a
 #     credentials file keeps excluding it. If the path is ignored, this does
 #     nothing and says why.
-#   - never fails the caller. A hook that breaks an edit because a commit did not
-#     land would be worse than the problem it solves.
+#   - never blocks the caller and never leaves the index changed: a commit that
+#     does not land (a refusing pre-commit hook, say) is unstaged again, the
+#     index entry restored to what it was, and the exit is 1.
 #
 # Exit codes match the sibling scripts:
 #   0  committed, or nothing needed committing
-#   1  could not commit, and said why
+#   1  could not commit, said why, and left the index as it found it
 #   2  could not run
 
 set -u
 
 usage() {
-    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
 }
 
 case "${1:-}" in
-    -h|--help|"") usage; [ -z "${1:-}" ] && exit 2 || exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    "") usage >&2; exit 2 ;;
 esac
 
 TARGET="$1"
 command -v git >/dev/null 2>&1 || { echo "git not found" >&2; exit 2; }
+# A rule file's name is data. Without this, a name holding * ? or [ is a
+# pathspec glob, and `x[12].md` would also commit x1.md and x2.md.
+GIT_LITERAL_PATHSPECS=1
+export GIT_LITERAL_PATHSPECS
+
+if [ -d "$TARGET" ]; then
+    echo "is a directory, not a rule file: $TARGET" >&2
+    exit 2
+fi
 
 # A deleted rule file is a rule change like any other, so a missing path is only
 # an error if the repository has never heard of it either. Found by using this
 # script: it refused to record a deleted memory file, which is exactly the kind
 # of change someone would later want a date for.
-DIR=$(dirname "$TARGET")
-if [ ! -e "$TARGET" ]; then
-    git -C "$DIR" ls-files --error-unmatch -- "$TARGET" >/dev/null 2>&1 || {
-        echo "no such path, and not tracked: $TARGET" >&2
+DIR=$(dirname -- "$TARGET")
+BASE_NAME=$(basename -- "$TARGET")
+if [ -z "$BASE_NAME" ]; then
+    echo "no file name in: $TARGET" >&2
+    exit 2
+fi
+DIR=$(CDPATH= cd -- "$DIR" 2>/dev/null && pwd) || {
+    echo "no such directory: $(dirname -- "$TARGET")" >&2
+    exit 2
+}
+TARGET="$DIR/$BASE_NAME"
+if [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
+    # Tracked as exactly this one file -- not as a directory that held files.
+    TRACKED=$(git -C "$DIR" ls-files -z -- "$BASE_NAME" 2>/dev/null | tr '\0' '\n')
+    if [ "$TRACKED" != "$BASE_NAME" ]; then
+        echo "no such file, and not tracked as one: $TARGET" >&2
         exit 2
-    }
+    fi
 fi
 
 REPO=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || {
@@ -54,8 +78,11 @@ REPO=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || {
     exit 1
 }
 
-REL=$(git -C "$REPO" ls-files --full-name --others --cached --exclude-standard \
-      -- "$TARGET" 2>/dev/null | head -1)
+# Every pathspec below is the bare name, relative to -C "$DIR". Under Git Bash
+# an absolute /c/... argument holding [ or * is not converted for the native
+# git, which then finds no such path and the file reads as ignored.
+REL=$(git -C "$DIR" ls-files --full-name --others --cached --exclude-standard \
+      -- "$BASE_NAME" 2>/dev/null | head -1)
 if [ -z "$REL" ]; then
     # Ignored by the repository's own rules. That is a decision someone made on
     # purpose -- a whitelist keeping a credentials file out, most likely -- and
@@ -66,22 +93,38 @@ fi
 
 NAME=$(basename "$TARGET")
 
+# What the index held for this path before staging, so a commit that does not
+# land can put it back exactly -- including a version someone staged by hand.
+# NUL-separated in a file, because a shell variable cannot hold a NUL.
+BEFORE=$(mktemp) || exit 2
+MSG=""
+trap 'rm -f "$BEFORE" ${MSG:+"$MSG"}' EXIT
+git -C "$DIR" ls-files -s -z --full-name -- "$BASE_NAME" > "$BEFORE"
+
+restore_index() {
+    if [ -s "$BEFORE" ]; then
+        git -C "$REPO" update-index -z --index-info < "$BEFORE"
+    else
+        git -C "$DIR" update-index --force-remove -- "$BASE_NAME"
+    fi
+}
+
 # Stage first, then ask whether anything landed. Testing for changes BEFORE
 # staging was wrong in both directions and both were found by running it: `git
 # diff` cannot see a file that is not tracked yet, so a brand new rule file was
 # silently skipped, and a deleted one never reached the staging call at all.
 # `add -A` on a single path covers all three cases -- added, modified, removed.
-git -C "$REPO" add -A -- "$TARGET" || { echo "could not stage $TARGET" >&2; exit 1; }
+git -C "$DIR" add -A -- "$BASE_NAME" || { echo "could not stage $TARGET" >&2; exit 1; }
 
 # Nothing staged means the edit was a no-op, or something else already committed
 # it. Either way there is nothing to do, and that is not a failure.
-if git -C "$REPO" diff --cached --quiet -- "$TARGET"; then
+if git -C "$DIR" diff --cached --quiet -- "$BASE_NAME"; then
     exit 0
 fi
 
 # Message through a file, never an -m string: a rule file's name is data from
 # outside this script, and a backtick in a double-quoted shell string executes.
-MSG=$(mktemp) || exit 2
+MSG=$(mktemp) || { restore_index; exit 2; }
 {
     printf 'chore: %s changed\n\n' "$NAME"
     printf 'Committed automatically when the file was edited, so that the change\n'
@@ -89,11 +132,10 @@ MSG=$(mktemp) || exit 2
     printf 'a standing rule into something that can be checked rather than assumed.\n'
 } > "$MSG"
 
-if git -C "$REPO" commit -q -F "$MSG" -- "$TARGET"; then
-    rm -f "$MSG"
+if git -C "$DIR" commit -q -F "$MSG" -- "$BASE_NAME"; then
     echo "committed $NAME in $REPO"
     exit 0
 fi
-rm -f "$MSG"
-echo "could not commit $TARGET" >&2
+restore_index
+echo "could not commit $TARGET; its index entry is as it was before" >&2
 exit 1

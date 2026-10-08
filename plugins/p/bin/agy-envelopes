@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Rebuild the Antigravity hook payloads from the response-format payloads.
+
+Antigravity's PreInvocation hook must print a JSON envelope. The gate prints a
+payload file verbatim, so each style/<name>.md has a pre-encoded twin at
+style/antigravity/<name>.json holding {"injectSteps": [{"ephemeralMessage":
+<the .md text>}]}. Run after editing style/*.md.
+
+  agy-envelopes [--check]
+
+Exit: 0 every envelope already matched (or --help/-h); 1 an envelope differed (rewritten,
+or only reported with --check); 2 could not run.
+"""
+
+import json
+from pathlib import Path
+import sys
+
+STYLE = Path(__file__).resolve().parent.parent / "style"
+NAMES = ("response-format", "turn-reminder")
+
+
+def envelope(text):
+    return json.dumps({"injectSteps": [{"ephemeralMessage": text}]},
+                      ensure_ascii=False) + "\n"
+
+
+def main(argv):
+    if argv in (["--help"], ["-h"]):
+        print(__doc__)
+        return 0
+    check = argv == ["--check"]
+    if argv and not check:
+        print(__doc__, file=sys.stderr)
+        return 2
+    differed = 0
+    try:
+        for name in NAMES:
+            wanted = envelope((STYLE / (name + ".md")).read_text(encoding="utf-8"))
+            target = STYLE / "antigravity" / (name + ".json")
+            current = target.read_text(encoding="utf-8") if target.is_file() else None
+            if current == wanted:
+                continue
+            differed += 1
+            print("%s: %s" % ("differs" if check else "rewrote", target.name))
+            if not check:
+                target.parent.mkdir(exist_ok=True)
+                with target.open("w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(wanted)
+    except (OSError, UnicodeError) as error:
+        print("agy-envelopes: cannot run: %s" % error, file=sys.stderr)
+        return 2
+    return 1 if differed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

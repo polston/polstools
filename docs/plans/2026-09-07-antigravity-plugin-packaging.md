@@ -1,6 +1,8 @@
 # Antigravity plugin packaging and session corpus integration
 
-Date: 2026-09-07. Status: candidate design and implementation.
+Date: 2026-09-07. Status: implemented. The body is the design as written, so
+its skill count and version are as of that date and its checklist is not a live
+tracker; the manifests and `plugins/p/skills/` hold the current values.
 
 ## Recommendation
 

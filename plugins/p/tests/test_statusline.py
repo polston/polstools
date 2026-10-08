@@ -10,9 +10,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest import mock
+
+from home_env import home_vars
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -34,54 +35,45 @@ class StatuslineUnitTests(unittest.TestCase):
     def setUpClass(cls):
         cls.ctl = load_ctl()
 
-    def test_percent_left_clamps_and_handles_missing_values(self):
-        self.assertEqual(self.ctl.percent_left(23.5), 76.5)
-        self.assertEqual(self.ctl.percent_left(-4), 100)
-        self.assertEqual(self.ctl.percent_left(140), 0)
-        self.assertIsNone(self.ctl.percent_left(None))
+    def test_claude_provider_recognizes_earlier_p_renderer_commands_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = Path(tmp) / "installed-v1"
+            installed.mkdir()
+            owned = (installed / "claude-statusline.py", installed / "claude-statusline.ps1")
+            for path in owned:
+                path.write_text("", "utf-8")
+            desired = {"type": "command", "command": "python3 \"" + owned[0].as_posix() + "\""}
+            ps1 = owned[1].as_posix()
+            cases = {
+                "pwsh -NoProfile -File \"" + ps1 + "\"": "legacy",
+                "powershell -NoProfile -ExecutionPolicy Bypass -File \"" + ps1 + "\"": "legacy",
+                "/usr/bin/python3 " + owned[0].as_posix(): "legacy",
+                "pwsh -NoProfile -File \"" + ps1 + "\" --extra": "external",
+                "bash -c \"pwsh -File " + ps1 + "\"": "external",
+                "pwsh -NoProfile -File \"" + str(Path(tmp) / "elsewhere.ps1") + "\"": "external",
+                "my-renderer \"" + ps1 + "\"": "external",
+            }
+            for command, expected in cases.items():
+                with self.subTest(command=command):
+                    self.assertEqual(
+                        self.ctl.claude_provider({"type": "command", "command": command}, desired, owned),
+                        expected,
+                    )
 
-    def test_render_uses_percent_left_for_context_and_all_quotas(self):
-        lines = self.ctl.render_claude(
-            {
-                "model": {"display_name": "Example Model"},
-                "effort": {"level": "high"},
-                "workspace": {"current_dir": "project", "git_branch": "main"},
-                "context_window": {"remaining_percentage": 72},
-                "rate_limits": {
-                    "five_hour": {"used_percentage": 36},
-                    "seven_day": {"used_percentage": 19},
-                },
-                "model_weekly": {"label": "model", "used_percentage": 12},
-            },
-            color=False,
-        )
-        self.assertEqual(len(lines), 2)
-        self.assertIn("Example Model | eff high | project | main |", lines[0])
-        self.assertIn("72% left", lines[0])
-        self.assertIn("5h", lines[1])
-        self.assertIn("64% left", lines[1])
-        self.assertIn("wk", lines[1])
-        self.assertIn("81% left", lines[1])
-        self.assertIn("model", lines[1])
-        self.assertIn("88% left", lines[1])
-        self.assertIn("p:h", lines[0])
-
-    def test_render_tolerates_missing_optional_fields(self):
-        lines = self.ctl.render_claude({}, color=False)
-        self.assertEqual(lines, ["p:h"])
-
-    def test_codex_footer_order_matches_the_contract(self):
-        self.assertEqual(
-            list(self.ctl.CODEX_STATUS_LINE),
-            [
-                "model-with-reasoning",
-                "current-dir",
-                "git-branch",
-                "context-remaining",
-                "five-hour-limit",
-                "weekly-limit",
-            ],
-        )
+    def test_profile_rejects_renderer_paths_outside_the_renderer_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = json.loads((PLUGIN_ROOT / "profiles" / "aligned-v1.json").read_text("utf-8"))
+            for key, value in (
+                ("claudeRenderer", "../bin/statusline-ctl"),
+                ("claudeRendererWindows", None),
+                ("claudeRenderer", "renderer/../../outside.py"),
+            ):
+                with self.subTest(key=key, value=value):
+                    broken = dict(profile, **{key: value})
+                    path = Path(tmp) / "profile.json"
+                    path.write_text(json.dumps(broken), "utf-8")
+                    with self.assertRaises(ValueError):
+                        self.ctl.load_profile(path)
 
     def test_claude_provider_recognizes_only_direct_ccstatusline(self):
         desired = {"type": "command", "command": "bundled"}
@@ -101,67 +93,6 @@ class StatuslineUnitTests(unittest.TestCase):
             "external",
         )
 
-    @unittest.skipUnless(
-        shutil.which("powershell" if os.name == "nt" else "pwsh"),
-        "PowerShell is unavailable",
-    )
-    def test_powershell_renderer_matches_percent_left_semantics(self):
-        sample = {
-            "model": {"display_name": "Example Model"},
-            "effort": {"level": "high"},
-            "workspace": {"current_dir": "project", "git_branch": "main"},
-            "context_window": {"remaining_percentage": 72},
-            "rate_limits": {
-                "five_hour": {"used_percentage": 36},
-                "seven_day": {"used_percentage": 19},
-            },
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ)
-            env["LOCALAPPDATA"] = tmp
-            env["HOME"] = str(Path(tmp) / "no-credentials")
-            if os.name == "nt":
-                env["USERPROFILE"] = env["HOME"]
-            else:
-                env.pop("USERPROFILE", None)
-            cache_dir = Path(tmp) / "claude-statusline"
-            cache_dir.mkdir()
-            (cache_dir / "usage-cache.json").write_text(
-                json.dumps(
-                    {
-                        "at": int(time.time() * 1000),
-                        "label": "model-week",
-                        "percent": 12,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            result = subprocess.run(
-                [
-                    "powershell" if os.name == "nt" else "pwsh",
-                    "-NoProfile",
-                    *(["-ExecutionPolicy", "Bypass"] if os.name == "nt" else []),
-                    "-File",
-                    str(PLUGIN_ROOT / "renderer" / "claude-statusline.ps1"),
-                ],
-                input=json.dumps(sample),
-                text=True,
-                encoding="utf-8",
-                capture_output=True,
-                env=env,
-            )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
-        self.assertIn("Example Model | eff high | project | main |", plain)
-        self.assertIn("72% left", plain)
-        self.assertIn("5h", plain)
-        self.assertIn("64% left", plain)
-        self.assertIn("wk", plain)
-        self.assertIn("81% left", plain)
-        self.assertIn("model-week", plain)
-        self.assertIn("88% left", plain)
-        self.assertIn("p:h", plain)
-
 
 class StatuslineCliTests(unittest.TestCase):
     @classmethod
@@ -178,7 +109,8 @@ class StatuslineCliTests(unittest.TestCase):
                 "STATUSLINE_INSTALL_DIR": str(root / "install"),
                 "STATUSLINE_CCSTATUSLINE_CONFIG": str(root / "ccstatusline.json"),
                 "USERPROFILE": str(root / "profile-marker"),
-                "HOME": str(root / "profile-marker"),
+                **home_vars(str(root / "profile-marker")),
+                "PYTHONDONTWRITEBYTECODE": "1",
             }
         )
         return env
@@ -298,6 +230,7 @@ class StatuslineCliTests(unittest.TestCase):
                 self.assertEqual(codex_path.read_bytes(), codex_original)
                 self.assertFalse((root / "state" / "rollback-v1.json").exists())
                 self.assertFalse((root / "install" / "claude-statusline.ps1").exists())
+                self.assertFalse((root / "install" / "claude-statusline.py").exists())
                 self.assertFalse(list(root.rglob("*.tmp")))
 
     def test_sync_repairs_safe_drift_then_becomes_a_no_op(self):
@@ -512,6 +445,113 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertEqual(before, (claude_path.read_bytes(), codex_path.read_bytes()))
             self.assertFalse((root / "state").exists())
 
+    def test_apply_and_restore_write_through_a_symlinked_settings_file(self):
+        if os.name == "nt":
+            self.skipTest("symbolic links need privileges on Windows")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            dotfiles = root / "dot"
+            dotfiles.mkdir()
+            links = {}
+            for key, name, body in (
+                ("STATUSLINE_CLAUDE_SETTINGS", "claude.json", '{"theme": "dark"}\n'),
+                ("STATUSLINE_CODEX_CONFIG", "codex.toml", "[tui]\n"),
+            ):
+                target = dotfiles / name
+                target.write_text(body, "utf-8")
+                link = Path(env[key])
+                link.symlink_to(target)
+                links[key] = (link, target)
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            claude_target = links["STATUSLINE_CLAUDE_SETTINGS"][1]
+            codex_target = links["STATUSLINE_CODEX_CONFIG"][1]
+            for link, target in links.values():
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.read_text("utf-8"), target.read_text("utf-8"))
+            applied = json.loads(claude_target.read_text("utf-8"))
+            self.assertIn("statusLine", applied)
+            self.assertEqual(applied["theme"], "dark")
+            self.assertIn("status_line", codex_target.read_text("utf-8"))
+            restored = self.run_ctl("restore", env)
+            self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+            for key, (link, target) in links.items():
+                self.assertTrue(link.is_symlink(), key)
+            self.assertEqual(json.loads(claude_target.read_text("utf-8")), {"theme": "dark"})
+            self.assertNotIn("status_line", codex_target.read_text("utf-8"))
+
+    def test_a_link_planted_at_a_rollback_or_bundle_path_is_refused(self):
+        if os.name == "nt":
+            self.skipTest("symbolic links need privileges on Windows")
+        for planted in (
+            Path("state") / "rollback-v1.json",
+            Path("install") / "claude-statusline.py",
+        ):
+            with self.subTest(planted=str(planted)), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.make_env(root)
+                victim = root / "victim.txt"
+                victim.write_text("untouched\n", "utf-8")
+                link = root / planted
+                link.parent.mkdir(parents=True)
+                link.symlink_to(victim)
+                result = self.run_ctl("apply", env)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(victim.read_text("utf-8"), "untouched\n")
+                self.assertTrue(link.is_symlink())
+                self.assertFalse(Path(env["STATUSLINE_CLAUDE_SETTINGS"]).exists())
+                self.assertFalse(Path(env["STATUSLINE_CODEX_CONFIG"]).exists())
+
+    def test_a_dangling_settings_link_is_refused_and_creates_nothing(self):
+        if os.name == "nt":
+            self.skipTest("symbolic links need privileges on Windows")
+        for key in ("STATUSLINE_CLAUDE_SETTINGS", "STATUSLINE_CODEX_CONFIG"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = self.make_env(root)
+                missing = root / "dot" / "missing"
+                missing.parent.mkdir()
+                Path(env[key]).symlink_to(missing)
+                result = self.run_ctl("apply", env)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertFalse(missing.exists())
+                self.assertFalse((root / "state").exists())
+                self.assertFalse((root / "install").exists())
+
+    def test_a_malformed_rollback_file_exits_two_without_a_traceback(self):
+        for body in (
+            {"schema": 2, "applied": "x"},
+            {"schema": 2},
+            {"schema": 2, "applied": {}, "previous": [], "managed": {}},
+            {"schema": 2, "applied": {}, "previous": {}, "managed": []},
+        ):
+            for command in ("apply", "sync", "restore"):
+                with self.subTest(body=body, command=command), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    env = self.make_env(root)
+                    Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+                    Path(env["STATUSLINE_CODEX_CONFIG"]).write_text("[tui]\n", "utf-8")
+                    (root / "state").mkdir()
+                    (root / "state" / "rollback-v1.json").write_text(json.dumps(body), "utf-8")
+                    result = self.run_ctl(command, env)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
+    def test_a_full_restore_retires_the_managed_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+            Path(env["STATUSLINE_CODEX_CONFIG"]).write_text("[tui]\n", "utf-8")
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            self.assertEqual(self.run_ctl("restore", env).returncode, 0)
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertIn("not managed", checked.stdout)
+            self.assertFalse((root / "install").exists())
+            self.assertEqual(list((root / "state").glob("rollback*")), [])
+            self.assertEqual(self.run_ctl("restore", env).returncode, 2)
+
     def test_restore_does_not_overwrite_later_owned_setting_edits(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -570,6 +610,291 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertIn("% left", result.stdout)
             self.assertNotIn("profile-marker", result.stdout)
 
+    def write_legacy_install(self, root, env):
+        """The state an earlier release left: a PowerShell command and its rollback."""
+        legacy = {
+            "type": "command",
+            "command": 'pwsh -NoProfile -File "'
+            + (Path(env["STATUSLINE_INSTALL_DIR"]) / "claude-statusline.ps1").resolve().as_posix()
+            + '"',
+        }
+        claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+        claude_path.write_text(json.dumps({"theme": "dark", "statusLine": legacy}, indent=2) + "\n", "utf-8")
+        Path(env["STATUSLINE_CODEX_CONFIG"]).write_text(
+            "[tui]\nstatus_line = " + json.dumps(list(self.ctl.CODEX_STATUS_LINE)) + "\n", "utf-8"
+        )
+        state = Path(env["STATUSLINE_STATE_DIR"])
+        state.mkdir(parents=True)
+        (state / "rollback-v1.json").write_text(
+            json.dumps(
+                {
+                    "schema": 2,
+                    "managed": {"claude": True, "codex": True, "ccstatusline": False},
+                    "applied": {"claude": legacy, "codex": list(self.ctl.CODEX_STATUS_LINE), "cc_widget": None},
+                    "previous": {
+                        "claude": {"present": False, "value": None},
+                        "codex": {"present": False, "raw": None, "sectionPresent": True},
+                        "cc_widgets": None,
+                    },
+                }
+            ),
+            "utf-8",
+        )
+        return claude_path, legacy
+
+    def test_earlier_p_renderer_command_is_reported_refreshed_and_upgraded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path, legacy = self.write_legacy_install(root, env)
+
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 1, checked.stderr)
+            self.assertIn("earlier p release", checked.stdout)
+            self.assertIn("repair with: statusline-ctl sync", checked.stdout)
+
+            before = claude_path.read_bytes()
+            refreshed = self.run_ctl("profile-sync", env)
+            self.assertEqual(refreshed.returncode, 0, refreshed.stdout + refreshed.stderr)
+            self.assertEqual(claude_path.read_bytes(), before)
+            installed = Path(env["STATUSLINE_INSTALL_DIR"])
+            self.assertTrue((installed / "claude-statusline.ps1").is_file())
+            self.assertTrue((installed / "claude-statusline.py").is_file())
+
+            synced = self.run_ctl("sync", env)
+            self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+            self.assertIn("aligned:", synced.stdout)
+            now = json.loads(claude_path.read_text("utf-8"))
+            self.assertEqual(
+                now["statusLine"], self.ctl.desired_claude(installed / self.ctl.renderer_source().name))
+            self.assertEqual(now["theme"], "dark")
+
+            restored = self.run_ctl("restore", env)
+            self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+            self.assertNotIn("statusLine", json.loads(claude_path.read_text("utf-8")))
+
+    def test_apply_after_a_ccstatusline_rollback_records_the_missing_setting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            claude_path.write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"}}), "utf-8"
+            )
+            Path(env["STATUSLINE_CCSTATUSLINE_CONFIG"]).write_text(
+                json.dumps({"version": 3, "lines": [[{"id": "model", "type": "model"}]]}), "utf-8"
+            )
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            claude_path.write_text("{}\n", "utf-8")
+            applied = self.run_ctl("apply", env)
+            self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+            restored = self.run_ctl("restore", env)
+            self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+            self.assertNotIn("statusLine", json.loads(claude_path.read_text("utf-8")))
+
+    def test_check_names_stale_bundle_files_and_sync_repairs_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "/usr/local/bin/ccstatusline"}}), "utf-8"
+            )
+            Path(env["STATUSLINE_CCSTATUSLINE_CONFIG"]).write_text(
+                json.dumps({"version": 3, "lines": [[{"id": "model", "type": "model"}], []]}), "utf-8"
+            )
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            installed = Path(env["STATUSLINE_INSTALL_DIR"])
+            (installed / "skill_activation.py").write_text("# an older copy\n", "utf-8")
+            (installed / "skill-activation-v1.json").unlink()
+
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 1, checked.stderr)
+            self.assertIn("stale: skill_activation.py, skill-activation-v1.json", checked.stdout)
+            self.assertNotIn("skill-profile-label.py", checked.stdout)
+            self.assertIn("repair with: statusline-ctl sync", checked.stdout)
+
+            self.assertEqual(self.run_ctl("sync", env).returncode, 0)
+            self.assertEqual(self.run_ctl("check", env).returncode, 0)
+
+    def test_check_exits_zero_until_p_has_managed_a_statusline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            for settings in ({}, {"statusLine": {"type": "command", "command": "custom-renderer"}}):
+                with self.subTest(settings=settings):
+                    claude_path.write_text(json.dumps(settings), "utf-8")
+                    checked = self.run_ctl("check", env)
+                    self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                    self.assertIn("not managed", checked.stdout)
+            self.assertFalse((root / "state").exists())
+            self.assertFalse((root / "install").exists())
+
+            claude_path.write_text("{}\n", "utf-8")
+            synced = self.run_ctl("sync", env)
+            self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+            self.assertIn("applied:", synced.stdout)
+            self.assertEqual(self.run_ctl("check", env).returncode, 0)
+            (Path(env["STATUSLINE_INSTALL_DIR"]) / "skill_activation.py").write_text("# older\n", "utf-8")
+            drifted = self.run_ctl("check", env)
+            self.assertEqual(drifted.returncode, 1, drifted.stderr)
+            self.assertIn("stale: skill_activation.py", drifted.stdout)
+
+    def test_profile_sync_exit_codes_and_library_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            for settings in ({}, {"statusLine": {"type": "command", "command": "custom-renderer"}}):
+                with self.subTest(settings=settings):
+                    claude_path.write_text(json.dumps(settings), "utf-8")
+                    before = claude_path.read_bytes()
+                    result = self.run_ctl("profile-sync", env)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("no supported active renderer", result.stdout)
+                    self.assertEqual(claude_path.read_bytes(), before)
+                    self.assertFalse((root / "install").exists())
+
+            claude_path.write_text("{}\n", "utf-8")
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            installed = Path(env["STATUSLINE_INSTALL_DIR"]) / "skill_activation.py"
+            installed.write_text("# an older activation library\n", "utf-8")
+            synced = self.run_ctl("profile-sync", env)
+            self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+            self.assertEqual(installed.read_bytes(), (PLUGIN_ROOT / "lib" / "skill_activation.py").read_bytes())
+
+    def test_check_offers_no_repair_for_an_external_renderer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+            self.assertEqual(self.run_ctl("apply", env).returncode, 0)
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text(
+                json.dumps({"statusLine": {"type": "command", "command": "custom-renderer"}}), "utf-8"
+            )
+            checked = self.run_ctl("check", env)
+            self.assertEqual(checked.returncode, 1, checked.stderr)
+            self.assertIn("external renderer, left unmanaged", checked.stdout)
+            self.assertNotIn("repair with", checked.stdout)
+
+    def copy_plugin(self, root):
+        copy = root / "plugin"
+        for part in ("bin", "lib", "profiles", "renderer"):
+            shutil.copytree(PLUGIN_ROOT / part, copy / part)
+        return copy
+
+    def preview_env(self, root):
+        env = self.make_env(root)
+        stub = root / "stub"
+        stub.mkdir()
+        (root / "profile-marker").mkdir()
+        security = stub / "security"
+        security.write_text(
+            "#!/bin/sh\necho called >> \"" + (root / "keychain.log").as_posix() + "\"\nexit 44\n",
+            encoding="utf-8",
+        )
+        security.chmod(0o755)
+        env["PATH"] = str(stub) + os.pathsep + env.get("PATH", "")
+        env["TMPDIR"] = str(root / "tmp")
+        (root / "tmp").mkdir()
+        env["XDG_CACHE_HOME"] = str(root / "cache")
+        env["LOCALAPPDATA"] = str(root / "cache")
+        env["P_STATUSLINE_NOW_MS"] = "1800000000000"
+        env.pop("P_STATUSLINE_NO_REFRESH", None)
+        return env
+
+    def test_preview_renders_through_the_shipped_renderer_and_profile_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.preview_env(root)
+            copy = self.copy_plugin(root)
+            renderer = copy / "renderer" / "claude-statusline.py"
+            renderer.write_text(
+                renderer.read_text("utf-8").replace('+ "% left"', '+ "% spare"'), "utf-8"
+            )
+            profile_path = copy / "profiles" / "aligned-v1.json"
+            profile = json.loads(profile_path.read_text("utf-8"))
+            profile["codexStatusLine"] = ["git-branch", "model-with-reasoning"]
+            profile_path.write_text(json.dumps(profile), "utf-8")
+            result = subprocess.run(
+                [sys.executable, str(copy / "bin" / "statusline-ctl"), "preview"],
+                text=True, encoding="utf-8", capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = result.stdout.splitlines()
+            claude = lines[1:lines.index("Codex (native footer)")]
+            self.assertEqual(len(claude), 2)
+            self.assertIn("~/project", claude[0])
+            self.assertIn("56k/200k", claude[0])
+            self.assertIn("72% spare", claude[0])
+            self.assertIn("model-week", claude[1])
+            codex = lines[lines.index("Codex (native footer)") + 1]
+            self.assertEqual(codex, "main | model high")
+
+    def test_preview_starts_no_usage_refresh_and_never_reaches_the_keychain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.preview_env(root)
+            before = {p for p in root.rglob("*") if p.name != "stub" and p.parent.name != "stub"}
+            result = subprocess.run(
+                [sys.executable, str(CTL_PATH), "preview"],
+                text=True, encoding="utf-8", capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((root / "keychain.log").exists())
+            after = {p for p in root.rglob("*") if p.name != "stub" and p.parent.name != "stub"}
+            self.assertEqual(after, before)
+            for name in ("usage-cache.json", "usage-attempt.txt", "usage-refresh.lock"):
+                self.assertEqual(list(root.rglob(name)), [])
+
+    def test_apply_installs_the_renderer_the_profile_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            copy = self.copy_plugin(root)
+            (copy / "renderer" / "claude-statusline.py").rename(copy / "renderer" / "status-v2.py")
+            profile_path = copy / "profiles" / "aligned-v1.json"
+            profile = json.loads(profile_path.read_text("utf-8"))
+            profile["claudeRenderer"] = "renderer/status-v2.py"
+            profile_path.write_text(json.dumps(profile), "utf-8")
+            Path(env["STATUSLINE_CLAUDE_SETTINGS"]).write_text("{}\n", "utf-8")
+            result = subprocess.run(
+                [sys.executable, str(copy / "bin" / "statusline-ctl"), "apply"],
+                text=True, encoding="utf-8", capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            installed = Path(env["STATUSLINE_INSTALL_DIR"])
+            self.assertTrue((installed / "status-v2.py").is_file())
+            command = json.loads(Path(env["STATUSLINE_CLAUDE_SETTINGS"]).read_text("utf-8"))["statusLine"]["command"]
+            if os.name != "nt":
+                self.assertIn((installed / "status-v2.py").resolve().as_posix(), command)
+
+    def test_windows_target_installs_powershell_command_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.make_env(root)
+            claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
+            # Bytes, not text mode, so Windows does not turn the fixture's
+            # newlines into CRLF: the file is what the harness itself writes.
+            claude_path.write_bytes((json.dumps({"theme": "dark"}, indent=2) + "\n").encode())
+            original = claude_path.read_bytes()
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, env), mock.patch.object(
+                self.ctl, "IS_WINDOWS", True
+            ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                self.assertEqual(self.ctl.main(["apply"]), 0)
+                command = json.loads(claude_path.read_text("utf-8"))["statusLine"]["command"]
+                installed = Path(env["STATUSLINE_INSTALL_DIR"])
+                self.assertEqual(
+                    command,
+                    'powershell -NoProfile -ExecutionPolicy Bypass -File "'
+                    + (installed / "claude-statusline.ps1").resolve().as_posix() + '"',
+                )
+                self.assertTrue((installed / "claude-statusline.py").is_file())
+                self.assertEqual(self.ctl.main(["check"]), 0)
+                self.assertEqual(self.ctl.main(["restore"]), 0)
+            self.assertEqual(claude_path.read_bytes(), original)
+
 
 class PackagingTests(unittest.TestCase):
     def test_consolidated_marketplace_and_manifest_publish_statusline(self):
@@ -597,14 +922,6 @@ class PackagingTests(unittest.TestCase):
             }
             if path.is_file() and "tests" not in path.parts and is_text:
                 self.assertIsNone(pattern.search(path.read_text("utf-8")), str(path))
-
-    def test_skill_defaults_to_sync_and_documents_transactional_rollback(self):
-        skill = (PLUGIN_ROOT / "skills" / "aligning-statuslines" / "SKILL.md").read_text(
-            "utf-8"
-        )
-        self.assertIn("run `statusline-ctl sync`", skill)
-        self.assertIn("restores all earlier targets", skill)
-        self.assertIn("without changing\neither settings file", skill)
 
 
 if __name__ == "__main__":

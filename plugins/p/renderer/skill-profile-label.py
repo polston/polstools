@@ -14,7 +14,9 @@ try:
     import skill_activation
 
     try:
-        data = json.load(sys.stdin)
+        # Windows PowerShell prefixes what it pipes to a native command with a
+        # UTF-8 byte-order mark, whatever $OutputEncoding says.
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
         session_id = data.get("session_id") if isinstance(data, dict) else None
     except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
         session_id = None

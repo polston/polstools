@@ -239,7 +239,23 @@ def _handler_type(workspace, assets_dir, csrf_token):
             self._headers(status, "application/json; charset=utf-8", len(body))
             self.wfile.write(body)
 
+        def _own_hosts(self):
+            port = self.server.server_address[1]
+            return {"127.0.0.1:%d" % port, "localhost:%d" % port,
+                    "[::1]:%d" % port}
+
+        def _host_refused(self):
+            # A rebound DNS name reaches this socket with its own name in Host,
+            # and a page it serves sends a matching Origin, so both are checked
+            # against the server's fixed loopback forms, never against each other.
+            if self.headers.get("Host") in self._own_hosts():
+                return False
+            self._send_json(403, {"error": "invalid_host"})
+            return True
+
         def do_GET(self):
+            if self._host_refused():
+                return
             path = urlsplit(self.path).path
             if path == "/api/state":
                 payload = workspace.snapshot()
@@ -264,6 +280,8 @@ def _handler_type(workspace, assets_dir, csrf_token):
             self.wfile.write(body)
 
         def do_POST(self):
+            if self._host_refused():
+                return
             if urlsplit(self.path).path != "/api/labels":
                 self._send_json(404, {"error": "not_found"})
                 return
@@ -271,8 +289,8 @@ def _handler_type(workspace, assets_dir, csrf_token):
                 self._send_json(403, {"error": "invalid_csrf"})
                 return
             origin = self.headers.get("Origin")
-            expected_origin = "http://%s" % self.headers.get("Host", "")
-            if origin and origin != expected_origin:
+            if origin and origin not in {
+                    "http://%s" % host for host in self._own_hosts()}:
                 self._send_json(403, {"error": "invalid_origin"})
                 return
             try:

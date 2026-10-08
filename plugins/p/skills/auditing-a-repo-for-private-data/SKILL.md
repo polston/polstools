@@ -5,39 +5,79 @@ description: Use before a repository's first push, when adding a remote, when ma
 
 # Auditing a repo for private data
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
+Before any other action, run
 `<python> <plugin-root>/bin/skill-profile-ctl check auditing-a-repo-for-private-data`.
-If it exits 1 or 2, stop and report its output.
+If it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/auditing-a-repo-for-private-data`; take it from this
+file's own path, never from the working directory or an environment variable.
+`<python>` is `sh <plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 ## Overview
 
 A file deleted from the working tree is still in history. A grep of the working
-tree therefore proves nothing about a repository. Six places can hold the data,
-and a scrub is verified only when every non-exempt category reads zero. This
-repository deliberately treats standard Git authorship records as published
-metadata; email addresses anywhere else remain findings.
+tree therefore proves nothing about a repository. Several places can hold the
+data, and a scrub is verified only when every category reads zero in all of
+them. Standard Git authorship records -- author, committer and tagger
+addresses, and well-formed `Co-authored-by` trailers -- are treated as
+published metadata; email addresses anywhere else remain findings.
 
 Prefix-shaped searching is the other trap: a past audit reported "clean" from
 credential-shaped prefixes and still pushed live credentials, because the real
 ones were bare hex, human-chosen passwords, and plain values in shell
 variables. Search for the *data*, not for the shapes credentials usually take.
 
-## The six places
+## Run the auditor
 
-Run all six. Each catches something the others structurally cannot.
+```sh
+sh <plugin-root>/bin/repo-privacy-audit -C <repo> [-v] [-k] [-p <pattern>]...
+```
 
-| # | Place | Command |
+Exit 0 means every category read zero in every place; 1 means at least one
+hit; 2 means it could not run -- not a repository, an unusable argument, a Git
+failure, or a shallow clone, whose missing history cannot be vouched for
+(`git fetch --unshallow` first). It reports counts and locations only, never a
+matched value. `-v` lists the paths and commit ids behind each count; a path
+whose own name matches a category is printed as `<name withheld: ...>`, since
+printing it would carry the value into the log. `-p` adds identifiers you know
+to hunt for -- pass them on the command line, never in a tracked file.
+
+## The places
+
+Each catches something the others structurally cannot. The auditor sweeps all
+of them; the commands show what each one reads.
+
+| Column | Place | Read from |
 |---|---|---|
-| 1 | Commit messages | `git log --all --format='%B'` |
-| 2 | Every commit's tree | `git grep <pat> $(git rev-list --all)` — not just HEAD |
-| 3 | Patch hunk bodies, added **and** removed lines | `git log --all --format= -p` filtered to hunk bodies, without diff paths or duplicate commit headers/messages |
-| 4 | Tag messages | `git tag -l --format='%(contents)'` |
-| 5 | Author/committer metadata | `git log --all --format='%an <%ae> %cn <%ce>'` — email is accepted here by repository policy |
-| 6 | Files ever added | `git log --all --diff-filter=A --name-only` |
+| msgs | Commit messages | `git log --all --format='%B'` |
+| trees | Every commit's tree, not just HEAD | each distinct blob in `git rev-list --objects --all`, read once through `git cat-file --batch` |
+| patches | Patch hunk bodies, added **and** removed lines | `git log --all --format= -p`, filtered to hunk bodies |
+| tags | Tag messages | `git for-each-ref refs/tags --format='%(contents)'` |
+| idents | Author, committer and tagger names | `git log --all --format='%an %cn'`; their addresses are counted on the `accepted` line |
+| names | Every path that ever existed, swept as text | `git log --all --raw -m --no-renames`, plus the index and working tree |
+| work | What is about to be committed | the index, and tracked or untracked-but-not-ignored working-tree files |
+
+Below the table: sensitive filenames ever present under any name -- after a
+rename, inside a merge, or untracked -- and the largest blobs.
 
 A `^\+`-filtered patch sweep misses removed values. Commit messages, tags, and
 identities are separate inputs rather than duplicated through Git's generated
-patch headers.
+patch headers. Files with NUL bytes, UTF-16 text among them, are swept as their
+extracted text runs rather than skipped.
+
+What it does not read, and says so when present: commits reachable only from a
+reflog (not pushed, but still on disk after a manual history rewrite),
+submodule content (audit each submodule repository on its own), and embedded
+repositories. Ignored files are never read.
+
+**The accepted line.** Every run states how many author, committer and tagger
+addresses and how many co-author trailers it accepted. That is this repository's
+publication policy, applied to whatever repository is audited. If the audited
+repository should not publish its authors' addresses, that count is a finding.
 
 ## What to search for
 
@@ -50,6 +90,21 @@ Search by category, not by credential prefix:
 - credentials of any kind: API keys, tokens, passwords, webhook URLs
 - **money and plan state**: measured spend, balances, billing or subscription
   tier, usage-credit flags
+
+The auditor's categories cover the mechanical shapes of these: email,
+credential (token formats, private-key blocks, authorization headers,
+passwords in URLs), Windows and Unix home paths in raw, JSON-escaped and
+percent-encoded forms, private IPv4 and IPv6 ranges, MAC addresses,
+private-use hostnames, UUIDs, dollar amounts of a thousand or more and
+billing fields. `-k` adds `password=`-style assignments, off by default
+because configuration code matches it legitimately. Real names, another
+project's name and a bare password do not have a shape: pass them with `-p`, and read the rest.
+
+There is no allowlist. A committed list of accepted values is a place to hide a
+real one, and a pattern that keeps hitting legitimate content is fixed in the
+pattern or made opt-in, with the measurement that justified it. Test fixtures
+assemble their example values from parts at run time, so the tracked file never
+holds a value its own audit would flag.
 
 That last category is the one an identity-shaped sweep cannot see, and it was
 added after a measured-spend total reached a tracked file and every pattern in
@@ -74,7 +129,7 @@ flat text misses values that span lines or sit behind escaping.
 
 ## Auditing an existing repo
 
-Same six places, plus:
+Same places, plus:
 
 1. `git log --all --diff-filter=A --name-only | sort -u` and read the whole
    list. Look for fixtures, corpora, dumps, `.env` files, anything sized like
@@ -90,10 +145,10 @@ Same six places, plus:
 **Never print a found value into the conversation.** Name the service or the
 category and truncate. The transcript is itself a file that travels.
 
-State findings as: what category, which of the six places, how many commits.
-If it is clean, say which six checks were run, that each non-exempt category
-read zero, and how many authorship records were accepted — a bare "clean" is
-not a result anyone can act on.
+State findings as: what category, which place, how many commits. If it is
+clean, say which places were swept, that each category read zero, what the
+`note:` lines say was not scanned, and how many authorship records were
+accepted — a bare "clean" is not a result anyone can act on.
 
 ## Removing what you find
 
@@ -106,7 +161,8 @@ content entirely.
 - **Commit messages need `--replace-message` separately** — `--replace-text`
   rewrites blobs only, and a message-borne leak survives it silently.
 
-Then re-run all six checks. A rewrite is not a scrub until they read zero.
+Then re-run the auditor. A rewrite is not a scrub until every place reads
+zero.
 
 Two adjacent traps: a verification pattern written into a tracked file embeds
 the data it hunts; and if the data reached a remote, rewriting local history
@@ -115,8 +171,8 @@ handling separately.
 
 ## Common mistakes
 
-**Grepping the working tree.** Proves nothing. Place 6 exists because a
-deleted file is still in history.
+**Grepping the working tree.** Proves nothing. The trees, patches and names
+columns exist because a deleted file is still in history.
 
 **Reporting clean from a shape search.** `ghp_`, `sk-`, `AKIA` find the easy
 ones. Bare hex and plain values in variables are the ones that got pushed.
@@ -134,4 +190,4 @@ server either way.
 - "The prefix scan came back clean"
 - "It's private, so it's fine"
 
-All of these mean: run all six places, and read what they return.
+All of these mean: run the auditor, and read what it returns.

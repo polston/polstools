@@ -1,0 +1,20 @@
+# Antigravity adapter
+
+Use only native Antigravity agent transport. Review policy comes exclusively
+from `../contract-v1.json` through `../scripts/adequacy_review.py`.
+
+1. Run the helper's `packet` command with `--harness antigravity`, the invocation
+   values, and one `--exclude` per exclusion. Save its complete JSON result in
+   a temporary packet file outside the repository. Do not add conversation
+   history or author rationale.
+2. In parallel using native `invoke_subagent` calls, spawn one read-only cold reviewer
+   for every canonical review request. Pass each prompt unchanged, and wait
+   for every reviewer result.
+3. Put returned JSON objects in canonical request order, not completion order,
+   in a temporary reviews file outside the repository. Run `distiller-packet`
+   with that file and `--packet-file`, then pass its prompt unchanged to one
+   read-only native subagent via `invoke_subagent`.
+4. Put the distiller's JSON object in a second temporary file. Run `distill`
+   with both files, the same `--packet-file`, and any adapter-observed unchecked
+   behavior, then remove all temporary files.
+5. Return `distilled` verbatim.

@@ -28,7 +28,7 @@ FMT_BASE = {
 FMT_REMOVE = (
     "P_FORMAT_DEFAULT", "P_FORMAT_HARNESS", "P_FORMAT_STATE_DIR",
     "P_FORMAT_CONFIG_FILE", "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID",
-    "CODEX_THREAD_ID",
+    "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID",
 )
 
 
@@ -42,8 +42,26 @@ def check(name, ok, detail=""):
     results.append((name, ok, detail))
 
 
+# Every case starts from the caller's environment minus anything that changes
+# gate behaviour, so the result does not depend on the caller's shell. Each
+# case then adds exactly what it exercises. RETRO_HOME is among them: when it
+# is set the gate writes hook telemetry, which needs Python by design, and a
+# check must never write into a RETRO_HOME it did not create.
+CONTROLLED_PREFIXES = ("P_FORMAT_", "P_SKILL_", "P_STATUSLINE_")
+CONTROLLED_NAMES = frozenset((
+    "RETRO_HOME", "POLSTOOLS_PYTHON", "POLSTOOLS_SINGLE_START",
+    "XDG_RUNTIME_DIR",
+)) | frozenset(FMT_REMOVE)
+
+
+def controlled_base():
+    return {k: v for k, v in os.environ.items()
+            if k not in CONTROLLED_NAMES
+            and not k.startswith(CONTROLLED_PREFIXES)}
+
+
 def run(cmd, stdin_text=None, env_extra=None, env_remove=(), binary=False):
-    env = dict(os.environ)
+    env = controlled_base()
     for name in env_remove:
         env.pop(name, None)
     if env_extra:
@@ -75,13 +93,12 @@ commands = {ev: events[ev][0]["hooks"][0]["command"] for ev in events}
 payloads = {}
 command_ready = []
 shell_root = ROOT.replace("\\", "/")
-launcher = shell_root + "/bin/python-launcher"
-controller = shell_root + "/bin/format-ctl"
+entry = shell_root + "/bin/format-gate"
 for ev, raw in commands.items():
     argv = hook_cmd(raw)
     payloads[ev] = argv[argv.index("gate") + 1]
-    ready = (argv[:3] == ["sh", launcher, controller]
-             and os.path.isfile(launcher)
+    ready = (argv[:3] == ["sh", entry, "gate"]
+             and os.path.isfile(entry)
              and os.path.isfile(payloads[ev]))
     command_ready.append(ready)
     check("portable command and payload exist for %s" % ev,
@@ -353,6 +370,136 @@ check("malformed stdin stays silent by default",
 r = ctl_run(["off"])
 check("toggle without session id exits 2", r.returncode == 2,
       "rc=%d" % r.returncode)
+
+# 13. Hook input that is JSON but not a usable object follows the default
+want = open(payloads["UserPromptSubmit"], encoding="utf-8").read()
+for odd in ("[]", "null", '{"session_id": 5}'):
+    r = gate("UserPromptSubmit", stdin_text=odd, env={"P_FORMAT_DEFAULT": "on"})
+    check("hook input %s follows an on default" % odd,
+          r.returncode == 0 and r.stdout == want,
+          "rc=%d %s" % (r.returncode, r.stderr.strip()[-120:]))
+
+# 14. The hook decides from the hook input's session id, as the Python gate
+#     does, even when the environment names a different session
+r = ctl_run(["on"], env={"CLAUDE_CODE_SESSION_ID": "e2e-stdin-session"})
+hook = gate("UserPromptSubmit", sid="e2e-stdin-session",
+            env={"CLAUDE_CODE_SESSION_ID": "e2e-env-session"})
+direct = run(ctl + ["gate", payloads["UserPromptSubmit"]],
+             stdin_text=json.dumps({"session_id": "e2e-stdin-session"}),
+             env_extra=fmt_env(CLAUDE_CODE_SESSION_ID="e2e-env-session"),
+             env_remove=FMT_REMOVE)
+check("hook entry and Python gate agree on the stdin session",
+      r.returncode == 0 and hook.stdout == direct.stdout == want,
+      "hook=%d chars, python=%d chars" % (len(hook.stdout), len(direct.stdout)))
+
+# 15. Without Python the hook fails soft: exit 1, never 2 (which would block
+#     the prompt), and the off default still exits 0 without Python
+with tempfile.TemporaryDirectory() as bare:
+    sh_wrapper = os.path.join(bare, "sh")
+    with open(sh_wrapper, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write('#!/bin/sh\nexec "%s" "$@"\n'
+                     % shutil.which("sh").replace("\\", "/"))
+    os.chmod(sh_wrapper, 0o755)
+    no_python = {"PATH": bare, "POLSTOOLS_PYTHON": "",
+                 "P_FORMAT_STATE_DIR": os.path.join(bare, "state"),
+                 "P_FORMAT_CONFIG_FILE": os.path.join(bare, "format.json")}
+    r = gate("UserPromptSubmit", sid="fresh-default", env=no_python)
+    check("off default needs no Python", r.returncode == 0 and r.stdout == "",
+          "rc=%d" % r.returncode)
+    r = gate("UserPromptSubmit", env=dict(no_python, P_FORMAT_DEFAULT="on"))
+    check("hook without Python exits 1, not 2",
+          r.returncode == 1 and r.stdout == "", "rc=%d" % r.returncode)
+
+# 16. Pruning removes abandoned toggles but keeps ones a session still reads
+state_dir = FMT_BASE["P_FORMAT_STATE_DIR"]
+for name in ("e2e-abandoned", "e2e-long-lived"):
+    ctl_run(["on"], env={"CLAUDE_CODE_SESSION_ID": name})
+old = os.path.getmtime(state_dir) - 15 * 24 * 3600
+for entry in os.listdir(state_dir):
+    os.utime(os.path.join(state_dir, entry), (old, old))
+gate("UserPromptSubmit", sid="e2e-long-lived")
+ctl_run(["off"], env={"CLAUDE_CODE_SESSION_ID": "e2e-pruner"})
+check("prune drops an abandoned toggle",
+      gate("UserPromptSubmit", sid="e2e-abandoned").stdout == "")
+check("prune keeps a toggle its session still reads",
+      gate("UserPromptSubmit", sid="e2e-long-lived").stdout == want)
+
+# 17. Toggle error paths are contained and use the exit-code convention
+r = ctl_run(["on"], env={"CLAUDE_CODE_SESSION_ID": "../outside/e2e"})
+check("a session id with separators stays inside the toggle directory",
+      r.returncode == 0
+      and not os.path.exists(os.path.join(FMT_HOME, "outside")),
+      "rc=%d" % r.returncode)
+r = ctl_run(["on"], env={"CLAUDE_CODE_SESSION_ID": "e2e-outer",
+                         "CODEX_THREAD_ID": "e2e-inner"})
+check("a toggle with two harness sessions visible exits 2",
+      r.returncode == 2, "rc=%d" % r.returncode)
+blocker = os.path.join(FMT_HOME, "not-a-directory")
+open(blocker, "w").close()
+r = ctl_run(["on"], env={"CLAUDE_CODE_SESSION_ID": SID,
+                         "P_FORMAT_STATE_DIR": os.path.join(blocker, "state")})
+check("an unusable toggle directory exits 2 without a traceback",
+      r.returncode == 2 and "Traceback" not in r.stderr, "rc=%d" % r.returncode)
+
+# 18. sync-native writes and removes only its owned Codex region
+with tempfile.TemporaryDirectory() as native_home:
+    codex_config = os.path.join(native_home, "config.toml")
+    original = '[tui]\r\nstatus_line = ["model"]\r\n'
+    with open(codex_config, "w", encoding="utf-8", newline="") as handle:
+        handle.write(original)
+    native_env = {
+        "P_SKILL_CONFIG_FILE": os.path.join(native_home, "global.json"),
+        "P_SKILL_STATE_DIR": os.path.join(native_home, "sessions"),
+        "P_CODEX_CONFIG_FILE": codex_config,
+        "P_SKILL_SKIP_STATUS_SYNC": "1",
+    }
+    def profile_step(args):
+        return run(profile_ctl + args, env_extra=native_env,
+                   env_remove=("P_SKILL_PROFILE",)).returncode
+
+    def codex_text():
+        with open(codex_config, encoding="utf-8", newline="") as handle:
+            return handle.read()
+
+    steps = [profile_step(["use", "work", "--global"]), profile_step(["sync-native"])]
+    synced = codex_text()
+    steps += [profile_step(["use", "home", "--global"]), profile_step(["sync-native"])]
+    restored = codex_text()
+    check("sync-native adds the owned region under work",
+          "p-skill-activation begin" in synced, str(steps))
+    check("sync-native restores the original bytes under home",
+          steps == [0, 0, 0, 0] and restored == original, str(steps))
+
+# 19. Hook telemetry is explicit: with RETRO_HOME set the gate always runs in
+#     Python (it records an event), so the shell cannot settle the off case
+with tempfile.TemporaryDirectory() as retro_home:
+    events_file = os.path.join(retro_home, "telemetry", "owned-hook-events.jsonl")
+    r = gate("UserPromptSubmit", sid="e2e-telemetry",
+             env={"RETRO_HOME": retro_home})
+    try:
+        logged = [json.loads(line) for line in
+                  open(events_file, encoding="utf-8").read().splitlines()]
+    except (OSError, ValueError):
+        logged = []
+    # One hook invocation records opportunity, start and end under one id.
+    check("format off with RETRO_HOME prints nothing, exits 0, logs one invocation",
+          r.returncode == 0 and r.stdout == ""
+          and [e.get("event") for e in logged] == ["opportunity", "start", "end"]
+          and len({e.get("invocation_id") for e in logged}) == 1,
+          "rc=%d events=%s" % (r.returncode, [e.get("event") for e in logged]))
+with tempfile.TemporaryDirectory() as retro_home, \
+        tempfile.TemporaryDirectory() as bare:
+    sh_wrapper = os.path.join(bare, "sh")
+    with open(sh_wrapper, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write('#!/bin/sh\nexec "%s" "$@"\n'
+                     % shutil.which("sh").replace("\\", "/"))
+    os.chmod(sh_wrapper, 0o755)
+    r = gate("UserPromptSubmit", sid="e2e-telemetry-bare",
+             env={"PATH": bare, "POLSTOOLS_PYTHON": "",
+                  "RETRO_HOME": retro_home})
+    check("format off with RETRO_HOME and no Python exits 1, logs nothing",
+          r.returncode == 1 and r.stdout == "" and not os.listdir(retro_home),
+          "rc=%d" % r.returncode)
 
 shutil.rmtree(FMT_HOME, ignore_errors=True)
 

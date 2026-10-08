@@ -1,7 +1,6 @@
 """Contract tests for the local-first evaluation core."""
 
 import sys
-import importlib.util
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +8,9 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from eval_optional import requires  # noqa: E402
 from retro_eval.dataset import DatasetManifest, stable_split  # noqa: E402
 from retro_eval.proposals import Proposal, rank_proposals  # noqa: E402
 from retro_eval.schema import (  # noqa: E402
@@ -151,22 +152,41 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual((-0.25, 0.75), result["interval"])
         self.assertEqual("oracle", result["backend"])
 
-    @unittest.skipUnless(importlib.util.find_spec("scipy"), "optional SciPy not installed")
-    def test_scipy_bca_backend_is_seeded_and_contains_observed_mean(self):
+    @requires("scipy")
+    def test_scipy_bca_interval_agrees_with_a_stdlib_bootstrap_reference(self):
+        import random
+        import statistics
         from retro_eval.scipy_statistics import ScipyBcaBackend
 
-        backend = ScipyBcaBackend(resamples=999)
-        first = paired_effect_interval(
-            [5, 8, 13, 21, 34, 55], [4, 7, 10, 20, 30, 50],
-            backend=backend, statistic="mean", seed=42,
-        )
-        second = paired_effect_interval(
-            [5, 8, 13, 21, 34, 55], [4, 7, 10, 20, 30, 50],
-            backend=backend, statistic="mean", seed=42,
-        )
-        self.assertEqual(first, second)
-        self.assertLessEqual(first["interval"][0], first["effect"])
-        self.assertGreaterEqual(first["interval"][1], first["effect"])
+        rng = random.Random(20261006)
+        control = [rng.gauss(100, 15) for _ in range(40)]
+        candidate = [value + rng.gauss(8, 10) for value in control]
+        differences = [after - before for before, after in zip(control, candidate)]
+        observed = statistics.fmean(differences)
+
+        # Reference: percentile bootstrap of the mean, 20000 seeded resamples.
+        reference_rng = random.Random(7)
+        count = len(differences)
+        means = sorted(
+            statistics.fmean(reference_rng.choices(differences, k=count))
+            for _ in range(20000))
+        low_ref, high_ref = means[int(0.025 * 20000)], means[int(0.975 * 20000)]
+        width = high_ref - low_ref
+
+        result = paired_effect_interval(
+            control, candidate, backend=ScipyBcaBackend(resamples=9999),
+            statistic="mean", confidence=0.95, seed=42)
+        low, high = result["interval"]
+        self.assertAlmostEqual(observed, result["effect"])
+        self.assertLessEqual(low, observed)
+        self.assertGreaterEqual(high, observed)
+        # BCa and percentile intervals differ slightly on a roughly symmetric
+        # sample; each bound must sit within 10% of the reference width.
+        self.assertAlmostEqual(low_ref, low, delta=0.10 * width)
+        self.assertAlmostEqual(high_ref, high, delta=0.10 * width)
+        self.assertEqual(result, paired_effect_interval(
+            control, candidate, backend=ScipyBcaBackend(resamples=9999),
+            statistic="mean", confidence=0.95, seed=42))
 
 
 class ProposalTests(unittest.TestCase):

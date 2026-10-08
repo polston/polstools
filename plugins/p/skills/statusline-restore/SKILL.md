@@ -1,14 +1,25 @@
 ---
 name: statusline-restore
-description: Restore statusline settings changed by the last apply operation.
+description: Use only when the operator asks to restore the statusline settings changed by the last apply; it edits Claude and Codex settings files.
 ---
 
 # Restore aligned status lines
 
-Before any other action, resolve the plugin root and run
-`<python> <plugin-root>/bin/skill-profile-ctl check statusline-restore`. If it
-exits 1 or 2, stop and report its output.
+Claude Code and Codex only. An Antigravity plugin cannot register a status
+line; Antigravity changes its status line only through its own `/statusline`
+command, and the `aligning-statuslines` skill explains how to check it.
 
-Resolve Python and the plugin root as described by the `aligning-statuslines`
-skill, then run `statusline-ctl restore`. Report any setting deliberately left
+Before any other action, run
+`<python> <plugin-root>/bin/skill-profile-ctl check statusline-restore`. If it
+exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute path
+two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/statusline-restore`; take it from this file's own path,
+never from the working directory or an environment variable. `<python>` is `sh
+<plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
+
+Run `<python> <plugin-root>/bin/statusline-ctl restore`. Report any setting deliberately left
 untouched because it changed after apply.

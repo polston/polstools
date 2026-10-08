@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .base import AdapterBase, AdapterResult, iter_jsonl, parse_timestamp
+from .base import (AdapterBase, AdapterResult, iter_jsonl, parse_timestamp,
+                   prompt_evidence)
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
 from ..taxonomies import classify_failure_evidence
+from ..text_rules import content_text, prose_of, text_of
 
 
 def _direct_human(record, message, direct_prompt_sources) -> bool:
@@ -39,10 +41,14 @@ def _integer_or_zero(value):
 
 class ClaudeAdapter(AdapterBase):
     source = "claude"
-    adapter_version = 4
+    adapter_version = 5
 
-    def __init__(self, id_salt: bytes, direct_prompt_sources=None, capabilities=None):
+    def __init__(self, id_salt: bytes, direct_prompt_sources=None, capabilities=None,
+                 excluded_session_ids=None):
         super().__init__(id_salt)
+        self.excluded_session_ids = {
+            str(value).lower() for value in (excluded_session_ids or ())
+        }
         if direct_prompt_sources is None or capabilities is None:
             from .registry import default_options_for
             defaults = default_options_for(self.source)
@@ -56,7 +62,16 @@ class ClaudeAdapter(AdapterBase):
 
     def read(self, path: Path, root: Path) -> AdapterResult:
         trace_id = self.trace_id(path, root)
-        is_subagent = "subagents" in {part.lower() for part in path.relative_to(root).parts}
+        relative = path.relative_to(root)
+        is_subagent = "subagents" in {part.lower() for part in relative.parts}
+        # A main transcript is <project>/<session>.jsonl; its subagents live
+        # under <project>/<session>/subagents/.
+        session = relative.parts[1] if len(relative.parts) > 2 else path.stem
+        if session.lower() in self.excluded_session_ids:
+            return AdapterResult(
+                source=self.source, included=False,
+                exclusion_reason="active_or_explicitly_excluded",
+                is_subagent=is_subagent, records=())
         mode = "subagent" if is_subagent else "main"
         records = []
         human_prompts = tool_calls = tool_results = 0
@@ -140,12 +155,7 @@ class ClaudeAdapter(AdapterBase):
                     cached_tokens += int(usage.get("cache_read_input_tokens") or 0)
                     output_tokens += int(usage.get("output_tokens") or 0)
                 content = message.get("content")
-                answered = answered or bool(
-                    isinstance(content, str) and content.strip()
-                    or isinstance(content, list) and any(
-                        isinstance(block, dict) and block.get("type") == "text"
-                        and str(block.get("text") or "").strip()
-                        for block in content))
+                answered = answered or bool(prose_of(message).strip())
                 records.append(self._span(trace_id, sequence, SpanKind.LLM,
                                           record, source_version, mode, "agent"))
                 if isinstance(content, list):
@@ -227,6 +237,31 @@ class ClaudeAdapter(AdapterBase):
             skills=tuple(skills),
         )
 
+    def private_prompt_evidence(self, path: Path, root: Path, redactor):
+        """Redacted direct-human prompts keyed by their PROMPT span id.
+
+        Uses the same record walk and direct-human predicate as read(), so
+        every key matches a normalized span. External annotation use only.
+        """
+        trace_id = self.trace_id(path, root)
+        evidence = {}
+        context = []
+        for sequence, (_, record) in enumerate(iter_jsonl(path)):
+            message = record.get("message")
+            if not isinstance(message, dict):
+                continue
+            if record.get("type") == "assistant":
+                text = text_of(message)
+                if text:
+                    context.append(text)
+            elif (_direct_human(record, message, self.direct_prompt_sources)
+                  and text_of(message).strip()):
+                span_id = self.ids.make(trace_id, sequence, SpanKind.PROMPT.value)
+                evidence[span_id] = prompt_evidence(
+                    redactor, text_of(message), context)
+                context = []
+        return evidence
+
     def private_tool_evidence(self, path: Path, root: Path, redactor):
         """Return redacted tool evidence for external annotation only."""
         trace_id = self.trace_id(path, root)
@@ -241,10 +276,8 @@ class ClaudeAdapter(AdapterBase):
             if not isinstance(content, list):
                 continue
             message_context = "\n".join(
-                str(block.get("text") or "").strip()
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-                and str(block.get("text") or "").strip())
+                piece.strip() for piece in content_text(content, ("text",))
+                if piece.strip())
             shown_context = (redactor(message_context)[-1200:]
                              if message_context else last_assistant_context)
             for index, block in enumerate(content):

@@ -1,10 +1,16 @@
 # polstools
 
-One `p` plugin for Claude Code and Codex: home/work skill activation,
+One `p` plugin for Claude Code, Codex, and Antigravity: home/work skill activation,
 repository safety, cross-harness diagnostics and goal design, workflow
 evidence, evaluation, response formatting, aligned status lines, and small
 platform fixes. Runtime scripts use only POSIX shell or Python's standard
 library.
+
+## Requirements
+
+Python 3.9 or newer and a POSIX `sh`. The scripts are started through `sh`; on
+Windows that is the one Git Bash provides. They find a suitable Python
+themselves through `plugins/p/bin/python-launcher`.
 
 ## Install
 
@@ -35,12 +41,19 @@ agy plugin install ./plugins/p
 ```
 
 Start a new session after installing or changing the plugin. Skills may trigger
-from their descriptions; invoke one explicitly as `/p:<skill>` in Claude Code,
-`$p:<skill>` in Codex, or `/<skill>` in Antigravity.
+from their descriptions; invoke one explicitly as `/p:<skill>` in Claude Code and
+Antigravity, or `$p:<skill>` in Codex. Antigravity also accepts `/<skill>`, but
+seven names are both a command and a skill there and the short form is
+ambiguous for them, so use `/p:<skill>`.
+
+Antigravity reads a plugin's hooks from `<plugin-root>/hooks.json`, so its
+response-format hook is declared there, separately from `hooks/hooks.json`. On
+Windows, Antigravity runs hooks through `cmd /c`, so Git's `usr\bin` (which
+holds `sh.exe`) must be on the Windows `PATH`.
 
 ## Diagnose
 
-Run `/p:doctor` in Claude Code, `$p:doctor` in Codex, or `/doctor` in Antigravity. From a development
+Run `/p:doctor` in Claude Code or Antigravity, or `$p:doctor` in Codex. From a development
 checkout, compare the live installations with that checkout directly:
 
 ```sh
@@ -49,7 +62,7 @@ sh plugins/p/bin/python-launcher plugins/p/bin/p-doctor --repo-root .
 
 The doctor reports package-metadata drift, installed-version drift, disabled or
 obsolete polstools plugins, Python discovery failures, and byte-exact execution
-of both live format hooks. It is read-only and omits installation paths and raw
+of each harness's live format hook. It is read-only and omits installation paths and raw
 command errors.
 Exit 0 is healthy, exit 1 found actionable drift, and exit 2 means an available
 harness could not be checked.
@@ -62,9 +75,25 @@ Use the plugin-owned updater from a checkout or installed plugin root:
 sh plugins/p/bin/python-launcher plugins/p/bin/p-update
 ```
 
-It updates both available harnesses, preserves prior Codex cache snapshots so
-already-running sessions keep valid skill paths, and finishes by running the
-newly installed doctor. Start new sessions to load the new version.
+It reads every harness (Claude Code, Codex, Antigravity) first, skips one that
+has no p, and stops before changing anything if one cannot be read. It then updates each harness that has
+p, preserves prior Codex cache snapshots so already-running sessions keep valid
+skill paths, and finishes by running the newly installed doctor. For a remote
+Codex marketplace it first runs `codex plugin marketplace upgrade polstools`,
+and it regenerates Codex skill-activation entries with `skill-profile-ctl
+sync-native` when p owns a region of the Codex config. If the Codex re-add
+fails, the updater exits 2 and prints `codex plugin add p@polstools`; run it
+once the cause is fixed. Start new sessions to load the new version.
+
+Antigravity records no install source, so the updater reinstalls it from the
+copy another harness now loads. With Antigravity alone, name the plugin
+directory. `--dry-run` reads every harness and prints the planned commands
+without running them:
+
+```sh
+sh plugins/p/bin/python-launcher plugins/p/bin/p-update --dry-run
+sh plugins/p/bin/python-launcher plugins/p/bin/p-update --agy-source <repo-root>/plugins/p
+```
 
 ## Local development
 
@@ -89,13 +118,34 @@ codex plugin marketplace add <repo-root>
 codex plugin add p@polstools
 ```
 
+### Antigravity
+
+```sh
+agy plugin install <repo-root>/plugins/p
+```
+
 Start a new session, then run the doctor against `<repo-root>`.
+
+## Uninstall
+
+Each command removes only the plugin registration.
+
+```sh
+claude plugin uninstall p@polstools --scope user
+codex plugin remove p@polstools
+agy plugin uninstall p
+```
+
+Remove a marketplace registration separately with
+`claude plugin marketplace remove polstools` or
+`codex plugin marketplace remove polstools`. The name Antigravity expects is
+the one `agy plugin list` shows.
 
 ## Capabilities
 
 | Area | Skills or commands | Purpose |
 |---|---|---|
-| Plugin health | `doctor`, `update` | Compare both live installs, execute both format hooks, and update without breaking active sessions |
+| Plugin health | `doctor`, `update` | Compare every harness's live install, execute each format hook, and update without breaking active sessions |
 | Skill activation | `home`, `work`, `managing-skill-activation` | Switch session profiles and manage defaults or overrides |
 | Repository safety | `auditing-a-repo-for-private-data`, `checking-branch-base-before-a-pr`, `finding-what-a-change-made-false` | Catch private data, branch-base mistakes, and documentation drift |
 | Workflow evidence | `auditing-workflow-rules-against-behavior`, `counting-stopped-promises`, `deciding-the-prompt-cache-ttl`, `finding-friction-in-recent-sessions`, `scouting-tools-for-open-frictions` | Measure recurring friction before changing rules or tools |
@@ -110,29 +160,52 @@ Start a new session, then run the doctor against `<repo-root>`.
 
 ## Validate a checkout
 
-The CI workflow runs these commands on Windows and Linux. Run the same contract
-locally before integration:
+The CI workflow runs these commands on Linux, macOS, and Windows under Python
+3.9 and 3.14, plus a shell syntax check of the POSIX scripts and the
+stopped-promises self-test. Run the same contract locally before integration:
 
 ```sh
 sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
 sh plugins/p/bin/python-launcher -B plugins/p/bin/format-e2e
 sh plugins/p/bin/p-validate
 sh plugins/p/bin/repo-privacy-audit -C .
-git diff --check
+git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
 ```
 
-`p-validate` checks both metadata systems, canonical skill adapters, the
-adequacy-review contract and native adapters, activation coverage, and fresh
-temporary installed copies for Claude Code and Codex. It does not register,
-install, publish, or otherwise change either harness.
+`p-validate` checks the three harness manifests and both marketplace entries,
+canonical skill adapters, the adequacy-review contract and native adapters,
+activation coverage, the root `hooks.json` hook contract, and one relocated copy
+of the plugin run from a path other than the checkout. When `agy` is installed
+it also runs Antigravity's own validator on a temporary copy under a scratch
+home; without `agy` that check is skipped. It does not register, install,
+publish, or otherwise change any harness. `p-validate --base <revision>` also
+fails when `plugins/p` differs from that revision without a version increase;
+a revision the clone does not have exits 2. The CI workflow runs that check on
+pull requests against the pull request's base revision.
 
-Use `/p:work` or `$p:work` to keep repository-publication audits and local
-session-history workflows out of the current work session. Use `/p:home` or
-`$p:home` to restore the compatibility profile where every skill is enabled.
-The `managing-skill-activation` skill reports the effective policy, sets a
-global default, and manages individual overrides. Claude's supported statusline
-paths show the active session as `p:w` or `p:h`; Codex keeps its native footer
-and confirms the selection in the command response.
+Use `/p:work` (Claude Code, Antigravity) or `$p:work` (Codex) to keep
+repository-publication audits and local session-history workflows out of the
+current work session. Use `/p:home` or `$p:home` to restore the compatibility
+profile where every skill is enabled. The `managing-skill-activation` skill
+reports the effective policy, sets a global default, and manages individual
+overrides. A per-session switch needs the harness's session id in the agent's
+shell; on Antigravity the controller looks for `ANTIGRAVITY_CONVERSATION_ID`.
+Without a session id, `skill-profile-ctl work` exits 2 with "no supported
+harness session id is set", and `skill-profile-ctl use work --global` sets the
+default for every session instead.
+
+Activation is advisory on every harness: each governed skill checks its profile
+first and stops when told to, but no harness blocks a skill that skips the
+check. Only Codex can hide disabled skills from its catalog, through an
+explicit `skill-profile-ctl sync-native`.
+
+Claude's supported statusline paths show the active session as `p:w` or `p:h`;
+Codex keeps its native footer and confirms the selection in the command
+response. An Antigravity plugin cannot register a status line. Check whether
+its p renderer is active with
+`sh plugins/p/bin/python-launcher plugins/p/bin/statusline-ctl antigravity`;
+when it is not, the command exits 1 and prints the `/statusline <command>` line
+to type in an Antigravity session.
 
 The optional local evaluation layer is documented in
 [`plugins/p/EVALUATION.md`](plugins/p/EVALUATION.md). Transcripts, labels,
@@ -148,8 +221,9 @@ Antigravity's data directory defaults to `~/.gemini/antigravity-cli` and can be
 overridden for ingestion with `RETRO_ANTIGRAVITY_HOME`. Only one transcript
 export per conversation is measured, preferring `transcript_full.jsonl`.
 
-Antigravity session populations and token accounting are not observable in
-these exports. Its moments are explicitly candidate-sampled, not ranked or
-included in main-session rates. This support is in the Retro commands, not
-the separate evaluation adapters. Packs select sessions by their start date;
-an active session is a snapshot, not a completed outcome.
+Antigravity session populations are not observable in these exports, and token
+usage is not measured: exports do not carry it on every step. Its moments are
+explicitly candidate-sampled, not ranked or included in main-session rates. The
+separate evaluation adapters read Antigravity exports as well. Packs select
+sessions by their start date; an active session is a snapshot, not a completed
+outcome.

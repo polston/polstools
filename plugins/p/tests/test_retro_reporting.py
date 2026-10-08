@@ -12,6 +12,9 @@ from unittest import mock
 
 from test_retro_extract import load_retro
 
+# Rows built here stand for rows the current reducer wrote.
+SCHEMA = load_retro().SCHEMA_VERSION
+
 
 def base_row(**over):
     today = datetime.now(timezone.utc).date().isoformat()
@@ -20,7 +23,7 @@ def base_row(**over):
            "project_key": "p", "ineligible": [], "compacted": False,
            "session_id": "s", "project": "~", "git_branch": "", "cc_version": "",
            "date": today, "duration_s": 60, "tokens_in": 0, "tokens_out": 10,
-           "cache_read": 0, "skills_used": [], "schema": 7, "ending": "text",
+           "cache_read": 0, "skills_used": [], "schema": SCHEMA, "ending": "text",
            "eligible": []}
     for key in ["turns", "user_prompts", "tool_calls", "tool_errors",
                 "repeat_calls", "correction_candidates", "approval_turns",

@@ -1,152 +1,410 @@
-# Claude Code statusLine renderer for the aligned-v1 profile.
-# Line 1: model + effort | cwd | git branch | context remaining.
-# Line 2: five-hour + weekly + model-scoped weekly quota remaining.
+# Claude Code statusLine renderer for the aligned-v1 profile on Windows.
+# Line 1: model | effort | cwd | git branch | context left | profile label.
+# Line 2: five-hour, weekly and model-scoped weekly quota left.
+# Meets the same output contract as claude-statusline.py; that contract is
+# tests/fixtures/statusline-contract.json. The render path reads stdin, the
+# local usage cache and git only. The usage refresh runs detached in
+# claude-statusline.py --update-cache; this script never reads a credential.
 
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
 
-$inputJson = [Console]::In.ReadToEnd()
-$data = $inputJson | ConvertFrom-Json
-$model = $data.model.display_name
-$cwd = $data.workspace.current_dir
-if ([string]::IsNullOrEmpty($cwd)) { $cwd = $data.cwd }
-
-$homeDir = $HOME
-if ($cwd -and $homeDir -and $cwd.StartsWith($homeDir, [System.StringComparison]::OrdinalIgnoreCase)) {
-    $cwd = '~' + $cwd.Substring($homeDir.Length)
-}
-
-$branch = $data.workspace.git_branch
-if (-not $branch -and $cwd -and (Test-Path -LiteralPath $cwd)) {
-    Push-Location -LiteralPath $cwd
-    $b = git --no-optional-locks rev-parse --abbrev-ref HEAD 2>$null
-    if ($LASTEXITCODE -eq 0 -and $b) { $branch = $b.Trim() }
-    Pop-Location
-}
-
 $esc = [char]27
-$dim = "$esc[2m"
-$reset = "$esc[0m"
-$cyan = "$esc[2;36m"
-$yellow = "$esc[2;33m"
-$magenta = "$esc[35m"
-$sep = "$dim|$reset"
+$Reset = "$esc[0m"; $Dim = "$esc[2m"; $Cyan = "$esc[2;36m"; $Yellow = "$esc[2;33m"
+$Magenta = "$esc[35m"; $Red = "$esc[31m"; $Amber = "$esc[33m"; $Green = "$esc[32m"
+$Block = [string][char]0x2588; $Shade = [string][char]0x2591; $Ellipsis = [string][char]0x2026
+$Invariant = [System.Globalization.CultureInfo]::InvariantCulture
+$IsWin = ($PSVersionTable.PSEdition -eq 'Desktop') -or [bool]$IsWindows
 
-function New-Bar([double]$left) {
-    $slots = 10
-    $bounded = [math]::Max(0, [math]::Min(100, $left))
-    $filled = [int][math]::Round($bounded / 100 * $slots)
-    $bar = [string]::new([char]0x2588, $filled) + [string]::new([char]0x2591, $slots - $filled)
-    $used = 100 - $bounded
-    $color = if ($used -ge 80) { "$esc[31m" } elseif ($used -ge 60) { "$esc[33m" } else { "$esc[32m" }
-    return "$color$bar$reset"
-}
-
-$parts = New-Object System.Collections.Generic.List[string]
-if ($model) { $parts.Add("$cyan$model$reset") }
-$effort = $data.effort.level
-if ($effort) { $parts.Add("$dim" + 'eff' + "$reset $magenta$effort$reset") }
-if ($cwd) { $parts.Add("$dim$cwd$reset") }
-if ($branch) { $parts.Add("$yellow$branch$reset") }
-
-$remaining = $data.context_window.remaining_percentage
-if ($null -ne $remaining) {
-    $left = [math]::Max(0, [math]::Min(100, [double]$remaining))
-    $tokens = ''
-    $size = $data.context_window.context_window_size
-    $used = $data.context_window.total_input_tokens
-    if ($size -and $null -ne $used) {
-        $fmt = { param($n) if ($n -ge 1000000) { '{0:0.#}M' -f ($n / 1000000) } else { "$([int][math]::Round($n/1000))k" } }
-        $tokens = " $dim$(& $fmt $used)/$(& $fmt $size)$reset"
-    }
-    $parts.Add("$(New-Bar $left) " + ("{0:N0}% left" -f $left) + $tokens)
-}
-$profileLabel = 'p:?'
-$profileHelper = Join-Path $PSScriptRoot 'skill-profile-label.py'
-if (Test-Path -LiteralPath $profileHelper) {
-    try {
-        $profileResult = $null
-        if (Get-Command python3 -ErrorAction SilentlyContinue) {
-            $profileResult = $inputJson | & python3 $profileHelper 2>$null
-        } elseif (Get-Command python -ErrorAction SilentlyContinue) {
-            $profileResult = $inputJson | & python $profileHelper 2>$null
-        } elseif (Get-Command py -ErrorAction SilentlyContinue) {
-            $profileResult = $inputJson | & py -3 $profileHelper 2>$null
+function Get-Field($obj, [string]$name) {
+    if ($obj -is [System.Management.Automation.PSCustomObject]) {
+        $property = $obj.PSObject.Properties[$name]
+        if ($property) {
+            $value = $property.Value
+            if ($value -is [array]) { return ,$value }
+            return $value
         }
-        $candidate = ($profileResult | Out-String).Trim()
-        if ($candidate -in @('p:h', 'p:w', 'p:?')) { $profileLabel = $candidate }
-    } catch {}
+    }
+    return $null
 }
-$parts.Add("$dim$profileLabel$reset")
-if ($parts.Count -gt 0) { Write-Host ($parts -join " $sep ") }
 
-$quotaParts = New-Object System.Collections.Generic.List[string]
-foreach ($window in @(
-    @{ label = '5h'; value = $data.rate_limits.five_hour.used_percentage },
-    @{ label = 'wk'; value = $data.rate_limits.seven_day.used_percentage }
-)) {
-    if ($null -ne $window.value) {
-        $used = [math]::Max(0, [math]::Min(100, [double]$window.value))
-        $left = 100 - $used
-        $quotaParts.Add("$dim$($window.label)$reset $(New-Bar $left) " + ("{0:N0}% left" -f $left))
+# C0 controls, DEL, C1 controls and bidirectional format controls never reach the terminal from outside input.
+function Remove-Controls([string]$text) { return [regex]::Replace($text, '[\u0000-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069]', '') }
+function Get-Text($value) { if ($value -is [string]) { return (Remove-Controls $value).Trim() } return '' }
+
+function Get-Num($value) {
+    if ($null -eq $value -or $value -is [bool]) { return $null }
+    if ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal] -or $value -is [single]) {
+        $number = [double]$value
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) { return $null }
+        return $number
+    }
+    return $null
+}
+
+function Limit-Percent([double]$value) { return [math]::Max(0.0, [math]::Min(100.0, $value)) }
+function Format-Percent([double]$left) { return ([long][math]::Floor($left)).ToString($Invariant) + '% left' }
+function Format-Bar([double]$left) {
+    $filled = [int][math]::Floor($left / 10 + 0.5)
+    return ($Block * $filled) + ($Shade * (10 - $filled))
+}
+function Get-Tone([double]$left) {
+    $used = 100 - $left
+    if ($used -ge 80) { return $Red } elseif ($used -ge 60) { return $Amber } else { return $Green }
+}
+function Format-Tokens([double]$count) {
+    if ($count -ge 1000000) {
+        $tenths = [long][math]::Floor($count / 100000 + 0.5)
+        $whole = [long][math]::Floor($tenths / 10); $part = $tenths % 10
+        if ($part -eq 0) { return $whole.ToString($Invariant) + 'M' }
+        return $whole.ToString($Invariant) + '.' + $part.ToString($Invariant) + 'M'
+    }
+    return ([long][math]::Floor($count / 1000 + 0.5)).ToString($Invariant) + 'k'
+}
+# East Asian Wide and Fullwidth code points take two terminal cells (the same
+# classification the Python renderer takes from unicodedata), as flat low/high pairs.
+$script:WideRanges = @(
+    0x1100, 0x115F, 0x231A, 0x231B, 0x2329, 0x232A, 0x23E9, 0x23EC, 0x23F0, 0x23F0, 0x23F3,
+    0x23F3, 0x25FD, 0x25FE, 0x2614, 0x2615, 0x2630, 0x2637, 0x2648, 0x2653, 0x267F, 0x267F,
+    0x268A, 0x268F, 0x2693, 0x2693, 0x26A1, 0x26A1, 0x26AA, 0x26AB, 0x26BD, 0x26BE, 0x26C4,
+    0x26C5, 0x26CE, 0x26CE, 0x26D4, 0x26D4, 0x26EA, 0x26EA, 0x26F2, 0x26F3, 0x26F5, 0x26F5,
+    0x26FA, 0x26FA, 0x26FD, 0x26FD, 0x2705, 0x2705, 0x270A, 0x270B, 0x2728, 0x2728, 0x274C,
+    0x274C, 0x274E, 0x274E, 0x2753, 0x2755, 0x2757, 0x2757, 0x2795, 0x2797, 0x27B0, 0x27B0,
+    0x27BF, 0x27BF, 0x2B1B, 0x2B1C, 0x2B50, 0x2B50, 0x2B55, 0x2B55, 0x2E80, 0x2E99, 0x2E9B,
+    0x2EF3, 0x2F00, 0x2FD5, 0x2FF0, 0x303E, 0x3041, 0x3096, 0x3099, 0x30FF, 0x3105, 0x312F,
+    0x3131, 0x318E, 0x3190, 0x31E5, 0x31EF, 0x321E, 0x3220, 0x3247, 0x3250, 0xA48C, 0xA490,
+    0xA4C6, 0xA960, 0xA97C, 0xAC00, 0xD7A3, 0xF900, 0xFAFF, 0xFE10, 0xFE19, 0xFE30, 0xFE52,
+    0xFE54, 0xFE66, 0xFE68, 0xFE6B, 0xFF01, 0xFF60, 0xFFE0, 0xFFE6, 0x16FE0, 0x16FE4, 0x16FF0,
+    0x16FF1, 0x17000, 0x187F7, 0x18800, 0x18CD5, 0x18CFF, 0x18D08, 0x1AFF0, 0x1AFF3, 0x1AFF5,
+    0x1AFFB, 0x1AFFD, 0x1AFFE, 0x1B000, 0x1B122, 0x1B132, 0x1B132, 0x1B150, 0x1B152, 0x1B155,
+    0x1B155, 0x1B164, 0x1B167, 0x1B170, 0x1B2FB, 0x1D300, 0x1D356, 0x1D360, 0x1D376, 0x1F004,
+    0x1F004, 0x1F0CF, 0x1F0CF, 0x1F18E, 0x1F18E, 0x1F191, 0x1F19A, 0x1F200, 0x1F202, 0x1F210,
+    0x1F23B, 0x1F240, 0x1F248, 0x1F250, 0x1F251, 0x1F260, 0x1F265, 0x1F300, 0x1F320, 0x1F32D,
+    0x1F335, 0x1F337, 0x1F37C, 0x1F37E, 0x1F393, 0x1F3A0, 0x1F3CA, 0x1F3CF, 0x1F3D3, 0x1F3E0,
+    0x1F3F0, 0x1F3F4, 0x1F3F4, 0x1F3F8, 0x1F43E, 0x1F440, 0x1F440, 0x1F442, 0x1F4FC, 0x1F4FF,
+    0x1F53D, 0x1F54B, 0x1F54E, 0x1F550, 0x1F567, 0x1F57A, 0x1F57A, 0x1F595, 0x1F596, 0x1F5A4,
+    0x1F5A4, 0x1F5FB, 0x1F64F, 0x1F680, 0x1F6C5, 0x1F6CC, 0x1F6CC, 0x1F6D0, 0x1F6D2, 0x1F6D5,
+    0x1F6D7, 0x1F6DC, 0x1F6DF, 0x1F6EB, 0x1F6EC, 0x1F6F4, 0x1F6FC, 0x1F7E0, 0x1F7EB, 0x1F7F0,
+    0x1F7F0, 0x1F90C, 0x1F93A, 0x1F93C, 0x1F945, 0x1F947, 0x1F9FF, 0x1FA70, 0x1FA7C, 0x1FA80,
+    0x1FA89, 0x1FA8F, 0x1FAC6, 0x1FACE, 0x1FADC, 0x1FADF, 0x1FAE9, 0x1FAF0, 0x1FAF8, 0x20000,
+    0x2FFFD, 0x30000, 0x3FFFD
+)
+function Get-CellWidth([int]$codePoint) {
+    if ($codePoint -lt 0x1100) { return 1 }
+    for ($i = 0; $i -lt $script:WideRanges.Count; $i += 2) {
+        if ($codePoint -lt $script:WideRanges[$i]) { return 1 }
+        if ($codePoint -le $script:WideRanges[$i + 1]) { return 2 }
+    }
+    return 1
+}
+function Get-Width([string]$text) {
+    $cells = 0
+    for ($i = 0; $i -lt $text.Length; $i++) {
+        $cp = [int]$text[$i]
+        if ([char]::IsHighSurrogate($text[$i]) -and $i + 1 -lt $text.Length) { $cp = [char]::ConvertToUtf32($text[$i], $text[$i + 1]); $i++ }
+        $cells += Get-CellWidth $cp
+    }
+    return $cells
+}
+function Limit-Text([string]$text, [int]$cellBudget) {
+    $builder = New-Object System.Text.StringBuilder; $used = 0
+    for ($i = 0; $i -lt $text.Length; $i++) {
+        $width = 1; $length = 1
+        if ([char]::IsHighSurrogate($text[$i]) -and $i + 1 -lt $text.Length) {
+            $width = Get-CellWidth ([char]::ConvertToUtf32($text[$i], $text[$i + 1])); $length = 2
+        } else { $width = Get-CellWidth ([int]$text[$i]) }
+        if ($used + $width -gt $cellBudget) { break }
+        [void]$builder.Append($text.Substring($i, $length)); $used += $width; $i += $length - 1
+    }
+    return $builder.ToString()
+}
+
+function Get-ShortCwd([string]$cwd, [string]$homeDir, [bool]$windows) {
+    if (-not $cwd -or -not $homeDir) { return $cwd }
+    $trimmed = $homeDir.TrimEnd('/', '\')
+    if ($trimmed) { $homeDir = $trimmed }
+    $probe = $cwd; $base = $homeDir
+    # Either separator is valid on Windows; the replacement keeps lengths.
+    if ($windows) {
+        $probe = $cwd.ToLowerInvariant().Replace('\', '/')
+        $base = $homeDir.ToLowerInvariant().Replace('\', '/')
+    }
+    if ($probe -ceq $base) { return '~' }
+    if ($probe.StartsWith($base, [System.StringComparison]::Ordinal) -and ('/\'.IndexOf($probe[$base.Length]) -ge 0)) {
+        return '~' + $cwd.Substring($homeDir.Length)
+    }
+    return $cwd
+}
+
+function Paint([string]$code, [string]$text) { return $code + $text + $Reset }
+function New-Segment([string]$key, [string]$plain, [string]$painted) { return @{ key = $key; plain = $plain; painted = $painted } }
+function New-Gauge([string]$key, [string]$label, [double]$left, [string]$tokens) {
+    $bar = Format-Bar $left; $pct = Format-Percent $left
+    $head = ''; $paintedHead = ''; $suffix = ''; $paintedSuffix = ''
+    if ($label) { $head = $label + ' '; $paintedHead = (Paint $Dim $label) + ' ' }
+    if ($tokens) { $suffix = ' ' + $tokens; $paintedSuffix = ' ' + (Paint $Dim $tokens) }
+    return @{
+        key = $key; label = $label; left = $left; tokens = $tokens
+        plain = $head + $bar + ' ' + $pct + $suffix
+        painted = $paintedHead + (Get-Tone $left) + $bar + $Reset + ' ' + $pct + $paintedSuffix
+        compactPlain = $head + $pct + $suffix
+        compactPainted = $paintedHead + $pct + $paintedSuffix
     }
 }
 
-# The model-scoped weekly window is absent from statusline stdin. Read the
-# local credential only for the request header, never print or persist it, and
-# cache only the returned label and percentage. Fresh success caches for 60s;
-# attempts throttle to 30s; a last good value may display for up to 15 minutes.
-$cacheRoot = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [System.IO.Path]::GetTempPath() }
-$cacheDir = Join-Path $cacheRoot 'claude-statusline'
-$cachePath = Join-Path $cacheDir 'usage-cache.json'
-$attemptPath = Join-Path $cacheDir 'usage-attempt.txt'
-$nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-$cache = $null
-if (Test-Path -LiteralPath $cachePath) { $cache = Get-Content -LiteralPath $cachePath -Raw | ConvertFrom-Json }
-$lastAttempt = 0
-try { if (Test-Path -LiteralPath $attemptPath) { $lastAttempt = [long](Get-Content -LiteralPath $attemptPath -Raw) } } catch {}
+function Get-LineWidth($segments) { return Get-Width ((@($segments | ForEach-Object { $_.plain })) -join ' | ') }
 
-function Get-ClaudeCredential {
-    if ($IsMacOS -and (Get-Command security -ErrorAction SilentlyContinue)) {
-        try {
-            $raw = & security find-generic-password -s 'Claude Code-credentials' -w 2>$null
-            if ($LASTEXITCODE -eq 0 -and $raw) { return (($raw | Out-String) | ConvertFrom-Json) }
-        } catch {}
+function Invoke-Step($segments, [string]$kind, [string]$key) {
+    $updated = New-Object System.Collections.ArrayList
+    foreach ($segment in $segments) {
+        if ($kind -eq 'drop' -and $segment.key -eq $key) { continue }
+        if ($kind -eq 'tokens' -and $segment.tokens) {
+            $segment = New-Gauge $segment.key $segment.label $segment.left ''
+        } elseif ($kind -eq 'bars' -and $segment.ContainsKey('compactPlain')) {
+            $segment = @{ key = $segment.key; label = $segment.label; left = $segment.left; tokens = $segment.tokens
+                plain = $segment.compactPlain; painted = $segment.compactPainted
+                compactPlain = $segment.compactPlain; compactPainted = $segment.compactPainted }
+        } elseif ($kind -eq 'basename' -and $segment.key -eq 'cwd') {
+            $name = ($segment.plain.TrimEnd('/', '\') -replace '\\', '/').Split('/')[-1]
+            if (-not $name) { $name = $segment.plain }
+            $segment = New-Segment 'cwd' $name (Paint $Dim $name)
+        }
+        [void]$updated.Add($segment)
     }
-    $profileRoot = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($HOME) { $HOME } else { $null }
-    if (-not $profileRoot) { return $null }
+    return ,$updated
+}
+
+$Line1Steps = @(@('tokens', ''), @('drop', 'effort'), @('bars', ''), @('basename', ''), @('drop', 'branch'), @('drop', 'cwd'), @('drop', 'model'))
+$Line2Steps = @(@('bars', ''), @('drop', 'scoped'), @('drop', 'wk'))
+
+function Format-Line($segments, $steps, $columns) {
+    if ($columns) {
+        foreach ($step in $steps) {
+            if ((Get-LineWidth $segments) -le $columns) { break }
+            $segments = Invoke-Step $segments $step[0] $step[1]
+        }
+        $plain = (@($segments | ForEach-Object { $_.plain })) -join ' | '
+        if ((Get-Width $plain) -gt $columns) {
+            if ($columns -gt 1) { return (Limit-Text $plain ($columns - 1)) + $Ellipsis }
+            return Limit-Text $plain $columns
+        }
+    }
+    return (@($segments | ForEach-Object { $_.painted })) -join (' ' + (Paint $Dim '|') + ' ')
+}
+
+function Find-Python {
+    foreach ($candidate in @(@('python3'), @('python'), @('py', '-3'))) {
+        $command = Get-Command $candidate[0] -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command) { return ,(@($command.Source) + @($candidate | Select-Object -Skip 1)) }
+    }
+    return $null
+}
+
+function Start-Refresh($python) {
+    $helper = Join-Path $PSScriptRoot 'claude-statusline.py'
+    if (-not $python -or -not (Test-Path -LiteralPath $helper)) { return }
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $python[0]
+    $info.Arguments = ((@($python | Select-Object -Skip 1) + @('"' + $helper + '"', '--update-cache')) -join ' ')
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    [void][System.Diagnostics.Process]::Start($info)
+}
+
+function Get-ProfileLabel($python, [string]$inputJson) {
+    $helper = Join-Path $PSScriptRoot 'skill-profile-label.py'
+    if (-not $python -or -not (Test-Path -LiteralPath $helper)) { return 'p:?' }
+    $arguments = @($python | Select-Object -Skip 1) + @($helper)
+    $result = ($inputJson | & $python[0] @arguments 2>$null | Out-String).Trim()
+    if ($result -in @('p:h', 'p:w', 'p:?')) { return $result }
+    return 'p:?'
+}
+
+function Get-UserId {
     try {
-        $credentialPath = Join-Path $profileRoot '.claude/.credentials.json'
-        return (Get-Content -LiteralPath $credentialPath -Raw -ErrorAction Stop | ConvertFrom-Json)
+        $uid = (& id -u 2>$null | Out-String).Trim()
+        if ($uid -match '^[0-9]+$') { return $uid }
+    } catch {}
+    return $null
+}
+
+# Same location rule as claude-statusline.py. On POSIX the shared temp
+# directory gets a per-user name; on Windows the temp location is per user.
+function Get-CacheDir {
+    if ($env:LOCALAPPDATA) { return Join-Path $env:LOCALAPPDATA 'claude-statusline' }
+    if ($env:XDG_CACHE_HOME) { return Join-Path $env:XDG_CACHE_HOME 'claude-statusline' }
+    $name = 'claude-statusline'
+    if (-not $IsWin) {
+        $uid = Get-UserId
+        if (-not $uid) { return $null }
+        $name = $name + '-' + $uid
+    }
+    return Join-Path ([System.IO.Path]::GetTempPath()) $name
+}
+
+function Get-LinkItem([string]$path) {
+    return Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+}
+
+function Test-Reparse($item) {
+    return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+# POSIX only: a directory owned by this user with no group or world access.
+# ls reports a symbolic link with a leading l, so a link never passes.
+function Test-PrivateDirectory([string]$dir) {
+    $uid = Get-UserId
+    if (-not $uid) { return $false }
+    try {
+        $env:LC_ALL = 'C'
+        $fields = (& ls -ldn -- $dir 2>$null | Out-String).Trim() -split '\s+'
+    } catch { return $false }
+    if ($fields.Count -lt 3 -or $fields[0].Length -lt 10) { return $false }
+    if ($fields[0][0] -ne 'd' -or $fields[0].Substring(4, 6) -ne '------') { return $false }
+    return ($fields[2] -ceq $uid)
+}
+
+# The cache directory, or $null when it cannot be trusted. It must be a real
+# directory, not a link. On POSIX it must also be owned by this user and
+# closed to group and world; one that fails is left untouched.
+function Get-TrustedCacheDir([bool]$create) {
+    $dir = Get-CacheDir
+    if (-not $dir) { return $null }
+    try {
+        if ($create -and -not (Get-LinkItem $dir)) {
+            if ($IsWin) {
+                New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            } else {
+                [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($dir)) | Out-Null
+                & mkdir -m 700 -- $dir 2>$null
+            }
+        }
+        $item = Get-LinkItem $dir
+        if (-not $item -or -not $item.PSIsContainer -or (Test-Reparse $item)) { return $null }
+        if (-not $IsWin -and -not (Test-PrivateDirectory $dir)) { return $null }
+        return $dir
     } catch { return $null }
 }
 
-if ((-not $cache -or ($nowMs - $cache.at) -gt 60000) -and ($nowMs - $lastAttempt) -gt 30000) {
-    try {
-        if (-not (Test-Path -LiteralPath $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
-        "$nowMs" | Out-File -FilePath $attemptPath -Encoding ascii
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $credential = Get-ClaudeCredential
-        if ($credential.claudeAiOauth.accessToken -and $credential.claudeAiOauth.expiresAt -gt $nowMs) {
-            $headers = @{ 'Authorization' = "Bearer $($credential.claudeAiOauth.accessToken)"; 'anthropic-beta' = 'oauth-2025-04-20' }
-            $usage = Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -Headers $headers -Method Get -TimeoutSec 3 -ErrorAction Stop
-            $scoped = @($usage.limits | Where-Object { $_.kind -eq 'weekly_scoped' -and $null -ne $_.percent })
-            $fresh = @{ at = $nowMs; label = ''; percent = $null }
-            if ($scoped.Count -gt 0) {
-                $fresh.label = "$($scoped[0].scope.model.display_name)".ToLower()
-                $fresh.percent = [double]$scoped[0].percent
-            }
-            $temporary = "$cachePath.tmp"
-            ($fresh | ConvertTo-Json -Compress) | Out-File -FilePath $temporary -Encoding utf8 -ErrorAction Stop
-            Move-Item -LiteralPath $temporary -Destination $cachePath -Force -ErrorAction Stop
-            $cache = Get-Content -LiteralPath $cachePath -Raw | ConvertFrom-Json
-        }
-    } catch {}
-}
-if ($cache -and $cache.label -and $null -ne $cache.percent -and ($nowMs - $cache.at) -le 900000) {
-    $used = [math]::Max(0, [math]::Min(100, [double]$cache.percent))
-    $left = 100 - $used
-    $quotaParts.Add("$dim$($cache.label)$reset $(New-Bar $left) " + ("{0:N0}% left" -f $left))
+# True when path is absent or a plain file; a link or directory is refused.
+function Test-PlainFileOrAbsent([string]$path) {
+    $item = Get-LinkItem $path
+    if (-not $item) { return $true }
+    return (-not $item.PSIsContainer) -and (-not (Test-Reparse $item))
 }
 
-if ($quotaParts.Count -gt 0) { Write-Host ($quotaParts -join " $sep ") }
+function Get-ScopedState($python) {
+    $dir = Get-TrustedCacheDir $true
+    if (-not $dir) { return $null }
+    $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $pinned = 0L
+    if ([long]::TryParse([string]$env:P_STATUSLINE_NOW_MS, [ref]$pinned)) { $nowMs = $pinned }
+    $cache = $null
+    $cachePath = Join-Path $dir 'usage-cache.json'
+    if (Test-PlainFileOrAbsent $cachePath) {
+        try { $cache = Get-Content -LiteralPath $cachePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+    }
+    $at = Get-Num (Get-Field $cache 'at')
+    $label = Get-Text (Get-Field $cache 'label')
+    $percent = Get-Num (Get-Field $cache 'percent')
+    $state = @('unavailable', $label)
+    if ($null -ne $at -and ($nowMs - $at) -ge 0 -and ($nowMs - $at) -le 900000) {
+        if ($label -and $null -ne $percent) { $state = @('gauge', $label, $percent) }
+        elseif (-not $label) { $state = $null }
+    }
+    if (-not $env:P_STATUSLINE_NO_REFRESH -and ($null -eq $at -or ($nowMs - $at) -lt 0 -or ($nowMs - $at) -gt 60000)) {
+        $attemptPath = Join-Path $dir 'usage-attempt.txt'
+        if (Test-PlainFileOrAbsent $attemptPath) {
+            $last = 0
+            try { $last = [long]((Get-Content -LiteralPath $attemptPath -Raw).Trim()) } catch {}
+            if (($nowMs - $last) -gt 30000 -or ($nowMs - $last) -lt 0) {
+                try {
+                    [System.IO.File]::WriteAllText($attemptPath, [string]$nowMs)
+                    Start-Refresh $python
+                } catch {}
+            }
+        }
+    }
+    return ,$state
+}
+
+function Get-GitBranch([string]$cwd) {
+    try {
+        if (-not $cwd -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { return '' }
+        $branch = & git -C $cwd --no-optional-locks rev-parse --abbrev-ref HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $branch) { return (Remove-Controls ([string]$branch)).Trim() }
+    } catch {}
+    return ''
+}
+
+function Get-Lines([string]$inputJson) {
+    $data = $null
+    if ($inputJson.Trim()) { try { $data = $inputJson | ConvertFrom-Json } catch { $data = $null } }
+    $python = Find-Python
+    $workspace = Get-Field $data 'workspace'
+    $context = Get-Field $data 'context_window'
+    $windows = $IsWin
+    $homeDir = Remove-Controls ([string]$env:HOME)
+    if (-not $homeDir) { $homeDir = Remove-Controls ([string]$env:USERPROFILE) }
+
+    $line1 = New-Object System.Collections.ArrayList
+    $model = Get-Text (Get-Field (Get-Field $data 'model') 'display_name')
+    if ($model) { [void]$line1.Add((New-Segment 'model' $model (Paint $Cyan $model))) }
+    $effort = Get-Text (Get-Field (Get-Field $data 'effort') 'level')
+    if ($effort) { [void]$line1.Add((New-Segment 'effort' ('eff ' + $effort) ((Paint $Dim 'eff') + ' ' + (Paint $Magenta $effort)))) }
+    $rawCwd = Get-Text (Get-Field $workspace 'current_dir')
+    if (-not $rawCwd) { $rawCwd = Get-Text (Get-Field $data 'cwd') }
+    $cwd = Get-ShortCwd $rawCwd $homeDir $windows
+    if ($cwd) { [void]$line1.Add((New-Segment 'cwd' $cwd (Paint $Dim $cwd))) }
+    $branch = Get-Text (Get-Field $workspace 'git_branch')
+    if (-not $branch) { $branch = Get-GitBranch $rawCwd }
+    if ($branch) { [void]$line1.Add((New-Segment 'branch' $branch (Paint $Yellow $branch))) }
+    $remaining = Get-Num (Get-Field $context 'remaining_percentage')
+    if ($null -ne $remaining) {
+        $size = Get-Num (Get-Field $context 'context_window_size')
+        $used = Get-Num (Get-Field $context 'total_input_tokens')
+        $tokens = ''
+        if ($null -ne $size -and $size -gt 0 -and $null -ne $used -and $used -ge 0) {
+            $tokens = (Format-Tokens $used) + '/' + (Format-Tokens $size)
+        }
+        [void]$line1.Add((New-Gauge 'context' '' (Limit-Percent $remaining) $tokens))
+    }
+    $label = Get-ProfileLabel $python $inputJson
+    [void]$line1.Add((New-Segment 'profile' $label (Paint $Dim $label)))
+
+    $line2 = New-Object System.Collections.ArrayList
+    $limits = Get-Field $data 'rate_limits'
+    foreach ($window in @(@('5h', 'five_hour'), @('wk', 'seven_day'))) {
+        $usedPercent = Get-Num (Get-Field (Get-Field $limits $window[1]) 'used_percentage')
+        if ($null -ne $usedPercent) { [void]$line2.Add((New-Gauge $window[0] $window[0] (100 - (Limit-Percent $usedPercent)) '')) }
+    }
+    $hasLimits = ($limits -is [System.Management.Automation.PSCustomObject]) -and @($limits.PSObject.Properties).Count -gt 0
+    if ($hasLimits) {
+        $scoped = Get-ScopedState $python
+        if ($line2.Count -gt 0 -and $null -ne $scoped) {
+            if ($scoped[0] -eq 'gauge') {
+                [void]$line2.Add((New-Gauge 'scoped' $scoped[1] (100 - (Limit-Percent $scoped[2])) ''))
+            } else {
+                $text = $scoped[1]
+                if (-not $text) { $text = 'scoped' }
+                $text = $text + ' --'
+                [void]$line2.Add((New-Segment 'scoped' $text (Paint $Dim $text)))
+            }
+        }
+    }
+
+    $columns = 0
+    if (-not [int]::TryParse([string]$env:COLUMNS, [ref]$columns) -or $columns -lt 1) { $columns = 0 }
+    $lines = @(Format-Line $line1 $Line1Steps $columns)
+    if ($line2.Count -gt 0) { $lines += Format-Line $line2 $Line2Steps $columns }
+    return $lines
+}
+
+$inputJson = ''
+try { $inputJson = [Console]::In.ReadToEnd() } catch {}
+try { $output = Get-Lines $inputJson } catch { $output = @('p:?') }
+foreach ($line in $output) { [Console]::Out.WriteLine($line) }
+exit 0

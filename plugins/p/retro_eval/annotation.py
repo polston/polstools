@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 
 from .labels import LabelRecord, LabelStore
+from .schema import SpanKind
+from .storage import JsonlTraceStore
 
 
 FIELDS = ("case_id", "source", "split", "context_chars", "user_turn_chars",
@@ -54,17 +56,30 @@ def _external(path: Path):
         raise ValueError("annotation artifacts must remain outside repositories")
 
 
-def _salt(directory: Path):
+def _salt(directory: Path, *, persist=True):
+    """Read the directory's salt, or mint one.
+
+    With ``persist=False`` a new salt is returned without touching the disk;
+    the caller stores it with ``_store_salt`` once it knows the run proceeds.
+    """
     path = directory / ".annotation-salt"
     try:
         return path.read_bytes()
     except OSError:
         value = os.urandom(32)
-        directory.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(value)
+        if persist:
+            _store_salt(directory, value)
         return value
+
+
+def _store_salt(directory: Path, value: bytes):
+    path = directory / ".annotation-salt"
+    if path.exists():
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(value)
 
 
 def _digest(path: Path):
@@ -104,28 +119,141 @@ def _load_packet_manifest(source: Path, manifest_path: Path, *, rubric_id,
     return manifest
 
 
-def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_source=20,
-                       dataset_id="turn-friction-heldout-v1",
-                       rubric_id="turn_friction_legacy", rubric_version=1,
-                       split="test", annotation_protocol=None):
+def _check_packet_request(output, manifest_path, per_source, split):
     _external(output)
     _external(manifest_path)
     if per_source < 1:
         raise ValueError("per_source must be positive")
     if split not in {"calibration", "test"}:
         raise ValueError("annotation split must be calibration or test")
+
+
+def _refuse_empty(pools):
+    empty = sorted(source for source, candidates in pools.items() if not candidates)
+    if not pools or empty:
+        raise ValueError("no annotatable user turns for source: %s"
+                         % (", ".join(empty) or "(no inputs)"))
+
+
+def _write_packet(pools, output: Path, manifest_path: Path, *, per_source,
+                  dataset_id, rubric_id, rubric_version, split,
+                  annotation_protocol, provenance):
+    """Select per source by keyed rank, then write the packet and manifest.
+
+    Refuses before writing anything when any requested source contributes no
+    annotatable case: an empty packet is a failed run, not a sample.
+    """
+    _refuse_empty(pools)
+    selected = []
+    source_counts = {}
+    for source, candidates in sorted(pools.items()):
+        rows = [row for _, row in sorted(candidates, key=lambda item: item[0])
+                [:per_source]]
+        selected.extend(rows)
+        source_counts[source] = len(rows)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(selected)
+    manifest = {
+        "schema_version": 1, "annotation_packet_version": 2,
+        "dataset_id": dataset_id,
+        "rubric_id": rubric_id, "rubric_version": rubric_version,
+        "split": split, "selection": "keyed deterministic rank by source",
+        "per_source": per_source, "source_counts": source_counts,
+        "sample_sha256": _packet_fingerprint(output),
+        **provenance,
+    }
+    if annotation_protocol is not None:
+        manifest.update({
+            "annotation_protocol_id": str(_protocol_value(annotation_protocol, "id")),
+            "annotation_protocol_version": int(_protocol_value(annotation_protocol, "version")),
+            "annotation_protocol_sha256": str(_protocol_value(annotation_protocol, "sha256")),
+        })
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                             encoding="utf-8")
+    return manifest
+
+
+def sample_trace_annotations(traces_path: Path, prompt_evidence, output: Path,
+                             manifest_path: Path, *, per_source=20,
+                             dataset_id="turn-friction-heldout-v1",
+                             rubric_id="turn_friction_legacy", rubric_version=1,
+                             split="test", annotation_protocol=None,
+                             requested_sources=()):
+    """Sample direct-human prompts from a retro-eval-extract trace snapshot.
+
+    ``prompt_evidence`` maps PROMPT span ids to redacted turns collected from
+    the same source roots and id salt that produced ``traces_path``. Every
+    source present in the snapshot and every name in ``requested_sources``
+    must contribute at least one case; a requested source with no trace
+    records is refused, never dropped.
+    """
+    _check_packet_request(output, manifest_path, per_source, split)
+    records = JsonlTraceStore(traces_path).read()
+    pools = {record.source: [] for record in records}
+    for source in requested_sources:
+        pools.setdefault(str(source), [])
+    for record in records:
+        if record.span_kind != SpanKind.PROMPT or record.actor_kind != "human":
+            continue
+        details = prompt_evidence.get(record.span_id)
+        if not details or not str(details.get("user_turn") or "").strip():
+            continue
+        pools[record.source].append((record.span_id, details))
+    # Refuse before the salt file or any output directory is created.
+    _refuse_empty(pools)
     salt = _salt(output.parent)
+    pools = {source: [(hmac.new(salt, ("rank|trace|" + span_id).encode(),
+                                hashlib.sha256).hexdigest(), {
+        "case_id": hmac.new(salt, ("trace|" + span_id).encode(),
+                            hashlib.sha256).hexdigest()[:24],
+        "source": source, "split": split,
+        "context_chars": int(details.get("context_chars") or 0),
+        "user_turn_chars": int(details.get("user_turn_chars") or 0),
+        "context": str(details.get("context") or ""),
+        "user_turn": str(details["user_turn"]),
+        "human_label": "", "notes": "",
+    }) for span_id, details in candidates] for source, candidates in pools.items()}
+    return _write_packet(
+        pools, output, manifest_path, per_source=per_source,
+        dataset_id=dataset_id, rubric_id=rubric_id, rubric_version=rubric_version,
+        split=split, annotation_protocol=annotation_protocol,
+        provenance={"input_kind": "normalized_traces",
+                    "requested_sources": sorted(str(s) for s in requested_sources),
+                    "trace_sha256": _digest(traces_path)})
+
+
+def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_source=20,
+                       dataset_id="turn-friction-heldout-v1",
+                       rubric_id="turn_friction_legacy", rubric_version=1,
+                       split="test", annotation_protocol=None):
+    """Sample from externally produced annotation extracts.
+
+    Each extract is one JSON object: ``source_system`` plus ``sessions`` whose
+    ``messages`` carry ``role``, redacted ``excerpt``, ``chars`` and ``line``.
+    Nothing in this plugin writes that format; packets drawn from
+    retro-eval-extract output use sample_trace_annotations instead.
+    """
+    _check_packet_request(output, manifest_path, per_source, split)
+    salt = _salt(output.parent, persist=False)
     pools = {}
     input_fingerprints = {}
     for extract_path in extract_paths:
         try:
             payload = json.loads(extract_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("invalid working-review extract") from exc
+            raise ValueError("annotation extract is not one JSON object: %s"
+                             % extract_path.name) from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
+            raise ValueError("annotation extract lacks a sessions list: %s"
+                             % extract_path.name)
         source = str(payload.get("source_system") or extract_path.stem)
         input_fingerprints[source] = _digest(extract_path)
         candidates = pools.setdefault(source, [])
-        for session in payload.get("sessions") or ():
+        for session in payload["sessions"]:
             previous_assistant = ""
             previous_assistant_chars = 0
             for message in session.get("messages") or ():
@@ -146,36 +274,14 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
                         "context": previous_assistant, "user_turn": excerpt,
                         "human_label": "", "notes": "",
                     }))
-    selected = []
-    source_counts = {}
-    for source, candidates in sorted(pools.items()):
-        rows = [row for _, row in sorted(candidates)[:per_source]]
-        selected.extend(rows)
-        source_counts[source] = len(rows)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS)
-        writer.writeheader()
-        writer.writerows(selected)
-    manifest = {
-        "schema_version": 1, "annotation_packet_version": 2,
-        "dataset_id": dataset_id,
-        "rubric_id": rubric_id, "rubric_version": rubric_version,
-        "split": split, "selection": "keyed deterministic rank by source",
-        "per_source": per_source, "source_counts": source_counts,
-        "input_fingerprints": dict(sorted(input_fingerprints.items())),
-        "sample_sha256": _packet_fingerprint(output),
-    }
-    if annotation_protocol is not None:
-        manifest.update({
-            "annotation_protocol_id": str(_protocol_value(annotation_protocol, "id")),
-            "annotation_protocol_version": int(_protocol_value(annotation_protocol, "version")),
-            "annotation_protocol_sha256": str(_protocol_value(annotation_protocol, "sha256")),
-        })
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                             encoding="utf-8")
-    return manifest
+    # Refuse before the salt file or any output directory is created.
+    _refuse_empty(pools)
+    _store_salt(output.parent, salt)
+    return _write_packet(
+        pools, output, manifest_path, per_source=per_source,
+        dataset_id=dataset_id, rubric_id=rubric_id, rubric_version=rubric_version,
+        split=split, annotation_protocol=annotation_protocol,
+        provenance={"input_fingerprints": dict(sorted(input_fingerprints.items()))})
 
 
 def import_annotations(source: Path, target: Path, *, manifest_path: Path, rubric_id,

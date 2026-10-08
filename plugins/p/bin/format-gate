@@ -1,0 +1,102 @@
+#!/usr/bin/env sh
+# Hook entry for the response-format gate; takes the same arguments as
+# `format-ctl gate`. When the shell can prove the format is off it exits 0
+# without starting Python; otherwise it runs format-ctl through
+# python-launcher. Any failure exits 1, never 2: exit 2 from a
+# UserPromptSubmit hook blocks the user's prompt in Claude Code and Codex.
+set -u
+# On Windows the harness passes a backslash path; Git Bash accepts forward
+# slashes, so convert them before taking the directory.
+self=$0
+while :; do
+  case $self in
+    *\\*) self=${self%%\\*}/${self#*\\} ;;
+    *) break ;;
+  esac
+done
+case $self in
+  */*) bin=${self%/*} ;;
+  *) bin=. ;;
+esac
+
+# format-ctl's _default_flag_dir is the definition of the toggle directory.
+# This prints it only in the cases the shell reproduces exactly and fails
+# otherwise, which sends the decision to format-ctl.
+flag_dir() {
+  if [ -n "${P_FORMAT_STATE_DIR:-}" ]; then
+    printf '%s\n' "$P_FORMAT_STATE_DIR"
+    return 0
+  fi
+  if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    printf '%s\n' "$XDG_RUNTIME_DIR/p-format-toggle"
+    return 0
+  fi
+  # Windows Python names the directory by USERNAME, not a uid.
+  [ "${OS:-}" = Windows_NT ] && return 1
+  uid=$(id -u 2>/dev/null) || return 1
+  # tempfile.gettempdir(): the first usable of TMPDIR, TEMP, TMP, then /tmp.
+  for base in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}" /tmp; do
+    if [ -n "$base" ] && [ -d "$base" ] && [ -w "$base" ] && [ -x "$base" ]; then
+      printf '%s\n' "$base/p-format-toggle-$uid"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# True when the defaults file cannot select "on": it is absent, or readable
+# and contains neither "on" nor an escape that could spell it.
+config_cannot_enable() {
+  config=${P_FORMAT_CONFIG_FILE:-}
+  if [ -z "$config" ]; then
+    if [ -n "${LOCALAPPDATA:-}" ]; then
+      config="$LOCALAPPDATA/polstools/format.json"
+    elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+      config="$XDG_CONFIG_HOME/polstools/format.json"
+    elif [ -n "${HOME:-}" ]; then
+      config="$HOME/.config/polstools/format.json"
+    else
+      return 1
+    fi
+  fi
+  [ -e "$config" ] || return 0
+  [ -f "$config" ] && [ -r "$config" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      *'"on"'* | *\\*) return 1 ;;
+    esac
+  done < "$config"
+  return 0
+}
+
+# True when no session in the toggle directory is toggled on.
+no_session_on() {
+  dir=$(flag_dir) || return 1
+  for flag in "$dir"/*.on; do
+    [ -e "$flag" ] && return 1
+    break
+  done
+  return 0
+}
+
+# The session probe asks for the toggle directory in the cases the shell
+# reproduces exactly; any other case fails and the probe writes nothing.
+if [ "${1:-}" = state-dir ]; then
+  flag_dir
+  exit
+fi
+
+if [ "${1:-}" = gate ] && [ -z "${RETRO_HOME:-}" ] \
+    && [ "${P_FORMAT_DEFAULT:-}" != on ] \
+    && config_cannot_enable && no_session_on; then
+  exit 0
+fi
+
+# Single-start: each candidate interpreter starts once, on the gate itself,
+# instead of a separate version probe first (see python-launcher). The
+# launcher runs in this shell, saving a process start; every way it ends,
+# including "Python 3 not found" (2), leaves through this trap as 0 or 1.
+trap 'status=$?; [ "$status" -eq 0 ] || exit 1' EXIT
+POLSTOOLS_SINGLE_START=1
+set -- "$bin/format-ctl" "$@"
+. "$bin/python-launcher"

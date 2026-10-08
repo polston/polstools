@@ -5,15 +5,30 @@ description: Use when checking, previewing, applying, repairing, or restoring th
 
 # Aligning status lines
 
-Before any other action, resolve the plugin root from this `SKILL.md` and run
-`<python> <plugin-root>/bin/skill-profile-ctl check aligning-statuslines`. If it
-exits 1 or 2, stop and report its output.
+Before any other action, run
+`<python> <plugin-root>/bin/skill-profile-ctl check aligning-statuslines`. If
+it exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute
+path two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/aligning-statuslines`; take it from this file's own path,
+never from the working directory or an environment variable. `<python>` is `sh
+<plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
 
 Use the plugin's `bin/statusline-ctl`; never edit a user's whole settings file
 or replace unrelated plugin configuration. Inspect only Claude's `statusLine`
-field before recommending a change. Resolve the plugin root from this skill's
-location, `PLUGIN_ROOT`, or `CLAUDE_PLUGIN_ROOT`. Resolve Python by trying
-`python3`, `python`, `py -3`, then `uv run --no-project python`.
+field before recommending a change. Run it as
+`<python> <plugin-root>/bin/statusline-ctl <command>`.
+
+## Antigravity
+
+Antigravity changes its status line only through its own `/statusline`
+command, so never edit its settings file. Run
+`<python> <plugin-root>/bin/statusline-ctl antigravity`: exit 0 means the p
+renderer is active; exit 1 prints the `/statusline` line for the operator to
+type in an Antigravity session; exit 2 means its settings could not be read.
 
 ## Default run
 
@@ -31,6 +46,9 @@ either settings file and reports the reason.
   colors, custom segments, or reset timers. The only added segment is the
   tagged `p:h`/`p:w` custom-command widget owned by this plugin.
 - If Claude has no status-line renderer, the bundled renderer is the fallback.
+- If Claude runs a command an earlier p release wrote (an interpreter running
+  the installed renderer copy), it is p's own: `sync` replaces it with the
+  current command and keeps the original pre-p value for `restore`.
 - If Claude uses another external renderer, preserve it. Explain the compatible
   fields and do not apply over it without a separate explicit replacement
   decision.
@@ -45,31 +63,43 @@ the command name.
    a no-op when already aligned.
 2. `check` reports drift. Exit 0 means the bundled profile is aligned or a
    preserved ccstatusline provider has aligned Codex fields; 1 means drift, and
-   2 means the configuration could not be read safely. It verifies the owned
-   profile widget; verify unrelated ccstatusline custom commands separately.
-3. `preview` prints fixed representative Claude and Codex output. It does not
-   read configuration, credentials, session history, or the working directory.
+   2 means the configuration could not be read safely. It names each stale
+   installed bundle file and ends with `repair with: statusline-ctl sync` when
+   `sync` can repair the drift. It verifies the owned profile widget; verify
+   unrelated ccstatusline custom commands separately.
+3. `preview` prints fixed representative input through the shipped renderer
+   and the profile's Codex identifiers. It does not read configuration,
+   credentials, session history, or the working directory.
 4. `apply` transactionally installs the fallback only when Claude has no
    renderer. With ccstatusline, it preserves the renderer and all unrelated
    settings while adding or refreshing one owned profile widget. It stages
    every write and restores all earlier targets if any replacement fails. It
    refuses unknown external renderers and is idempotent.
 5. `profile-sync` refreshes only the stable profile-label bundle and its owned
-   Claude integration. The `$p:home` and `$p:work` skills call it after a
+   Claude integration. The `home` and `work` skills call it after a
    successful session switch; indicator failure does not undo the profile.
 6. `restore` restores only values changed by `apply`. If a managed value changed
    afterwards, it leaves that value untouched and exits 1.
 
 Invoke `<python> <plugin-root>/bin/statusline-ctl <command>` with one command
 from the list above. Rollback metadata stays in the platform-local state
-directory outside repositories and contains only owned settings. The Claude
-usage token is read by the renderer only for a short-lived request header; it
-is never printed, copied, or cached.
+directory outside repositories and contains only owned settings. A render never
+reads a credential or the network. The model-scoped weekly value is fetched by
+a detached refresh child that reads the credential file, or on macOS the login
+keychain, uses the token for one request header, and caches only the label,
+percentage, and fetch time; the token is never printed, copied, or cached. The
+background usage refresh can be switched off by setting `P_STATUSLINE_NO_REFRESH`
+to any non-empty value.
 
 ## Invariants
 
 - The bundled Claude renderer remains a two-line ANSI display and retains its
   model-scoped weekly gauge; ccstatusline retains its configured row layout.
+- The Python renderer (macOS, Linux) and the PowerShell renderer (Windows)
+  meet one output contract, `tests/fixtures/statusline-contract.json`: colour
+  even when stdout is piped, whole percentages rounded down, segments dropped
+  in a fixed order to fit `COLUMNS`, and a dim `--` marker when the
+  model-scoped value is cold or expired.
 - Context and every quota are shown as percent left.
 - Claude shows the effective profile as `p:h` or `p:w`; an invalid policy shows
   `p:?` without blanking the rest of the status line.

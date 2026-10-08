@@ -10,6 +10,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from .cli import command
+from .adapters.base import SourceUnreadable
 from .adapters.registry import AdapterRegistry, default_registry
 from .instruction_manifest import load_instruction_manifest
 from .storage import JsonlTraceStore
@@ -34,19 +36,32 @@ class WorkStore:
         if _inside_repository(self.root):
             raise ValueError("evaluation work directory must be outside a repository")
 
-    def id_salt(self) -> bytes:
-        self.root.mkdir(parents=True, exist_ok=True)
+    def id_salt(self, persist: bool = True) -> bytes:
+        """Return the work directory's salt, minting one if none exists.
+
+        With persist=False nothing is written; the caller stores the value with
+        keep_id_salt once it knows the run will produce output.
+        """
         path = self.root / "id-salt.bin"
         try:
             value = path.read_bytes()
         except OSError:
             value = os.urandom(32)
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(value)
+            if persist:
+                self.keep_id_salt(value)
         if len(value) != 32:
             raise ValueError("local id salt must be exactly 32 bytes")
         return value
+
+    def keep_id_salt(self, value: bytes) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(self.root / "id-salt.bin",
+                                 os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(value)
 
     def public_metadata(self) -> dict[str, object]:
         return {"work_format": 1, "ids": "installation-scoped keyed hashes"}
@@ -112,15 +127,29 @@ class EvaluationPipeline:
     def extract(self, *, roots: dict[str, Path] | None = None,
                 claude_root: Path | None = None, codex_root: Path | None = None,
                 exclude_session_ids=(), adapter_options=None) -> ExtractionSummary:
-        salt = self.work.id_salt()
         roots = dict(roots or {})
         if claude_root is not None:
             roots["claude"] = claude_root
         if codex_root is not None:
             roots["codex"] = codex_root
-        adapter_options = dict(adapter_options or {})
+        registered = sorted(registration.name for registration in self.registry)
+        unknown = sorted(set(roots) - set(registered))
+        if not roots or unknown:
+            raise ValueError("unregistered source %s; registered sources: %s" % (
+                ", ".join(unknown) or "(none given)", ", ".join(registered)))
+        missing = sorted(name for name, path in roots.items()
+                         if not Path(path).is_dir())
+        if missing:
+            raise ValueError("source root is not a directory: %s" % ", ".join(missing))
+        salt = self.work.id_salt(persist=False)
+        adapter_options = {name: dict(value)
+                           for name, value in (adapter_options or {}).items()}
         if exclude_session_ids:
-            adapter_options.setdefault("codex", {})["excluded_session_ids"] = exclude_session_ids
+            for registration in self.registry:
+                if registration.name in roots and registration.accepts_option(
+                        "excluded_session_ids"):
+                    adapter_options.setdefault(registration.name, {})[
+                        "excluded_session_ids"] = tuple(exclude_session_ids)
         all_records = []
         excluded = Counter()
         sources = {}
@@ -135,17 +164,25 @@ class EvaluationPipeline:
             source_hashes = []
             source_fingerprint_failures = 0
             included = excluded_count = prompts = tool_calls = tool_results = 0
-            main = subagents = skill_traces = 0
+            main = subagents = unclassified = skill_traces = 0
             for path in paths:
                 try:
                     source_hashes.append(_file_sha256(path))
                 except OSError:
                     source_fingerprint_failures += 1
-                result = adapter.read(path, root)
+                try:
+                    result = adapter.read(path, root)
+                except SourceUnreadable:
+                    excluded_count += 1
+                    excluded["unreadable"] += 1
+                    continue
                 if result.included:
                     included += 1
-                    main += not result.is_subagent
-                    subagents += result.is_subagent
+                    if not result.population_observable:
+                        unclassified += 1
+                    else:
+                        main += not result.is_subagent
+                        subagents += result.is_subagent
                     prompts += result.human_prompt_count
                     tool_calls += result.tool_call_count
                     tool_results += result.tool_result_count
@@ -168,6 +205,7 @@ class EvaluationPipeline:
                 "excluded": excluded_count,
                 "main": main,
                 "subagents": subagents,
+                "unclassified_population": unclassified,
                 "human_prompts": prompts,
                 "tool_calls": tool_calls,
                 "tool_results": tool_results,
@@ -197,6 +235,13 @@ class EvaluationPipeline:
             if instruction_coverage["unresolved"]:
                 raise ValueError("evaluated sessions fall outside manifest coverage")
 
+        empty = sorted(name for name, counts in sources.items()
+                       if not counts["included"])
+        if empty:
+            raise ValueError(
+                "no included trace from requested source root: %s; "
+                "nothing was written" % ", ".join(empty))
+        self.work.keep_id_salt(salt)
         self.trace_store.write(all_records)
         summary = ExtractionSummary(
             included_traces=included_total,
@@ -213,6 +258,7 @@ class EvaluationPipeline:
         return summary
 
 
+@command
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -223,10 +269,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     roots = {}
     for value in args.root:
-        try:
-            name, path = value.split("=", 1)
-        except ValueError as exc:
-            raise ValueError("roots must use name=path") from exc
+        name, separator, path = value.partition("=")
+        if not separator or not name or not path or name in roots:
+            raise ValueError("roots must be unique name=path values")
         roots[name] = Path(path)
     summary = EvaluationPipeline(
         args.work_dir,

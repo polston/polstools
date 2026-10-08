@@ -78,7 +78,7 @@ All three propose. None of them edit configuration.
 
 ## Metrics row
 
-One JSON object per transcript (schema 7):
+One JSON object per transcript (schema 8):
 
 ```
 transcript, harness, population, parent_session_id, project_key, ineligible,
@@ -114,7 +114,7 @@ Every signal was confirmed present in real transcripts.
 | `tool_errors` | `is_error` on a tool_result block, or an error-prefixed string result | a tool called wrong, repeatedly |
 | `queued_prompts` | `queue-operation` records of subtype `enqueue` | typing ahead because a turn ran long |
 | `permission_mode_changes` | transitions between consecutive `permission-mode` records | the permission config did not match the work |
-| `skill_runs`, `skills_used` | contiguous runs of `attributionSkill` | which skills actually fire |
+| `skill_runs`, `skills_used` | contiguous runs of assistant records carrying the same `attributionSkill`; tool results and prompts between them do not end a run | which skills actually fire |
 | `tokens_*` | `message.usage` | what the friction cost |
 
 The call signature is an exact digest of the tool input. It used to normalize

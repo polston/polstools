@@ -308,7 +308,9 @@ class TaxonomyPacketTests(unittest.TestCase):
             traces = root / "traces.jsonl"
             JsonlTraceStore(traces).write(records)
             output = root / "packets"
-            self.assertEqual(0, taxonomy_packets_main([
+            # The fixture has no failed calls, so the failure packets are
+            # empty and the run is flagged rather than reported clean.
+            self.assertEqual(1, taxonomy_packets_main([
                 "sample", "--traces", str(traces),
                 "--output-dir", str(output),
                 "--duplicate-calibration", "1", "--duplicate-heldout", "1",

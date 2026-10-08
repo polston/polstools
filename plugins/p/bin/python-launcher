@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 # Find a usable Python 3 without assuming one harness's PATH. The optional
-# override is a single executable path, not a shell fragment.
+# override is a single executable path, not a shell fragment. bin/format-gate
+# sources this file (single-start mode), so it must not depend on $0 and
+# must always end by exec or exit.
 set -eu
 
 shell_path() {
@@ -16,19 +18,100 @@ shell_path() {
   printf '%s\n' "$value"
 }
 
-python_override=$(shell_path "${POLSTOOLS_PYTHON:-}")
-if [ -n "$python_override" ] && [ -x "$python_override" ]; then
-  exec "$python_override" "$@"
+# The supported floor. Every candidate is probed before it is used, so a
+# Windows Store alias, a Python 2 "python", or an interpreter older than the
+# floor is skipped instead of failing the command.
+usable() {
+  # A positive answer is required: a stub that exits 0 for any arguments
+  # must not pass.
+  [ "$("$@" -S -E -c 'import sys; print("python-ok" if sys.version_info >= (3, 9) else "")' \
+    2>/dev/null)" = python-ok ]
+}
+
+# launch N WORD... ARG...: the first N words are the interpreter command (N=0
+# skips the probe). Normally the candidate is probed, then exec'd. With
+# POLSTOOLS_SINGLE_START=1 (set only by bin/format-gate, whose target is
+# format-ctl) each candidate starts once on the real command instead: the
+# hook's stdin is buffered and replayed to every attempt, stdout is held
+# back, and an attempt counts only if its output begins with the ready token
+# format-ctl writes after its own version check. Anything else (a stub, an
+# old interpreter, a crash before that point) falls through to the next
+# candidate and its output is discarded.
+launch() {
+  n=$1
+  shift
+  if [ "${POLSTOOLS_SINGLE_START:-}" != 1 ]; then
+    case $n in
+      1) usable "$1" || return 0 ;;
+      2) usable "$1" "$2" || return 0 ;;
+    esac
+    exec "$@"
+  fi
+  token="polstools-ready-$$"
+  # The trailing x<status> keeps trailing newlines and the exit status; the
+  # && / || form keeps set -e from ending the substitution early.
+  out=$(printf '%s' "$hook_input" | POLSTOOLS_READY_TOKEN=$token "$@" \
+    && printf 'x0' || printf 'x%s' "$?")
+  status=${out##*x}
+  out=${out%x*}
+  case $out in
+    "$token"*)
+      printf '%s' "${out#"$token"}"
+      exit "$status"
+      ;;
+  esac
+  return 0
+}
+
+if [ "${POLSTOOLS_SINGLE_START:-}" = 1 ]; then
+  if command -v cat >/dev/null 2>&1; then
+    # One read of all of stdin, linear in its size; the sentinel keeps
+    # trailing newlines.
+    hook_input=$(cat; printf x)
+    hook_input=${hook_input%x}
+  else
+    # No cat on PATH: shell builtins only, slower on very long input.
+    hook_input=
+    newline='
+'
+    while IFS= read -r line; do
+      hook_input=$hook_input$line$newline
+    done
+    hook_input=$hook_input$line
+  fi
 fi
 
-for name in python3 python; do
-  if command -v "$name" >/dev/null 2>&1; then
-    exec "$name" "$@"
+python_override=$(shell_path "${POLSTOOLS_PYTHON:-}")
+if [ -n "$python_override" ]; then
+  if [ -x "$python_override" ]; then
+    launch 1 "$python_override" "$@"
+    echo "python-launcher: POLSTOOLS_PYTHON is not Python 3.9 or newer; searching PATH" >&2
+  else
+    echo "python-launcher: POLSTOOLS_PYTHON is not an executable file; searching PATH" >&2
   fi
+fi
+
+# Every PATH entry, not only the first match: a stub that shadows a real
+# interpreter must not hide it.
+old_ifs=$IFS
+for name in python3 python; do
+  set -f
+  IFS=:
+  for dir in $PATH; do
+    IFS=$old_ifs
+    set +f
+    for candidate in "${dir:-.}/$name" "${dir:-.}/$name.exe"; do
+      if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+        launch 1 "$candidate" "$@"
+      fi
+    done
+  done
+  IFS=$old_ifs
+  set +f
 done
 
 if command -v py >/dev/null 2>&1; then
-  exec py -3 "$@"
+  launch 2 py -3 "$@"
 fi
 
 # uv-managed Windows installations are intentionally not required to be on
@@ -38,23 +121,39 @@ local_app_data=$(shell_path "${LOCALAPPDATA:-}")
 if [ -n "$app_data" ]; then
   for candidate in "$app_data"/uv/python/*/python.exe; do
     if [ -x "$candidate" ]; then
-      exec "$candidate" "$@"
+      launch 1 "$candidate" "$@"
     fi
   done
 fi
 if [ -n "$local_app_data" ]; then
   for candidate in "$local_app_data"/Programs/Python/Python*/python.exe; do
     if [ -x "$candidate" ]; then
-      exec "$candidate" "$@"
+      launch 1 "$candidate" "$@"
     fi
   done
 fi
 
 if command -v uv >/dev/null 2>&1; then
-  cache_base=$(shell_path "${TMPDIR:-${TEMP:-/tmp}}")
-  UV_CACHE_DIR=${UV_CACHE_DIR:-${POLSTOOLS_UV_CACHE:-$cache_base/polstools-uv-cache}}
-  export UV_CACHE_DIR
-  exec uv run --no-project python "$@"
+  # uv keeps its own per-user cache unless one is named. A cache under the
+  # temp directory is used only when it is a real directory this user owns
+  # (created here with a private mode); a name someone else planted in a
+  # shared temp directory is never used.
+  if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR=${POLSTOOLS_UV_CACHE:-}
+    if [ -z "$UV_CACHE_DIR" ] && [ -n "${TMPDIR:-}" ]; then
+      cache_dir=$(shell_path "$TMPDIR")/polstools-uv-cache
+      mkdir -m 700 "$cache_dir" 2>/dev/null || :
+      if [ -d "$cache_dir" ] && [ ! -L "$cache_dir" ] && [ -O "$cache_dir" ]; then
+        UV_CACHE_DIR=$cache_dir
+      fi
+    fi
+  fi
+  if [ -n "$UV_CACHE_DIR" ]; then
+    export UV_CACHE_DIR
+  else
+    unset UV_CACHE_DIR
+  fi
+  launch 0 uv run --no-project python "$@"
 fi
 
 echo "python-launcher: Python 3 not found" >&2

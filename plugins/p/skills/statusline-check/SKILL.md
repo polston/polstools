@@ -5,12 +5,23 @@ description: Check supported Claude and Codex statusline alignment.
 
 # Check aligned status lines
 
-Before any other action, resolve the plugin root and run
-`<python> <plugin-root>/bin/skill-profile-ctl check statusline-check`. If it
-exits 1 or 2, stop and report its output.
+Claude Code and Codex only. An Antigravity plugin cannot register a status
+line; Antigravity changes its status line only through its own `/statusline`
+command, and the `aligning-statuslines` skill explains how to check it.
 
-Resolve Python and the plugin root as described by the `aligning-statuslines`
-skill, then run `statusline-ctl check`. Report its one-line result and exit
+Before any other action, run
+`<python> <plugin-root>/bin/skill-profile-ctl check statusline-check`. If it
+exits 1 or 2, stop and report its output. `<plugin-root>` is the absolute path
+two directories above this `SKILL.md`, whose directory is
+`<plugin-root>/skills/statusline-check`; take it from this file's own path,
+never from the working directory or an environment variable. `<python>` is `sh
+<plugin-root>/bin/python-launcher`.
+Quote both paths and write them with forward slashes, also on Windows. If the
+check exits 2 because session variables of two harnesses are set, rerun it once
+with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
+`antigravity`).
+
+Run `<python> <plugin-root>/bin/statusline-ctl check`. Report its one-line result and exit
 code. For ccstatusline, `compatible` confirms provider preservation, Codex
 fields, and the owned p profile widget. Verify unrelated custom-command
 semantics separately through the skill guide.

@@ -10,6 +10,20 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 
+def _load_callable(specification: str):
+    """Resolve a profile's ``module:callable`` discovery function."""
+    module_name, separator, attribute = specification.partition(":")
+    if not separator or not module_name or not attribute:
+        raise ValueError("source discovery must use module:callable syntax")
+    try:
+        value = getattr(importlib.import_module(module_name), attribute)
+    except (ImportError, AttributeError) as exc:
+        raise ValueError("source discovery cannot be loaded") from exc
+    if not callable(value):
+        raise ValueError("source discovery is not callable")
+    return value
+
+
 @dataclass(frozen=True)
 class AdapterRegistration:
     name: str
@@ -18,6 +32,13 @@ class AdapterRegistration:
     module: str = ""
     class_name: str = ""
     options: dict[str, object] | None = None
+
+    def accepts_option(self, name: str) -> bool:
+        """Whether the profile-built adapter class takes this constructor option."""
+        if self.factory is not None or not self.module:
+            return False
+        adapter_class = getattr(importlib.import_module(self.module), self.class_name)
+        return name in inspect.signature(adapter_class.__init__).parameters
 
     def create(self, salt: bytes, runtime_options=None):
         options = dict(self.options or {})
@@ -57,11 +78,15 @@ class AdapterRegistry:
             raise ValueError("unsupported source profile schema")
         registrations = []
         for raw in payload.get("sources") or ():
-            pattern = str(raw["glob"])
+            if raw.get("discover"):
+                discover = _load_callable(str(raw["discover"]))
+            else:
+                pattern = str(raw["glob"])
+                discover = lambda root, pattern=pattern: root.rglob(pattern)  # noqa: E731
             registrations.append(AdapterRegistration(
                 name=str(raw["name"]), module=str(raw["module"]),
                 class_name=str(raw["class"]), options=dict(raw.get("options") or {}),
-                discover=lambda root, pattern=pattern: root.rglob(pattern),
+                discover=discover,
             ))
         return cls(tuple(registrations))
 

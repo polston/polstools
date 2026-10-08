@@ -339,6 +339,59 @@ class AnnotationWorkspaceTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_requests_with_a_foreign_host_header_are_refused(self):
+        import http.client
+        server = create_server(self.workspace, host="127.0.0.1", port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        def fetch(method, path, headers, body=None):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                connection.putrequest(method, path, skip_host=True)
+                for name, value in headers.items():
+                    connection.putheader(name, value)
+                connection.endheaders(body)
+                response = connection.getresponse()
+                return response.status, response.read()
+            finally:
+                connection.close()
+
+        try:
+            try:
+                status, body = fetch("GET", "/api/state",
+                                     {"Host": "127.0.0.1:%d" % port})
+            except OSError as exc:
+                if getattr(exc, "errno", None) == 1:
+                    self.skipTest("loopback socket access restricted by sandbox")
+                raise
+            self.assertEqual(200, status)
+            token = json.loads(body)["csrf_token"]
+            for host in ("localhost:%d" % port, "[::1]:%d" % port):
+                self.assertEqual(200, fetch("GET", "/api/state", {"Host": host})[0])
+            for host in ("evil.example:%d" % port, "127.0.0.1:%d" % (port + 1),
+                         "127.0.0.1", ""):
+                with self.subTest(host=host):
+                    status, body = fetch("GET", "/api/state", {"Host": host})
+                    self.assertEqual(403, status)
+                    self.assertNotIn(b"csrf_token", body)
+            self.assertEqual(403, fetch("GET", "/", {"Host": "evil.example"})[0])
+            # A rebound page sends matching Host and Origin; neither may pass.
+            rebound = {"Host": "evil.example:%d" % port,
+                       "Origin": "http://evil.example:%d" % port,
+                       "X-Retro-CSRF": token, "Content-Length": "2"}
+            self.assertEqual(403, fetch("POST", "/api/labels", rebound, b"{}")[0])
+            # A foreign Origin is refused even with a legitimate Host.
+            foreign = {"Host": "127.0.0.1:%d" % port,
+                       "Origin": "http://evil.example:%d" % port,
+                       "X-Retro-CSRF": token, "Content-Length": "2"}
+            self.assertEqual(403, fetch("POST", "/api/labels", foreign, b"{}")[0])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()

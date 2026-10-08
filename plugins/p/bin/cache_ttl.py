@@ -14,11 +14,13 @@ version, and a KeyError partway through a 1GB corpus loses the whole run.
 
 Exit codes match the sibling scripts in plugins/p/bin:
     0  ran clean, the TTL in force is the right one
-    1  ran clean, the TTL should change
+    1  ran clean, and either the TTL should change or the measured data
+       cannot support a verdict (too much unpriced volume, or a keep with
+       nothing in the decisive band)
     2  could not run (no projects directory, no readable transcripts)
 
-Reads Claude transcript format only; Codex rollouts are a different format
-this reader does not parse.
+Measures Claude Code transcripts only. The question is not applicable to the
+other harnesses: their records carry no five-minute/one-hour write split.
 """
 
 EXIT_CLEAN, EXIT_FLAGGED, EXIT_CANNOT_RUN = 0, 1, 2
@@ -36,8 +38,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import retro  # noqa: E402
 
-HOME = Path.home()
-PROJECTS_DIR = HOME / ".claude" / "projects"
+HOME = retro.HOME
+
+# The one harness whose records carry the five-minute/one-hour write split
+# this question turns on, and why each other harness cannot be asked it.
+HARNESS = "claude"
+NOT_APPLICABLE_HARNESSES = {
+    "codex": "rollout token counts carry one cache-write total with no "
+             "five-minute/one-hour split",
+    "antigravity": "exports carry no five-minute/one-hour cache-write split",
+}
+
+# Above this share of main-thread read tokens on models with no price row,
+# the priced remainder is too small a part of the window to speak for it.
+# The spec's measured residual uncertainties are each about one percent and
+# were judged immaterial; a hole five times that size is not.
+UNPRICED_READ_SHARE_LIMIT = 5.0
 
 FIVE_MINUTES = 300.0
 ONE_HOUR = 3600.0
@@ -121,10 +137,20 @@ def _rows(path, main, skipped):
                 creation = usage.get("cache_creation")
                 if not isinstance(creation, dict):
                     creation = {}
-                read = usage.get("cache_read_input_tokens") or 0
-                w1 = creation.get("ephemeral_1h_input_tokens") or 0
-                w5 = creation.get("ephemeral_5m_input_tokens") or 0
-                out = usage.get("output_tokens") or 0
+                counts = [usage.get("cache_read_input_tokens"),
+                          creation.get("ephemeral_1h_input_tokens"),
+                          creation.get("ephemeral_5m_input_tokens"),
+                          usage.get("output_tokens")]
+                counts = [0 if c is None else c for c in counts]
+                # A count that fails retro.valid_token_count would either abort
+                # the run (a string) or silently shrink a total (a negative),
+                # so the whole row is set aside and tallied.
+                if not isinstance(rid, str) or not all(
+                        retro.valid_token_count(c) for c in counts):
+                    skipped["bad_usage"] += 1
+                    continue
+                counts = [int(c) for c in counts]
+                read, w1, w5, out = counts
                 model = message.get("model")
                 if not isinstance(model, str):
                     # A non-string model makes sorted() on the unpriced
@@ -147,8 +173,20 @@ def _rows(path, main, skipped):
         skipped["unreadable_file"] += 1
 
 
-def collect(projects_dir):
+# A file last modified before the window cannot hold a record written inside
+# it: a record's timestamp is taken when it is appended, and appending moves
+# the file's mtime to at least that moment. The slack absorbs clock skew
+# between the writer and the filesystem. The argument fails only for a file
+# whose mtime was set backwards after writing, which no harness does.
+MTIME_SLACK_SECONDS = 86400.0
+
+
+def collect(projects_dir, not_before=None, census=None):
     """Walk every transcript and return globally deduplicated requests.
+
+    `not_before` (an aware datetime) skips files whose mtime is more than
+    MTIME_SLACK_SECONDS older than it; `census`, a Counter, receives
+    files_seen and files_skipped_before_window.
 
     Deduplication is global rather than per file. Resuming or forking a
     session copies recent rows, request id and usage intact, into the new
@@ -161,7 +199,20 @@ def collect(projects_dir):
     """
     requests = {}
     skipped = Counter()
-    for path in sorted(projects_dir.rglob("*.jsonl")):
+    census = Counter() if census is None else census
+    paths = sorted(projects_dir.rglob("*.jsonl"))
+    floor = (not_before.timestamp() - MTIME_SLACK_SECONDS) if not_before else None
+    progress = retro.Progress("cache_ttl", len(paths))
+    for done, path in enumerate(paths, 1):
+        progress.step(done)
+        census["files_seen"] += 1
+        if floor is not None:
+            try:
+                if path.stat().st_mtime < floor:
+                    census["files_skipped_before_window"] += 1
+                    continue
+            except OSError:
+                pass   # unreadable is _rows()' to tally
         main = is_main_thread(path, projects_dir)
         for record in _rows(path, main, skipped):
             rid = record["rid"]
@@ -294,7 +345,7 @@ def _write_band_table(stream, bands):
 # USD per token, keyed by the exact message.model string in transcripts.
 # Read from the model pricing table on the page below. Re-check the date
 # before trusting a dollar figure: prices change and this table does not.
-PRICES_VERIFIED_ON = "2026-08-19"
+PRICES_VERIFIED_ON = "2026-10-06"
 PRICES_SOURCE = "https://platform.claude.com/docs/en/about-claude/pricing"
 PRICES = {
     # model id:                    (write_5m,  write_1h,  read)
@@ -306,6 +357,10 @@ PRICES = {
     "claude-sonnet-4-6":           (3.75e-6, 6.00e-6, 0.30e-6),
     "claude-sonnet-4-5-20250929":  (3.75e-6, 6.00e-6, 0.30e-6),
     "claude-haiku-4-5-20251001":   (1.25e-6, 2.00e-6, 0.10e-6),
+    "claude-fable-5-1":            (12.50e-6, 20.00e-6, 0.25e-6),
+    "claude-opus-5-5":             (5.00e-6, 8.00e-6, 0.20e-6),
+    "claude-sonnet-5-5":           (2.50e-6, 4.00e-6, 0.20e-6),
+    "claude-opus-4-6":             (6.25e-6, 10.00e-6, 0.50e-6),
 }
 
 
@@ -429,6 +484,8 @@ def _early_result(stream, days, as_json, reason, message, exit_code,
             "window_days": days,
             "reason": reason,
             "keep_current_ttl": None,
+            "harness": HARNESS,
+            "not_applicable_harnesses": dict(NOT_APPLICABLE_HARNESSES),
         }
         if extra:
             payload.update(extra)
@@ -472,8 +529,12 @@ def report(projects_dir, days, project, as_json, stream, now=None):
             "cannot run: no session directory at %s\n" % projects_dir.name,
             EXIT_CANNOT_RUN)
 
-    requests, skipped = collect(projects_dir)
-    if not requests and not skipped:
+    census = Counter()
+    not_before = None
+    if days is not None and days > 0:
+        not_before = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    requests, skipped = collect(projects_dir, not_before, census)
+    if not requests and not skipped and not census["files_skipped_before_window"]:
         return _early_result(
             stream, days, as_json, "no_readable_transcripts",
             "cannot run: no readable transcripts\n", EXIT_CANNOT_RUN)
@@ -521,6 +582,9 @@ def report(projects_dir, days, project, as_json, stream, now=None):
     governed_share = (100.0 * governed / all_read) if all_read else 0.0
 
     ttl_in_force = "one hour" if w1_total >= w5_total else "five minutes"
+    unpriced_main_read = sum(r["read"] for r in main_records
+                             if r["model"] not in PRICES)
+    unpriced_share = (100.0 * unpriced_main_read / main_read) if main_read else 0.0
     if result["observed"] <= 0.0:
         # Guarding an empty record list is not enough: observed also reaches
         # zero when every main-thread model is missing from the price table,
@@ -529,16 +593,39 @@ def report(projects_dir, days, project, as_json, stream, now=None):
         message = ("no priced main-thread requests in this window; "
                    "nothing to decide\n")
         extra = None
+        reason, code = "no_priced_main_thread_requests", EXIT_CLEAN
         if result["unpriced"]:
             message += ("every main-thread request used a model with no "
                         "price row: %s\n"
-                        % ", ".join(sorted(result["unpriced"])))
-            extra = {"unpriced_requests": dict(result["unpriced"])}
-        return _early_result(
-            stream, days, as_json, "no_priced_main_thread_requests",
-            message, EXIT_CLEAN, extra)
+                        % ", ".join(retro.strip_controls(m)
+                                    for m in sorted(result["unpriced"])))
+            extra = {"unpriced_requests": dict(result["unpriced"]),
+                     "unpriced_share_of_main_read_tokens": round(unpriced_share, 1)}
+        if unpriced_share > UNPRICED_READ_SHARE_LIMIT:
+            # Reads were made and none of them could be priced: that is a
+            # stale price table, not an empty window, and exit 0 would read
+            # as "the TTL in force is right".
+            reason, code = "insufficient_evidence", EXIT_FLAGGED
+            message = ("insufficient evidence: no main-thread read token could "
+                       "be priced. Add the missing models from %s\n"
+                       % PRICES_SOURCE) + message.split("\n", 1)[1]
+        return _early_result(stream, days, as_json, reason, message, code, extra)
     keep_current = result["ratio"] >= 1.0
-    verdict_code = EXIT_CLEAN if keep_current else EXIT_FLAGGED
+    # A verdict the data cannot carry is withheld rather than printed.
+    # Unpriced volume is missing from both totals. And with no request in the
+    # five-to-sixty-minute band every hit is cheaper under five minutes, so a
+    # keep can only come from the over-an-hour miss branch, which the spec
+    # records as overcharging the counterfactual.
+    insufficient = []
+    if unpriced_share > UNPRICED_READ_SHARE_LIMIT:
+        insufficient.append("unpriced_read_share_above_limit")
+    if keep_current and not result["bands"]["5-60m"]:
+        insufficient.append("decisive_band_empty")
+    if insufficient:
+        verdict = "insufficient_evidence"
+    else:
+        verdict = "keep" if keep_current else "switch"
+    verdict_code = EXIT_CLEAN if verdict == "keep" else EXIT_FLAGGED
     window_truncated = _window_truncated_openers(
         unwindowed_requests, main_chains, days)
 
@@ -579,6 +666,12 @@ def report(projects_dir, days, project, as_json, stream, now=None):
     if as_json:
         json.dump({
             "window_days": days,
+            "harness": HARNESS,
+            "not_applicable_harnesses": dict(NOT_APPLICABLE_HARNESSES),
+            "verdict": verdict,
+            "insufficient_reasons": insufficient,
+            "unpriced_share_of_main_read_tokens": round(unpriced_share, 1),
+            "unpriced_share_limit": UNPRICED_READ_SHARE_LIMIT,
             "prices_verified_on": PRICES_VERIFIED_ON,
             "prices_source": PRICES_SOURCE,
             "ttl_in_force": ttl_in_force,
@@ -610,12 +703,17 @@ def report(projects_dir, days, project, as_json, stream, now=None):
             "sensitivity_ratio_grouped_by_directory": round(dir_result["ratio"], 3),
             "sensitivity_openers_forced_to_miss": round(openers_forced, 2),
             "skipped": dict(skipped),
-            "keep_current_ttl": keep_current,
+            "files_seen": census["files_seen"],
+            "files_skipped_before_window": census["files_skipped_before_window"],
+            "keep_current_ttl": None if insufficient else keep_current,
         }, stream, indent=2, sort_keys=True)
         stream.write("\n")
         return verdict_code
 
     stream.write("prompt-cache TTL economics\n")
+    stream.write("harness: %s; not applicable: %s\n"
+                 % (HARNESS, "; ".join("%s (%s)" % item for item
+                                       in sorted(NOT_APPLICABLE_HARNESSES.items()))))
     stream.write("window: %s   prices verified %s\n\n"
                  % ("all history" if days is None else "last %d days" % days,
                     PRICES_VERIFIED_ON))
@@ -637,8 +735,10 @@ def report(projects_dir, days, project, as_json, stream, now=None):
         # read as evidence of that.
         stream.write("  pinned to 5m           %12s   (unaffected by the setting)\n"
                      % ", ".join(sorted(pinned)))
-    stream.write("  setting governs        %11.1f%%  of all cache-read tokens\n\n"
+    stream.write("  setting governs        %11.1f%%  of all cache-read tokens\n"
                  % governed_share)
+    stream.write("  unpriced main reads    %11.1f%%  (verdict withheld above %.1f%%)\n\n"
+                 % (unpriced_share, UNPRICED_READ_SHARE_LIMIT))
 
     stream.write("validation: subagents run on the 5m TTL, so their gap bands\n")
     stream.write("show the counterfactual directly rather than modelled.\n")
@@ -688,13 +788,24 @@ def report(projects_dir, days, project, as_json, stream, now=None):
         stream.write("unpriced models (no price row; not defaulted)\n")
         for model, count in sorted(unpriced_all.items()):
             stream.write("  %-30s %6d requests %12d tokens\n"
-                         % (model, count, unpriced_tokens[model]))
+                         % (retro.strip_controls(model), count,
+                            unpriced_tokens[model]))
         stream.write("\n")
+    if census["files_skipped_before_window"]:
+        stream.write("files not read: %d of %d, last modified before the window\n\n"
+                     % (census["files_skipped_before_window"], census["files_seen"]))
     if skipped:
         stream.write("skipped rows: %s\n\n"
                      % ", ".join("%s=%d" % kv for kv in sorted(skipped.items())))
 
-    if keep_current:
+    if insufficient:
+        stream.write("VERDICT: insufficient evidence (%s). No TTL change is\n"
+                     % ", ".join(insufficient))
+        stream.write("         supported or refuted by this window.\n")
+        if "unpriced_read_share_above_limit" in insufficient:
+            stream.write("         Add the unpriced models from %s\n"
+                         % PRICES_SOURCE)
+    elif keep_current:
         stream.write("VERDICT: keep the %s TTL. Forcing five minutes would cost\n"
                      % ttl_in_force)
         stream.write("         %s more, %.2fx, over this window.\n"
@@ -712,7 +823,7 @@ def main(argv=None):
         description="Decide the prompt-cache TTL from measured session history.")
     sub = parser.add_subparsers(required=True, dest="command")
     p_report = sub.add_parser("report", help="measure the corpus and decide")
-    p_report.add_argument("--days", type=int, default=None,
+    p_report.add_argument("--days", type=retro.positive_int, default=None,
                           help="restrict to the last N days (UTC); "
                                "default is the whole corpus")
     p_report.add_argument("--project", default=None,
@@ -722,8 +833,8 @@ def main(argv=None):
                           help="emit the same figures machine-readably")
     args = parser.parse_args(argv)
     try:
-        return report(PROJECTS_DIR, args.days, args.project, args.json,
-                      sys.stdout)
+        return report(retro.claude_projects_dir(), args.days, args.project,
+                      args.json, sys.stdout)
     except Exception as error:
         # Exit 1 is reserved for "ran clean and flagged something". A crash
         # that exits 1 is indistinguishable from a verdict to an automated
