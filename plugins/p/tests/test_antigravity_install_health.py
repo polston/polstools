@@ -229,6 +229,10 @@ class AntigravityInstallHealthTests(unittest.TestCase):
         lines = "".join('printf "%%s=%%s\\n" %s "$%s" >> "$SEEN_ENV"\n' % (n, n) for n in names)
         script.write_text("#!/bin/sh\n" + lines + 'cat "$AGY_OUTPUT"\n', encoding="utf-8")
         script.chmod(0o755)
+        if os.name == "nt":
+            # shutil.which finds only PATHEXT names on Windows, where a real
+            # agy is an .exe or a .cmd shim; this shim runs the script.
+            (fake_bin / "agy.cmd").write_text('@sh "%~dp0agy" %*\r\n', encoding="utf-8")
         operator = str(root / "userdir")
         environ = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
                        SEEN_ENV=str(seen), AGY_OUTPUT=str(output), USERPROFILE=operator,
