@@ -241,6 +241,10 @@ class RobustnessTests(AuditCase):
             + '" >&2; exit 128;; esac\n'
             'exec "' + shutil.which("git") + '" "$@"\n', encoding="utf-8")
         stub.chmod(0o755)
+        if os.name == "nt":
+            # Windows runs only PATHEXT names; a .cmd shim is how a script
+            # stands in for git.exe there.
+            (stub_dir / "git.cmd").write_text('@sh "%~dp0git" %*\r\n', encoding="utf-8")
         self.commit("base")
         env = git_env()
         env["PATH"] = str(stub_dir) + os.pathsep + env["PATH"]

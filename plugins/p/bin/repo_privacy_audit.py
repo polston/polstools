@@ -42,6 +42,7 @@ Exit: 0 = every category read zero. 1 = at least one hit. 2 = could not run.
 import bisect
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -309,6 +310,10 @@ class Git:
         self.env["GIT_LITERAL_PATHSPECS"] = "1"
         for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
             self.env.pop(name, None)
+        # Resolve git the way a shell does. Windows process creation looks
+        # only for git.exe, and in its own system directories before PATH,
+        # so a git.cmd earlier on PATH would otherwise be passed over.
+        self.git = shutil.which("git", path=self.env.get("PATH")) or "git"
         state = self._probe()
         if state is None:
             # A restricted sandbox can make the global config unreadable.
@@ -321,7 +326,7 @@ class Git:
     def _probe(self):
         try:
             proc = subprocess.run(
-                ["git", "-C", self.repo, "rev-parse", "--is-bare-repository",
+                [self.git, "-C", self.repo, "rev-parse", "--is-bare-repository",
                  "--is-shallow-repository"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=self.env)
         except OSError:
@@ -330,7 +335,7 @@ class Git:
 
     def run(self, *args, stdin=None):
         proc = subprocess.run(
-            ["git", "-C", self.repo, "-c", "core.quotePath=false", *args],
+            [self.git, "-C", self.repo, "-c", "core.quotePath=false", *args],
             input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=self.env)
         if proc.returncode != 0:
@@ -345,7 +350,7 @@ class Git:
         if not shas:
             return
         proc = subprocess.Popen(
-            ["git", "-C", self.repo, "cat-file", "--batch"],
+            [self.git, "-C", self.repo, "cat-file", "--batch"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.env)
 
         def feed():
