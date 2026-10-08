@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from fake_harness import garbled_cli
 from home_env import home_vars
 
 
@@ -151,10 +152,7 @@ class AntigravityInstallHealthTests(unittest.TestCase):
             self.doctor.query_agy("agy", runner=hangs)
 
     def _garbled_cli(self):
-        path = Path(self.tmp.name) / "garbled-cli"
-        path.write_text("#!/bin/sh\nprintf '\\377\\376 not utf-8\\n'\n", encoding="utf-8")
-        path.chmod(0o755)
-        return str(path)
+        return garbled_cli(self.tmp.name)
 
     def test_non_utf8_harness_output_is_a_query_failure_not_a_traceback(self):
         cli = self._garbled_cli()

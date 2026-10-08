@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unittest
 
-from fake_harness import FakeHarness, patched_env, write_plugin
+from fake_harness import FakeHarness, garbled_cli, patched_env, write_plugin
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -385,9 +385,7 @@ class FakeHarnessUpdateTests(unittest.TestCase):
 
     def test_non_utf8_cli_output_is_an_update_error(self):
         self.update.RUN = subprocess.run
-        cli = self.root / "garbled-cli"
-        cli.write_text("#!/bin/sh\nprintf '\\377\\376 not utf-8\\n'\n", encoding="utf-8")
-        cli.chmod(0o755)
+        cli = garbled_cli(self.root)
         with self.assertRaisesRegex(self.update.UpdateError, "UTF-8"):
             self.update.run_json(str(cli), ["plugin", "list", "--json"])
 

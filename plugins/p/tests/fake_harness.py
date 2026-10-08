@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 from home_env import home_vars
 
@@ -98,6 +99,23 @@ class patched_env:
             else:
                 os.environ[key] = value
         return False
+
+
+def garbled_cli(directory):
+    """Write an executable that prints bytes that are not UTF-8; return its path.
+
+    Windows cannot execute a shebang script directly, and a real harness CLI
+    there is an .exe or a .cmd shim, so the Windows fake is a .cmd shim.
+    """
+    if os.name == "nt":
+        path = Path(directory) / "garbled-cli.cmd"
+        code = "import sys; sys.stdout.buffer.write(bytes([255, 254]) + b' not utf-8')"
+        path.write_text('@"%s" -c "%s"\r\n' % (sys.executable, code), encoding="utf-8")
+    else:
+        path = Path(directory) / "garbled-cli"
+        path.write_text("#!/bin/sh\nprintf '\\377\\376 not utf-8\\n'\n", encoding="utf-8")
+        path.chmod(0o755)
+    return str(path)
 
 
 def write_plugin(root, version, extra=None):
