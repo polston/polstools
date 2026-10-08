@@ -110,7 +110,11 @@ def shorten_home(cwd, home, windows=False):
     if not cwd or not home:
         return cwd
     home = home.rstrip("/\\") or home
-    probe, base = (cwd.lower(), home.lower()) if windows else (cwd, home)
+    # Windows accepts either separator, and a harness may report the working
+    # directory with "/" while the home variable uses "\"; the replacement
+    # keeps lengths, so the slice below still lines up with cwd.
+    probe, base = ((cwd.lower().replace("\\", "/"), home.lower().replace("\\", "/"))
+                   if windows else (cwd, home))
     if probe == base:
         return "~"
     if probe.startswith(base) and probe[len(base)] in "/\\":

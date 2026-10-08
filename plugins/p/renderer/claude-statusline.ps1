@@ -124,7 +124,11 @@ function Get-ShortCwd([string]$cwd, [string]$homeDir, [bool]$windows) {
     $trimmed = $homeDir.TrimEnd('/', '\')
     if ($trimmed) { $homeDir = $trimmed }
     $probe = $cwd; $base = $homeDir
-    if ($windows) { $probe = $cwd.ToLowerInvariant(); $base = $homeDir.ToLowerInvariant() }
+    # Either separator is valid on Windows; the replacement keeps lengths.
+    if ($windows) {
+        $probe = $cwd.ToLowerInvariant().Replace('\', '/')
+        $base = $homeDir.ToLowerInvariant().Replace('\', '/')
+    }
     if ($probe -ceq $base) { return '~' }
     if ($probe.StartsWith($base, [System.StringComparison]::Ordinal) -and ('/\'.IndexOf($probe[$base.Length]) -ge 0)) {
         return '~' + $cwd.Substring($homeDir.Length)

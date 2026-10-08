@@ -379,6 +379,8 @@ class WindowsPathTests(unittest.TestCase):
         self.assertEqual(shorten("D:\\Accounts\\Ann\\src", "D:\\Accounts\\Ann", windows=True), "~\\src")
         self.assertEqual(shorten("d:\\accounts\\ann", "D:\\Accounts\\Ann\\", windows=True), "~")
         self.assertEqual(shorten("D:\\Accounts\\AnnX\\src", "D:\\Accounts\\Ann", windows=True), "D:\\Accounts\\AnnX\\src")
+        self.assertEqual(shorten("D:/Accounts/Ann/src", "D:\\Accounts\\Ann", windows=True), "~/src")
+        self.assertEqual(shorten("D:/Accounts/Ann/src", "D:\\Accounts\\Ann", windows=False), "D:/Accounts/Ann/src")
         self.assertEqual(shorten("/srv/Ann/src", "/srv/ann", windows=False), "/srv/Ann/src")
         self.assertEqual(shorten("/srv/ann/src", "/srv/ann/", windows=False), "~/src")
 
