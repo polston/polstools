@@ -231,8 +231,19 @@ class AntigravityInstallHealthTests(unittest.TestCase):
         script.chmod(0o755)
         if os.name == "nt":
             # shutil.which finds only PATHEXT names on Windows, where a real
-            # agy is an .exe or a .cmd shim; this shim runs the script.
-            (fake_bin / "agy.cmd").write_text('@sh "%~dp0agy" %*\r\n', encoding="utf-8")
+            # agy is an .exe or a .cmd shim. The shim runs a native Python
+            # recorder: an MSYS sh would rewrite HOME into its own /c/... form
+            # before recording it.
+            (fake_bin / "agy.py").write_text(
+                "import os, sys\n"
+                "with open(os.environ['SEEN_ENV'], 'a', encoding='utf-8') as seen:\n"
+                "    for name in %r:\n"
+                "        seen.write('%%s=%%s\\n' %% (name, os.environ.get(name, '')))\n"
+                "with open(os.environ['AGY_OUTPUT'], 'rb') as out:\n"
+                "    sys.stdout.buffer.write(out.read())\n" % (names,),
+                encoding="utf-8")
+            (fake_bin / "agy.cmd").write_text(
+                '@"%s" "%%~dp0agy.py" %%*\r\n' % sys.executable, encoding="utf-8")
         operator = str(root / "userdir")
         environ = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
                        SEEN_ENV=str(seen), AGY_OUTPUT=str(output), USERPROFILE=operator,
