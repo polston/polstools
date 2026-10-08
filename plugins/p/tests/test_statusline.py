@@ -665,7 +665,8 @@ class StatuslineCliTests(unittest.TestCase):
             self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
             self.assertIn("aligned:", synced.stdout)
             now = json.loads(claude_path.read_text("utf-8"))
-            self.assertEqual(now["statusLine"], self.ctl.desired_claude(installed / "claude-statusline.py"))
+            self.assertEqual(
+                now["statusLine"], self.ctl.desired_claude(installed / self.ctl.renderer_source().name))
             self.assertEqual(now["theme"], "dark")
 
             restored = self.run_ctl("restore", env)
@@ -873,7 +874,9 @@ class StatuslineCliTests(unittest.TestCase):
             root = Path(tmp)
             env = self.make_env(root)
             claude_path = Path(env["STATUSLINE_CLAUDE_SETTINGS"])
-            claude_path.write_text(json.dumps({"theme": "dark"}, indent=2) + "\n", "utf-8")
+            # Bytes, not text mode, so Windows does not turn the fixture's
+            # newlines into CRLF: the file is what the harness itself writes.
+            claude_path.write_bytes((json.dumps({"theme": "dark"}, indent=2) + "\n").encode())
             original = claude_path.read_bytes()
             out = io.StringIO()
             with mock.patch.dict(os.environ, env), mock.patch.object(
