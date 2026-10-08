@@ -5,7 +5,6 @@ import json
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 import unittest
 
@@ -384,7 +383,7 @@ class FakeHarnessUpdateTests(unittest.TestCase):
         self.assertTrue(marker.exists())
 
     def test_non_utf8_cli_output_is_an_update_error(self):
-        self.update.RUN = subprocess.run
+        self.update.RUN = self.update.run_utf8  # the real runner, not the fake
         cli = garbled_cli(self.root)
         with self.assertRaisesRegex(self.update.UpdateError, "UTF-8"):
             self.update.run_json(str(cli), ["plugin", "list", "--json"])

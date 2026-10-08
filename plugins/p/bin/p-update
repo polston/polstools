@@ -34,7 +34,33 @@ LABELS = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity"}
 PARTIAL_SUFFIX = ".p-update-partial"
 COMMAND_TIMEOUT = 600  # seconds for one harness CLI command
 SNAPSHOT_RETENTION_SECONDS = 30 * 24 * 3600
-RUN = subprocess.run  # harness CLI runner; tests substitute a fake harness
+
+
+def run_utf8(argv, **kwargs):
+    """Run like subprocess.run, decoding text as strict UTF-8 in this thread.
+
+    On Windows, text-mode capture decodes inside communicate()'s reader
+    threads, where a decode error is printed and dropped and the output comes
+    back as None. Capturing bytes and decoding here raises UnicodeDecodeError
+    to the caller on every platform.
+    """
+    encoding = kwargs.pop("encoding", None)
+    text = kwargs.pop("text", False) or encoding is not None
+    if not text:
+        return subprocess.run(argv, **kwargs)
+    encoding = encoding or "utf-8"
+    if isinstance(kwargs.get("input"), str):
+        kwargs["input"] = kwargs["input"].encode(encoding)
+    completed = subprocess.run(argv, **kwargs)
+    for name in ("stdout", "stderr"):
+        value = getattr(completed, name)
+        if isinstance(value, bytes):
+            value = value.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+            setattr(completed, name, value)
+    return completed
+
+
+RUN = run_utf8  # harness CLI runner; tests substitute a fake harness
 
 
 class UpdateError(RuntimeError):
@@ -344,7 +370,7 @@ def _versions(doctor, state):
     return versions
 
 
-def run_doctor(plugin_root, runner=subprocess.run, stream=None):
+def run_doctor(plugin_root, runner=run_utf8, stream=None):
     stream = sys.stdout if stream is None else stream
     try:
         completed = runner(
@@ -361,7 +387,7 @@ def run_doctor(plugin_root, runner=subprocess.run, stream=None):
     return completed.returncode if completed.returncode in {0, 1, 2} else 2
 
 
-def sync_status_indicator(plugin_root, runner=subprocess.run):
+def sync_status_indicator(plugin_root, runner=run_utf8):
     """Refresh p's Claude status indicator from the updated copy.
 
     Returns 0 synchronized, 1 not managed by p (nothing to refresh), 2 failed.
@@ -395,7 +421,7 @@ def native_region_present(env=None):
     return any(line.rstrip() == NATIVE_REGION_BEGIN for line in text.splitlines())
 
 
-def resync_native(plugin_root, runner=subprocess.run):
+def resync_native(plugin_root, runner=run_utf8):
     """Run skill-profile-ctl sync-native from plugin_root; return its exit code."""
     try:
         completed = runner(

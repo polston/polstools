@@ -32,8 +32,32 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
 
 
+def run_utf8(argv, **kwargs):
+    """Run like subprocess.run, decoding text as strict UTF-8 in this thread.
+
+    On Windows, text-mode capture decodes inside communicate()'s reader
+    threads, where a decode error is printed and dropped and the output comes
+    back as None. Capturing bytes and decoding here raises UnicodeDecodeError
+    to the caller on every platform.
+    """
+    encoding = kwargs.pop("encoding", None)
+    text = kwargs.pop("text", False) or encoding is not None
+    if not text:
+        return subprocess.run(argv, **kwargs)
+    encoding = encoding or "utf-8"
+    if isinstance(kwargs.get("input"), str):
+        kwargs["input"] = kwargs["input"].encode(encoding)
+    completed = subprocess.run(argv, **kwargs)
+    for name in ("stdout", "stderr"):
+        value = getattr(completed, name)
+        if isinstance(value, bytes):
+            value = value.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+            setattr(completed, name, value)
+    return completed
+
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-RUN = subprocess.run  # harness CLI runner; tests substitute a fake harness
+RUN = run_utf8  # harness CLI runner; tests substitute a fake harness
 PLUGIN_ID = "p@polstools"
 # Antigravity imports with these names, or whose source is this repository,
 # are earlier polstools plugins; every other import belongs to someone else.
@@ -425,21 +449,21 @@ def _remove_scratch():
         shutil.rmtree(_SCRATCH_DIRS.pop(), ignore_errors=True)
 
 
-def probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=None):
+def probe_plugin_hooks(harness, plugin_root, runner=run_utf8, contract=None):
     try:
         return _probe_plugin_hooks(harness, plugin_root, runner, contract)
     finally:
         _remove_scratch()
 
 
-def probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
+def probe_antigravity_hook(plugin_root, runner=run_utf8, contract=None):
     try:
         return _probe_antigravity_hook(plugin_root, runner, contract)
     finally:
         _remove_scratch()
 
 
-def _probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=None):
+def _probe_plugin_hooks(harness, plugin_root, runner=run_utf8, contract=None):
     contract = contract or HOOK_CONTRACTS.get(harness)
     if contract is None:
         return [Check(
@@ -551,7 +575,7 @@ def _probe_plugin_hooks(harness, plugin_root, runner=subprocess.run, contract=No
     return checks
 
 
-def _probe_antigravity_hook(plugin_root, runner=subprocess.run, contract=None):
+def _probe_antigravity_hook(plugin_root, runner=run_utf8, contract=None):
     """Run the installed Antigravity hook exactly as agy does - its argv from
     <root>/hooks.json, cwd = the plugin root, camelCase JSON on stdin - and
     compare the parsed stdout with the off and on envelopes."""
@@ -857,7 +881,7 @@ def _run_plugin_tool(argv, runner):
     return int(getattr(completed, "returncode", 2))
 
 
-def statusline_checks(plugin_root=PLUGIN_ROOT, runner=subprocess.run):
+def statusline_checks(plugin_root=PLUGIN_ROOT, runner=run_utf8):
     code = _run_plugin_tool(
         [sys.executable, "-B", str(Path(plugin_root) / "bin" / "statusline-ctl"), "check"], runner
     )
@@ -871,7 +895,7 @@ def statusline_checks(plugin_root=PLUGIN_ROOT, runner=subprocess.run):
     return [Check("statusline", "ERROR", "the statusline bundle could not be checked")]
 
 
-def python_checks(roots, runner=subprocess.run):
+def python_checks(roots, runner=run_utf8):
     """Ask each installed copy's launcher whether it finds an adequate Python.
 
     The launcher exits 0 when an interpreter at or above its floor is found and
@@ -903,7 +927,7 @@ def python_checks(roots, runner=subprocess.run):
     return checks
 
 
-def activation_checks(plugin_root=PLUGIN_ROOT, runner=subprocess.run):
+def activation_checks(plugin_root=PLUGIN_ROOT, runner=run_utf8):
     code = _run_plugin_tool(
         [sys.executable, "-B", str(Path(plugin_root) / "bin" / "skill-profile-ctl"), "validate"], runner
     )
