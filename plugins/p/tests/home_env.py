@@ -15,4 +15,8 @@ def home_vars(path):
     if os.name == "nt":
         drive, rest = os.path.splitdrive(path)
         found.update(USERPROFILE=path, HOMEDRIVE=drive, HOMEPATH=rest or "\\")
+        # Every environment built with a home also starts Python children,
+        # and Python 3.9 on Windows cannot seed its hash without SYSTEMROOT.
+        if os.environ.get("SYSTEMROOT"):
+            found["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     return found
