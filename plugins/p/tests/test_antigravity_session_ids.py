@@ -15,6 +15,8 @@ sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
 
 import skill_activation  # noqa: E402
 
+from home_env import home_vars
+
 # Names that the Antigravity executable never sets (absent from its strings).
 NOT_ANTIGRAVITY = ("ANTIGRAVITY_SESSION_ID", "AGY_SESSION_ID", "AGY_CONVERSATION_ID")
 
@@ -29,7 +31,7 @@ class AntigravitySessionIdTests(unittest.TestCase):
         userdir.mkdir()
         self.env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": str(userdir),
+            **home_vars(str(userdir)),
             "TMPDIR": str(root),
             "POLSTOOLS_PYTHON": sys.executable,
             "PYTHONDONTWRITEBYTECODE": "1",

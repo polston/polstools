@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 CTL_PATH = PLUGIN_ROOT / "bin" / "skill-profile-ctl"
@@ -17,7 +19,7 @@ class NativeActivationScopeTests(unittest.TestCase):
             userdir = root / "userdir"
             userdir.mkdir()
             env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                   "HOME": str(userdir), "TMPDIR": str(root)}
+                   **home_vars(str(userdir)), "TMPDIR": str(root)}
             env.update({
                 "P_SKILL_CONFIG_FILE": str(root / "global.json"),
                 "P_SKILL_STATE_DIR": str(root / "sessions"),

@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import subprocess
 
+from home_env import home_vars
+
 
 class FakeHarness:
     def __init__(self, root):
@@ -52,7 +54,7 @@ class FakeHarness:
 
     def env(self, prefix, names=("claude", "codex", "agy")):
         values = {
-            "HOME": str(self.home),
+            **home_vars(str(self.home)),
             "USERPROFILE": str(self.home),
             "CODEX_HOME": str(self.home / ".codex"),
             "P_CODEX_CONFIG_FILE": str(self.home / ".codex" / "config.toml"),

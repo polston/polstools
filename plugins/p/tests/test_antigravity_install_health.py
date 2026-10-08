@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = PLUGIN_ROOT / "bin" / "p_validate.py"
@@ -51,7 +53,7 @@ class AntigravityInstallHealthTests(unittest.TestCase):
         # so build that environment from a small base under the temp directory.
         base = {
             "PATH": os.environ.get("PATH", ""),
-            "HOME": str(root / "userdir"),
+            **home_vars(str(root / "userdir")),
             "TMPDIR": str(root / "tmp"),
             "POLSTOOLS_PYTHON": sys.executable,
             "PYTHONDONTWRITEBYTECODE": "1",

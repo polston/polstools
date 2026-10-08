@@ -17,6 +17,8 @@ from unittest import mock
 
 from fixtures import build_corpus, claude_assistant, claude_user, usage_row
 
+from home_env import home_vars
+
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 BIN = PLUGIN_ROOT / "bin"
 LAUNCHER = BIN / "python-launcher"
@@ -42,7 +44,7 @@ class Sandbox(unittest.TestCase):
         self.userdir.mkdir()
         self.env = {
             "PATH": os.environ.get("PATH", ""),
-            "HOME": str(self.userdir), "TMPDIR": str(base),
+            **home_vars(str(self.userdir)), "TMPDIR": str(base),
             "CLAUDE_CONFIG_DIR": str(self.cc), "CODEX_HOME": str(self.cx),
             "RETRO_ANTIGRAVITY_HOME": str(self.agy),
             "RETRO_HOME": str(self.work), "PYTHONDONTWRITEBYTECODE": "1",
@@ -102,7 +104,7 @@ class WrongTypedFields(Sandbox):
                      "averylongaccountnamedirectory"):
             home = self.userdir / name
             home.mkdir()
-            self.env["HOME"] = str(home)
+            self.env.update(home_vars(str(home)))
             done = self.run_tool("stopped-promises.py", "--selftest")
             self.assertEqual(0, done.returncode, (name, done.stdout[-400:]))
 
@@ -234,7 +236,7 @@ class SelftestHomeName(Sandbox):
     def test_selftest_passes_with_a_one_letter_home_directory(self):
         short = Path(self.tmp.name) / "h"
         short.mkdir()
-        self.env["HOME"] = str(short)
+        self.env.update(home_vars(str(short)))
         done = self.run_tool("stopped-promises.py", "--selftest")
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
 

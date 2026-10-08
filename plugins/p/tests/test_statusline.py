@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PLUGIN_ROOT.parents[1]
@@ -107,7 +109,7 @@ class StatuslineCliTests(unittest.TestCase):
                 "STATUSLINE_INSTALL_DIR": str(root / "install"),
                 "STATUSLINE_CCSTATUSLINE_CONFIG": str(root / "ccstatusline.json"),
                 "USERPROFILE": str(root / "profile-marker"),
-                "HOME": str(root / "profile-marker"),
+                **home_vars(str(root / "profile-marker")),
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
         )

@@ -8,6 +8,8 @@ import tempfile
 import time
 import unittest
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 HOOK = PLUGIN_ROOT / "bin" / "agy-format-hook"
@@ -28,7 +30,7 @@ def controlled_env(root, **extra):
     root = Path(root)
     env = {k: os.environ[k] for k in KEEP if k in os.environ}
     env.update({
-        "HOME": str(root / "userdir"),
+        **home_vars(str(root / "userdir")),
         "TMPDIR": str(root / "tmp"),
         "POLSTOOLS_PYTHON": sys.executable,
         "PYTHONDONTWRITEBYTECODE": "1",

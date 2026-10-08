@@ -11,6 +11,8 @@ import unittest
 
 from fake_harness import FakeHarness, patched_env, write_plugin
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PLUGIN_ROOT.parents[1]
@@ -616,7 +618,7 @@ class ContentAndConfigTests(unittest.TestCase):
             root = Path(tmp)
             (root / "userdir").mkdir()
             env = {
-                "HOME": str(root / "userdir"),
+                **home_vars(str(root / "userdir")),
                 "STATUSLINE_CLAUDE_SETTINGS": str(root / "claude-settings.json"),
                 "STATUSLINE_CODEX_CONFIG": str(root / "codex-config.toml"),
                 "STATUSLINE_STATE_DIR": str(root / "state"),

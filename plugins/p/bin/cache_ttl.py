@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import retro  # noqa: E402
 
-HOME = Path.home()
+HOME = retro.HOME
 
 # The one harness whose records carry the five-minute/one-hour write split
 # this question turns on, and why each other harness cannot be asked it.

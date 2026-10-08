@@ -52,7 +52,13 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 
-HOME = Path.home()
+try:
+    HOME = Path.home()
+except RuntimeError:
+    # Windows reads USERPROFILE, not HOME; with neither there is nothing to
+    # measure, which is "could not run", not a traceback.
+    sys.stderr.write("retro: cannot determine the home directory\n")
+    raise SystemExit(2)
 
 # Stable discovery precedence when transcript roots overlap.
 HARNESSES = ("claude", "codex", "antigravity")

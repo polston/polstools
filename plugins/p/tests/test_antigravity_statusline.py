@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 RENDERER = PLUGIN_ROOT / "renderer" / "antigravity-statusline.py"
@@ -38,7 +40,7 @@ class AntigravityStatuslineTests(unittest.TestCase):
         self.userdir.mkdir()
         self.tmpdir.mkdir()
         self.env = {
-            "HOME": str(self.userdir),
+            **home_vars(str(self.userdir)),
             "TMPDIR": str(self.tmpdir),
             "PATH": os.environ.get("PATH", ""),
             "NO_COLOR": "1",
@@ -54,7 +56,7 @@ class AntigravityStatuslineTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def render(self, payload, **extra):
-        payload = json.loads(json.dumps(payload).replace("@HOME@", self.env["HOME"]))
+        payload = json.loads(json.dumps(payload).replace("@HOME@", json.dumps(self.env["HOME"])[1:-1]))
         completed = subprocess.run(
             [sys.executable, "-B", str(RENDERER)], input=json.dumps(payload),
             text=True, encoding="utf-8", capture_output=True,
@@ -96,7 +98,7 @@ class AntigravityStatuslineTests(unittest.TestCase):
         env.pop("NO_COLOR")
         completed = subprocess.run(
             [sys.executable, "-B", str(RENDERER)],
-            input=json.dumps(SAMPLE).replace("@HOME@", self.env["HOME"]),
+            input=json.dumps(SAMPLE).replace("@HOME@", json.dumps(self.env["HOME"])[1:-1]),
             text=True, encoding="utf-8", capture_output=True, env=env)
         self.assertIn("\x1b[", completed.stdout)
 
@@ -145,7 +147,7 @@ class AntigravityStatuslineTests(unittest.TestCase):
     def test_the_printed_command_renders_the_sample(self):
         command = self.ctl().stdout.splitlines()[-1][len("/statusline "):]
         completed = subprocess.run(
-            ["sh", "-c", command], input=json.dumps(SAMPLE).replace("@HOME@", self.env["HOME"]), text=True,
+            ["sh", "-c", command], input=json.dumps(SAMPLE).replace("@HOME@", json.dumps(self.env["HOME"])[1:-1]), text=True,
             encoding="utf-8", capture_output=True,
             env=dict(self.env, POLSTOOLS_PYTHON=sys.executable))
         self.assertEqual(0, completed.returncode, completed.stderr)
@@ -184,7 +186,7 @@ class StatuslineCtlHelpTests(unittest.TestCase):
     def test_help_keeps_one_subcommand_per_line(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = {
-                "HOME": tmp,
+                **home_vars(tmp),
                 "TMPDIR": tmp,
                 "PATH": os.environ.get("PATH", ""),
                 "PYTHONDONTWRITEBYTECODE": "1",

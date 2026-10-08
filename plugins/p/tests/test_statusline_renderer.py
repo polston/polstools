@@ -15,6 +15,8 @@ import unittest
 import unicodedata
 from unittest import mock
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 RENDERER_DIR = PLUGIN_ROOT / "renderer"
@@ -75,7 +77,7 @@ class FakeHome:
             env.pop(name, None)
         env.update(
             {
-                "HOME": str(self.home),
+                **home_vars(str(self.home)),
                 "LOCALAPPDATA": str(self.root / "cache"),
                 "XDG_CACHE_HOME": str(self.root / "cache"),
                 "P_SKILL_CONFIG_FILE": str(self.root / "skill-global.json"),

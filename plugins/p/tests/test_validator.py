@@ -11,6 +11,8 @@ import unittest
 from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = PLUGIN_ROOT / "bin" / "p_validate.py"
@@ -268,7 +270,7 @@ class EntrypointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             clone = Path(tmp) / "clone"
             clone.mkdir()
-            env = {"HOME": str(Path(tmp)), "PATH": os.environ.get("PATH", ""),
+            env = {**home_vars(str(Path(tmp))), "PATH": os.environ.get("PATH", ""),
                    "GIT_CONFIG_NOSYSTEM": "1"}
             for args in (
                 ["init", "-q", "-b", "trunk"],
