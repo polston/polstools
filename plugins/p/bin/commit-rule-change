@@ -78,8 +78,11 @@ REPO=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null) || {
     exit 1
 }
 
-REL=$(git -C "$REPO" ls-files --full-name --others --cached --exclude-standard \
-      -- "$TARGET" 2>/dev/null | head -1)
+# Every pathspec below is the bare name, relative to -C "$DIR". Under Git Bash
+# an absolute /c/... argument holding [ or * is not converted for the native
+# git, which then finds no such path and the file reads as ignored.
+REL=$(git -C "$DIR" ls-files --full-name --others --cached --exclude-standard \
+      -- "$BASE_NAME" 2>/dev/null | head -1)
 if [ -z "$REL" ]; then
     # Ignored by the repository's own rules. That is a decision someone made on
     # purpose -- a whitelist keeping a credentials file out, most likely -- and
@@ -96,13 +99,13 @@ NAME=$(basename "$TARGET")
 BEFORE=$(mktemp) || exit 2
 MSG=""
 trap 'rm -f "$BEFORE" ${MSG:+"$MSG"}' EXIT
-git -C "$REPO" ls-files -s -z -- "$TARGET" > "$BEFORE"
+git -C "$DIR" ls-files -s -z --full-name -- "$BASE_NAME" > "$BEFORE"
 
 restore_index() {
     if [ -s "$BEFORE" ]; then
         git -C "$REPO" update-index -z --index-info < "$BEFORE"
     else
-        git -C "$REPO" update-index --force-remove -- "$TARGET"
+        git -C "$DIR" update-index --force-remove -- "$BASE_NAME"
     fi
 }
 
@@ -111,11 +114,11 @@ restore_index() {
 # diff` cannot see a file that is not tracked yet, so a brand new rule file was
 # silently skipped, and a deleted one never reached the staging call at all.
 # `add -A` on a single path covers all three cases -- added, modified, removed.
-git -C "$REPO" add -A -- "$TARGET" || { echo "could not stage $TARGET" >&2; exit 1; }
+git -C "$DIR" add -A -- "$BASE_NAME" || { echo "could not stage $TARGET" >&2; exit 1; }
 
 # Nothing staged means the edit was a no-op, or something else already committed
 # it. Either way there is nothing to do, and that is not a failure.
-if git -C "$REPO" diff --cached --quiet -- "$TARGET"; then
+if git -C "$DIR" diff --cached --quiet -- "$BASE_NAME"; then
     exit 0
 fi
 
@@ -129,7 +132,7 @@ MSG=$(mktemp) || { restore_index; exit 2; }
     printf 'a standing rule into something that can be checked rather than assumed.\n'
 } > "$MSG"
 
-if git -C "$REPO" commit -q -F "$MSG" -- "$TARGET"; then
+if git -C "$DIR" commit -q -F "$MSG" -- "$BASE_NAME"; then
     echo "committed $NAME in $REPO"
     exit 0
 fi
