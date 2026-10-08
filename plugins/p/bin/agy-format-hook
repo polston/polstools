@@ -22,8 +22,17 @@
 # owned by this user with mode 0700 and the trace file is a regular file,
 # not a link. Without the marker the cost is one file test.
 
-here=${0%/*}
-[ "$here" = "$0" ] && here=.
+# On Windows the harness passes a backslash path; Git Bash accepts forward
+# slashes, so convert them before taking the directory.
+self=$0
+while :; do
+  case $self in
+    *\\*) self=${self%%\\*}/${self#*\\} ;;
+    *) break ;;
+  esac
+done
+here=${self%/*}
+[ "$here" = "$self" ] && here=.
 
 if command -v cat >/dev/null 2>&1; then
   # One read of all of stdin, linear in its size; the sentinel keeps

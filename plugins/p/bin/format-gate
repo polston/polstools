@@ -5,8 +5,17 @@
 # python-launcher. Any failure exits 1, never 2: exit 2 from a
 # UserPromptSubmit hook blocks the user's prompt in Claude Code and Codex.
 set -u
-case $0 in
-  */*) bin=${0%/*} ;;
+# On Windows the harness passes a backslash path; Git Bash accepts forward
+# slashes, so convert them before taking the directory.
+self=$0
+while :; do
+  case $self in
+    *\\*) self=${self%%\\*}/${self#*\\} ;;
+    *) break ;;
+  esac
+done
+case $self in
+  */*) bin=${self%/*} ;;
   *) bin=. ;;
 esac
 
