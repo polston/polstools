@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from home_env import home_vars
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PROBE = PLUGIN_ROOT / "bin" / "p-session-probe"
@@ -27,6 +29,10 @@ def snapshot(root):
         for path in Path(root).rglob("*"))
 
 
+NO_WINDOWS_TRACE = unittest.skipIf(
+    os.name == "nt", "the Antigravity hook trace is not supported on Windows")
+
+
 class SessionProbeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -41,7 +47,7 @@ class SessionProbeTests(unittest.TestCase):
             "PYTHONDONTWRITEBYTECODE": "1",
             "POLSTOOLS_PYTHON": sys.executable,
             "TMPDIR": str(self.tmpdir),
-            "HOME": str(self.root / "userdir"),
+            **home_vars(str(self.root / "userdir")),
             "P_FORMAT_STATE_DIR": str(self.state),
             "P_FORMAT_CONFIG_FILE": str(self.root / "config" / "format.json"),
         })
@@ -128,6 +134,7 @@ class SessionProbeTests(unittest.TestCase):
         self.assertIn("missing or a link", completed.stderr)
         self.assertEqual("untouched\n", victim.read_text(encoding="utf-8"))
 
+    @NO_WINDOWS_TRACE
     def test_path_shaped_conversation_id_stays_inside_the_directory(self):
         self.arm()
         outside = [p for p in snapshot(self.root) if not p[0].startswith("state")]
@@ -139,6 +146,7 @@ class SessionProbeTests(unittest.TestCase):
         for line in (self.state / "probe.log").read_text(encoding="utf-8").splitlines():
             self.assertNotIn("/", line.split("\t")[0])
 
+    @NO_WINDOWS_TRACE
     def test_a_key_that_regex_matches_an_earlier_key_still_gets_its_names_line(self):
         self.arm()
         self.run_hook(conversation="ab")
@@ -173,6 +181,7 @@ class SessionProbeTests(unittest.TestCase):
                 self.assertIn("not supported on Windows", stderr.getvalue())
         self.assertFalse(self.state.exists())
 
+    @NO_WINDOWS_TRACE
     def test_armed_trace_is_private_bound_and_removed_by_the_reader(self):
         self.arm()
         trace = self.state / "probe.log"
