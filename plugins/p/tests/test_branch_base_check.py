@@ -109,7 +109,9 @@ class BranchBaseCheckTests(unittest.TestCase):
         self.assertIn("remote: upstream/main", result.stdout)
 
     def test_a_remote_name_with_sed_metacharacters_is_taken_literally(self):
-        name = "x|y|e;s|z"
+        # Windows refuses "|" in the ref file name, so there the name carries
+        # the sed metacharacters a Windows file name can hold.
+        name = "x&y.e;s#z" if os.name == "nt" else "x|y|e;s|z"
         self.git(self.local, "remote", "rename", "origin", name)
         self.git(self.local, "push", "-q", name, "main:trunk")
         self.git(self.local, "fetch", "-q", name)

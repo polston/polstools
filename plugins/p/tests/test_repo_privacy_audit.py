@@ -218,6 +218,7 @@ class RobustnessTests(AuditCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipIf(os.name == "nt", "Windows file names cannot hold control characters")
     def test_a_name_with_terminal_control_sequences_is_printed_inert(self):
         name = "\x1b]0;title\x07\x1b[31m red.pem"
         self.write(name, "x")

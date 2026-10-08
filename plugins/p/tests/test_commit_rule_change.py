@@ -12,6 +12,10 @@ def git_env():
     env = dict(os.environ)
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
+    # A Git Bash sh started from a native Windows process glob-expands its
+    # own arguments before the script sees them; noglob passes them as given.
+    if os.name == "nt":
+        env["MSYS"] = (env.get("MSYS", "") + " noglob").strip()
     return env
 
 
