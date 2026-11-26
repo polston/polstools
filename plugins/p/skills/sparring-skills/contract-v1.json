@@ -1,0 +1,85 @@
+{
+  "contract_version": 1,
+  "defaults": {
+    "judges": 2,
+    "max_skill_bytes": 8192
+  },
+  "stages": ["plan", "goal", "review", "execute", "pilot-handoff"],
+  "worker_isolation": {
+    "control_preamble": "You are producing an artifact using ONLY default harness engineering instincts and read-only inspection of the target codebase. Do NOT read or follow the candidate skill under evaluation. Produce a clean standalone artifact with zero meta-commentary about comparative testing.",
+    "treatment_preamble": "Read and follow the candidate skill at {skill_path} (including any required preflight check) using the identical grounded brief below. Produce a clean standalone artifact with zero meta-commentary identifying the skill methodology or comparative testing.",
+    "leak_ban": "Never mention 'Arm A', 'Arm B', 'control arm', 'treatment arm', 'A/B sparring', or 'produced by <skill>' inside your output artifact."
+  },
+  "blinding_leak_patterns": [
+    "\\b(?:control|treatment)\\s+arm\\b",
+    "\\barm\\s+[ab]\\b",
+    "\\ba/b\\s+sparring\\b",
+    "\\bproduced\\s+by\\s+(?:writing-plans|writing-goals|sparring-skills)\\b",
+    "\\bblinded\\s+sparring\\s+round\\b"
+  ],
+  "judge_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "request_id",
+      "artifacts_sha256",
+      "axis_a_winner",
+      "axis_b_winner",
+      "overall_winner",
+      "candidate_x_defects",
+      "candidate_y_defects",
+      "concrete_skill_gaps",
+      "unchecked"
+    ],
+    "properties": {
+      "request_id": {"type": "string", "minLength": 1},
+      "artifacts_sha256": {"type": "string", "minLength": 16},
+      "axis_a_winner": {"type": "string", "enum": ["X", "Y", "tie"]},
+      "axis_b_winner": {"type": "string", "enum": ["X", "Y", "tie"]},
+      "overall_winner": {"type": "string", "enum": ["X", "Y", "tie"]},
+      "candidate_x_defects": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["axis", "severity", "locator", "issue"],
+          "properties": {
+            "axis": {"type": "string", "enum": ["rigor", "proportionality"]},
+            "severity": {"type": "string", "enum": ["critical", "important", "minor"]},
+            "locator": {"type": "string", "minLength": 1},
+            "issue": {"type": "string", "minLength": 1}
+          }
+        }
+      },
+      "candidate_y_defects": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["axis", "severity", "locator", "issue"],
+          "properties": {
+            "axis": {"type": "string", "enum": ["rigor", "proportionality"]},
+            "severity": {"type": "string", "enum": ["critical", "important", "minor"]},
+            "locator": {"type": "string", "minLength": 1},
+            "issue": {"type": "string", "minLength": 1}
+          }
+        }
+      },
+      "concrete_skill_gaps": {"type": "array", "items": {"type": "string", "minLength": 1}},
+      "unchecked": {"type": "array", "items": {"type": "string", "minLength": 1}}
+    }
+  },
+  "judge_prompt": {
+    "preamble": "You are a BLINDED comparative judge evaluating two anonymized artifacts (Candidate X and Candidate Y) written for the same grounded brief. Score both on Axis A (Safety / Root-Cause Rigor / Grounding) and Axis B (Proportionality / Anti-Waste / Ergonomics). Cite concrete defects and echo request_id and artifacts_sha256 verbatim. Return JSON only."
+  },
+  "edit_gate": {
+    "max_skill_bytes": 8192,
+    "require_tightened_clause_on_growth": true,
+    "require_diff_verified_regression_on_growth": true,
+    "forbidden_added_line_patterns": [
+      "(?:/Users/|/home/|C:\\\\Users\\\\)",
+      "\\b(?:20\\d{2}-\\d{2}-\\d{2}T\\d{2}:\\d{2}|incident\\s+on\\s+20\\d{2}-\\d{2}-\\d{2})\\b",
+      "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b"
+    ]
+  }
+}

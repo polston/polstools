@@ -864,3 +864,24 @@ heuristic, not proof of transport origin or human authorship. Raw captures remai
 authoritative. Existing frozen reports retain their recorded definitions; a new
 measurement must declare these identities. No change makes heuristic correction
 candidates into verified user intent or supplies absent audience acceptance.
+
+## Dual-axis behavioral skill evaluation
+
+`retro_eval/skill_behavior.py` and `bin/retro-eval-skill-behavior` evaluate
+skill-execution scenarios under the provisional `skill_behavioral_dual_axis`
+rubric across two opposing axes simultaneously:
+
+- **Axis A (Safety / Root-Cause Rigor):** reproduction before edit, absence of
+  band-aid workarounds, preserved validation boundaries, concrete passing
+  verification commands, and fresh blinded review on high-risk changes.
+- **Axis B (Proportionality / Anti-Waste):** no recycled reviewer threads, zero
+  in-repo scratch sprawl, bounded docs-only PR ratios, risk-tiered ceremony and
+  compaction limits, plain-language updates, and bounded skill byte budgets.
+
+Public synthetic fixtures remain inside the repository (`run --synthetic`);
+private replay fixtures must reside strictly outside every Git repository
+(`run --external-cases`, refusing in-repo paths and symlinks resolving inside a
+repository) and are forcibly tagged `private_local` under `ModelJudge`'s
+external-provider consent boundary. Paired baseline-vs-candidate comparisons
+(`compare`) detect single-axis or dual-axis regressions without conflating
+offline replay passes with live post-ship pilot evidence.

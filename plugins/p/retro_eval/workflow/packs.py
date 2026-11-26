@@ -189,9 +189,100 @@ def design_retrieval(context):
         'Compare current acceptance and a separately prepared future-change challenge, including a simple alternative.')
 
 
+def proportionality(context):
+    """Detect candidate process waste/ceremony leads from normalized trace records.
+
+    Relies solely on observed NormalizedRecord fields (`tool_kind`, `call_signature`,
+    `main_or_subagent`) and `excerpts['tools']`. Abstains cleanly on per-subagent
+    reuse leads when the source exposes no subagent dispatch signatures.
+    """
+    candidates = []
+    limitations = [
+        'Telemetry leads identify candidate process waste; task risk and legitimacy require contextual inspection.',
+    ]
+    records = context.get('records') or []
+    tools = context.get('excerpts', {}).get('tools', {}) or {}
+    span_kinds = {row.get('span_id'): row.get('span_kind') for row in records}
+
+    # 1. Repeated subagent dispatch/message lead (observable only when call_signature carries subagent ops)
+    dispatch_counts = {}
+    has_subagent_signals = False
+    for row in records:
+        tool_kind = str(row.get('tool_kind') or '').lower()
+        sig = str(row.get('call_signature') or '')
+        if tool_kind in ('subagent', 'agent', 'delegation') or re.search(
+            r'\b(send_message|followup_task|spawn_agent)\b', sig, re.I
+        ):
+            has_subagent_signals = True
+            dispatch_counts.setdefault(sig or tool_kind, []).append(row['span_id'])
+    if not has_subagent_signals:
+        limitations.append('Subagent dispatch identity was unobserved in this source; thread-reuse leads were skipped.')
+    else:
+        for sig, span_ids in sorted(dispatch_counts.items()):
+            if len(span_ids) >= 4:
+                candidates.append(_candidate(
+                    context,
+                    'repeated_subagent_dispatch_lead',
+                    f'A subagent dispatch signature recurred {len(span_ids)} times in one session.',
+                    'Possible recycled reviewer or long-lived worker thread; confirm whether fresh blinded reviews were used.',
+                    'Spawn a fresh short-lived read-only reviewer per concrete review instead of recycling threads.',
+                    [_anchor(context['normalized_ref'], 'normalized_span', span_id=span_ids[0]),
+                     _anchor(context['normalized_ref'], 'normalized_span', span_id=span_ids[-1])],
+                    priority=2,
+                ))
+
+    # 2. Repo-local scratch sprawl lead
+    repo_scratch_spans = []
+    scratch_re = re.compile(r'(?:scratch|tmp|probe|snapshot|dump|observation[-_]\d+|audit[-_]v\d+)', re.I)
+    for span, evidence in sorted(tools.items()):
+        if context.get('source') == 'claude' and span_kinds.get(span) == 'retro.tool_result':
+            continue
+        cmd = str(evidence.get('tool_input') or '')
+        if not cmd or '/tmp/' in cmd or '/private/tmp/' in cmd:
+            continue
+        if scratch_re.search(cmd) and re.search(r'(?:>>?|tee\b|write_file|mkdir\b|cp\b)', cmd, re.I):
+            repo_scratch_spans.append(span)
+    if len(repo_scratch_spans) >= 3:
+        candidates.append(_candidate(
+            context,
+            'repo_scratch_sprawl_lead',
+            f'Observed {len(repo_scratch_spans)} scratch-like file write commands outside temporary directories.',
+            'Possible scratch sprawl inside a repository working tree; verify target paths and cleanup.',
+            'Confine temporary diagnostic dumps and scripts to /tmp and remove them at closeout.',
+            [_anchor(context['excerpts_ref'], 'json_pointer', pointer='/tools/' + repo_scratch_spans[0])],
+            priority=2,
+        ))
+
+    # 3. Ceremony-overhead lead (read/review/doc-only spans overwhelming code-edit spans)
+    edit_spans = []
+    ceremony_spans = []
+    for row in records:
+        if row.get('span_kind') != 'retro.tool_call':
+            continue
+        kind = str(row.get('tool_kind') or '').lower()
+        sig = str(row.get('call_signature') or '').lower()
+        if kind in ('edit', 'write', 'patch') and not re.search(r'\.(?:md|txt)\b', sig):
+            edit_spans.append(row['span_id'])
+        elif kind in ('read', 'search', 'review') or re.search(r'(?:handoff|roadmap|\.md\b|review)', sig):
+            ceremony_spans.append(row['span_id'])
+    if edit_spans and len(ceremony_spans) >= max(12, len(edit_spans) * 6):
+        candidates.append(_candidate(
+            context,
+            'ceremony_overhead_lead',
+            f'Observed {len(ceremony_spans)} read/review/doc spans alongside {len(edit_spans)} code-edit spans.',
+            'Possible verification or documentation ceremony disproportionate to code change size; verify risk tier.',
+            'Scale review rounds and doc updates proportionally to diff risk and bundle docs inside the code PR.',
+            [_anchor(context['normalized_ref'], 'normalized_span', span_id=ceremony_spans[0]),
+             _anchor(context['normalized_ref'], 'normalized_span', span_id=edit_spans[0])],
+            priority=1,
+        ))
+
+    return {'status': 'completed', 'candidates': candidates, 'limitations': limitations}
+
+
 def default_packs():
     return PackRegistry([Pack('diagnosis', '2', diagnosis), Pack('review', '1', review_retrieval),
-                         Pack('design', '1', design_retrieval)])
+                         Pack('design', '1', design_retrieval), Pack('proportionality', '1', proportionality)])
 
 
 def evaluate_review(findings, oracle, *, effort_seconds=None, oracle_kind='seeded',

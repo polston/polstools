@@ -136,6 +136,12 @@
         "core"
       ]
     },
+    "sparring-skills": {
+      "source": "skill",
+      "requires": [
+        "core"
+      ]
+    },
     "statusline-apply": {
       "source": "skill",
       "requires": [

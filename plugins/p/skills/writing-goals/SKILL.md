@@ -58,10 +58,15 @@ Include only fields that control the run:
 ## Shared rules
 
 1. Derive evidence and artifacts from the repository or an authoritative plan.
-   Verify that a referenced plan exists and read its verification section.
+   Verify that a referenced plan exists and read its verification section. When
+   that plan is already listed in `Read first`, reference its exact sections
+   instead of re-pasting specification prose into the goal.
 2. Never invent a wrapper command or success phrase solely to simplify goal
    evaluation. For greenfield work without validation, establish the validation
-   contract first.
+   contract first. Keep setup mutations (such as `chmod` or staging) in the
+   execution loop, not in `Evidence`, and run commit-dependent checks (privacy
+   audits, base-diff validators, index-mode checks) after creating the local
+   commit so final metadata is verified.
 3. Keep one finish line. If two conditions can complete independently, they are
    separate goals. Necessary supporting work stays inside the selected outcome.
    When phasing work into sequential goals separated by an unresolved operator

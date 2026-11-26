@@ -104,6 +104,16 @@
       "targets": {"precision": 0.85, "recall": 0.85, "agreement": 0.80},
       "positive_examples": ["single-finish-line contract with runnable evidence, explicit authority reconciliation, distinct exit states, primary bound, and harness-neutral delegation right-sizing"],
       "negative_examples": ["monolithic multi-goal prompt with vibe-only evidence, hardcoded harness tool names, unreconciled push rules, or a bound treated as completion"]
+    },
+    {
+      "id": "skill_behavioral_dual_axis", "version": 1, "calibration_status": "unvalidated", "scope": "skill_behavior_case",
+      "labels": ["balanced_pass", "rigor_failure", "proportionality_failure", "dual_failure", "ambiguous"],
+      "required_evidence": ["target harness identifier (claude, codex, or antigravity) and task size tier", "root-cause reproduction and runnable verification evidence", "review thread provenance and blinding state", "scratch file placement, PR composition, ceremony counts, and skill byte footprint"],
+      "abstain_when": ["target harness or task size is unknown", "both rigor and proportionality evidence blocks are absent"],
+      "minimum_n": 20,
+      "targets": {"precision": 0.85, "recall": 0.85, "agreement": 0.80},
+      "positive_examples": ["bug reproduced and verified at its owning boundary with fresh cold review proportional to risk, temp-only scratch, bundled docs, and a plain-language summary"],
+      "negative_examples": ["solid fix undermined by recycled multi-day reviewer threads, in-repo scratch bloat, standalone docs-only micro-PR churn, or a band-aid workaround that weakens validation"]
     }
   ]
 }

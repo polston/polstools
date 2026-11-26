@@ -616,3 +616,14 @@ are opportunities to investigate, not demonstrated review or design benefits.
 Recurring attention drains an existing backlog before becoming quiet; due
 follow-ups appear once per decision revision, and changed evidence can create a
 new cue. Suppression does not delete evidence or prove an intervention helped.
+
+### Opt-in `proportionality` pack (v1)
+
+The opt-in `'proportionality'` v1 pack (`retro-eval-workflow run --pack proportionality`)
+supplements the default `diagnosis`, `review`, and `design` packs with anchored
+process-waste leads: repeated subagent dispatch signatures (abstaining cleanly
+when subagent identity is unobserved by the source adapter), scratch-like file
+writes targeting working trees outside `/tmp`, and verification/documentation
+ceremony overwhelmingly outnumbering code edits. Leads identify candidate waste
+for contextual inspection and do not substitute for task risk assessment or live
+pilot outcomes.

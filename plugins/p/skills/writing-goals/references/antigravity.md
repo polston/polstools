@@ -32,8 +32,8 @@ prior measurement exists):
 | READ FIRST | Durable plans, repository working agreements (`AGENTS.md`), contracts, or schemas that ground the run before making changes. |
 | ARTIFACTS | Concrete file paths and structures that must exist and be verified upon completion. |
 | CONSTRAINTS & AUTHORITY | Invariants, explicit reconciliation with repo standing rules (affirm or override auto-push/auto-release per phase), and safety boundaries for both git and live host state outside git. |
-| EVIDENCE | Deterministic verification commands (tests, linters, types) and the exact exit status or output required. |
-| EXECUTION LOOP | Checkpoints, validation after meaningful changes, short progress tracking, and background-task hygiene before exit. |
+| EVIDENCE | Deterministic verification commands (tests, linters, types) and the exact exit status or output required. Exclude setup mutations; run commit-dependent gates (privacy scans, base-diff validators) after committing. |
+| EXECUTION LOOP | Checkpoints, validation after meaningful changes, short progress tracking, and background-task and subagent hygiene before exit (zero lingering tasks or idle/recycled subagents). |
 | EXITS | Distinct stop conditions: `Review needed` (operator choice required), `PARKED` (exact failure, attempted remedies, missing authority/state, resume check), and `BOUNDS` (primary turn/time cap; reaching it stops without claiming completion). |
 | HANDOFF | Final artifacts, validation results, before/after delta, and unresolved items. |
 
@@ -60,18 +60,20 @@ prior measurement exists):
    Store complex plans, diffs, and validation summaries as session artifacts
    rather than cluttering the conversational transcript.
 5. **Sequential Multi-Goal Phasing:**
-   For cross-cutting work spanning multiple layers or open operator decisions,
-   decompose into sequential single-finish-line goals with an up-front
-   open-decisions block. Each phase leaves a durable, verifiable handoff for the
-   next, and later phases may inherit shared repo invariants by referencing the
-   prior phase's handoff rather than duplicating boilerplate.
+   Split phases along real write-boundary or decision-gate seams—do not multiply
+   launch count or introduce intermediate rule-deferral hacks when adjacent
+   same-boundary work shares one clean verification gate. Factor shared
+   authority matrices once above phased contracts, point to referenced plan
+   sections rather than copying specification prose, and let later phases
+   inherit shared invariants from the prior phase's handoff.
 
 ## Lifecycle
 
 In the chat UI or CLI, `/goal <contract>` launches autonomous execution.
 Progress is reported at task checkpoints, external builds or waits use reactive
-notifications rather than polling loops, and background tasks are audited clean
-before declaring completion. The agent concludes when all evidence is verified,
+notifications rather than polling loops, and background tasks and subagents are
+audited clean (zero lingering tasks or idle/recycled subagents) before declaring
+completion. The agent concludes when all evidence is verified,
 a `Review needed` or `PARKED` stop condition triggers, or the bound is reached.
 Upon completion, update durable repository tracking documents following the
 repository's own conventions (e.g., `HANDOFF.md`), preserving verifiable

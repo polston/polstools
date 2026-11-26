@@ -4,6 +4,29 @@ Notable changes to the `p` plugin. Each version heading matches the `version`
 field of the plugin manifests; changes made before this file existed are in the
 git history.
 
+## [1.22.0]
+
+- Add dual-axis behavioral skill evaluation (`skill_behavioral_dual_axis`
+  provisional rubric, `retro_eval/skill_behavior.py`, stdlib CLI
+  `bin/retro-eval-skill-behavior`, and `tests/test_skill_behavior_eval.py`)
+  scoring Safety / Root-Cause Rigor alongside Proportionality / Anti-Waste
+  across public synthetic suites, paired regression diffs, and externally
+  stored private replay cases.
+- Register the opt-in `'proportionality'` v1 workflow pack in
+  `retro_eval/workflow/packs.py` for anchored subagent-reuse, in-repo scratch
+  sprawl, and ceremony-overhead leads while preserving default workflow packs
+  and capability-absent abstention.
+- Add the cross-harness `sparring-skills` canonical skill (`contract-v1.json`,
+  stdlib `scripts/skill_spar.py`, thin Claude Code / Codex / Antigravity
+  transport adapters, `p_validate.py` checks, and `tests/test_sparring_skills.py`)
+  for blinded parallel A/B skill comparisons, multi-judge scoring, anti-bloat
+  edit gating, and multi-stage chaining with `reviewing-improvement-effects`
+  pilot handoffs.
+- Tighten `writing-plans` (verify CLI flags and exact-set test assertions on
+  touched registries; state non-overlap boundaries beside sibling components)
+  and `writing-goals` (pointer-over-copy plan references, post-commit audit
+  ordering, subagent cleanup hygiene, and write-boundary phasing ergonomics).
+
 ## [1.21.4]
 
 - Expand `writing-goals` with an optional `Baseline` slot, open-decision

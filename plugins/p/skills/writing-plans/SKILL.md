@@ -47,7 +47,10 @@ count is required. Keep enough information for the intended executor:
 
 - The outcome, protected requirements and authoritative inputs.
 - Tasks with concrete deliverables, dependencies, relevant files or interfaces,
-  and checks that distinguish success from a plausible wrong result.
+  and checks that distinguish success from a plausible wrong result. When adding
+  a new module, command, or skill alongside existing siblings, state its
+  non-overlap boundary ("when not to use it") and include a compact boundary or
+  data-flow map for cross-boundary work.
 - The next task, its owner, and whether it is currently authorized and ready to
   run. Keep that status consistent in the plan and any handoff; dependency order
   alone does not make a task runnable.
@@ -55,11 +58,12 @@ count is required. Keep enough information for the intended executor:
   any needed rollback or recovery constraint.
 
 Plan near-term known work precisely; leave later uncertain work conditional on
-its decision gate. Verify existing paths, APIs and commands before prescribing
-them. Mark proposed new interfaces as proposed. Include exact values and tricky
-algorithm details when ambiguity would change correctness; avoid duplicating
-complete implementations in prose. More detail can be necessary for an executor
-with less context. Shorter plans are not inherently better.
+its decision gate. Verify existing paths, APIs, CLI flags (`--help`), and
+exact-set or count test assertions on touched registries or profiles before
+prescribing them. Mark proposed new interfaces as proposed. Include exact values
+and tricky algorithm details when ambiguity would change correctness; avoid
+duplicating complete implementations in prose. More detail can be necessary for
+an executor with less context. Shorter plans are not inherently better.
 
 Trace at least the consequential path through intermediate states and its
 verification. Use an existing test, dry run or isolated probe where it can check

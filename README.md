@@ -159,7 +159,7 @@ the one `agy plugin list` shows.
 | Goals, plans and decisions | `writing-goals`, `writing-plans`, `robust-over-simple` | Bound autonomous work, plan executable dependencies and preserve expandable design seams |
 | Investigation and improvement | `investigating-and-improving` | Research competing explanations, test improvements and preserve evidence across bounded iterations; see [operation and limits](plugins/p/INVESTIGATION.md) |
 | Interface fixes | `aligning-statuslines`, `shift-enter-in-windows-terminal` | Align harness status information and repair multiline input |
-| Evaluation | `reviewing-evaluation-taxonomies` | Resume controlled local taxonomy review |
+| Evaluation | `reviewing-evaluation-taxonomies`, `sparring-skills` | Resume controlled local taxonomy review and run blinded A/B skill sparring with anti-bloat edit gates |
 | Review command | `adequacy-review` | Run portable blinded ensemble review from one versioned contract |
 | Statusline commands | `statusline-apply`, `statusline-check`, `statusline-preview`, `statusline-restore` | Apply, inspect, preview, or restore aligned status lines |
 
