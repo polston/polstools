@@ -1,4 +1,6 @@
 import csv
+import contextlib
+import hashlib
 import json
 import sys
 import tempfile
@@ -6,6 +8,7 @@ import threading
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -85,6 +88,76 @@ class AnnotationWorkspaceTests(unittest.TestCase):
         self.assertNotIn(str(self.root), json.dumps(state))
         self.assertTrue(state["cases"][0]["context_blocks"])
 
+    def test_snapshot_revision_binds_displayed_rows_after_path_replacement(self):
+        original = self.packet.read_bytes()
+        with self.packet.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            fields, rows = list(reader.fieldnames), list(reader)
+        rows[0]["human_label"] = "correction"
+        rows[0]["notes"] = "external edit"
+        replacement = self.root / "replacement.csv"
+        with replacement.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        edited = replacement.read_bytes()
+        original_open = Path.open
+        fired = []
+        @contextlib.contextmanager
+        def replace_after_read(path, *args, **kwargs):
+            with original_open(path, *args, **kwargs) as handle:
+                yield handle
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if path.resolve() == self.packet.resolve() and "r" in mode and not fired:
+                replacement.replace(self.packet)
+                fired.append(True)
+        with patch.object(Path, "open", replace_after_read):
+            state = self.workspace.snapshot()
+        self.assertTrue(fired)
+        self.assertEqual("", state["cases"][0]["human_label"])
+        self.assertEqual(hashlib.sha256(original).hexdigest(), state["revision"])
+        with self.assertRaises(AnnotationConflict):
+            self.workspace.update(
+                case_id=state["cases"][0]["case_id"], label="question",
+                notes="stale view", expected_revision=state["revision"])
+        self.assertEqual(edited, self.packet.read_bytes())
+
+    def test_snapshot_rejects_changed_immutable_evidence(self):
+        with self.packet.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            fields, rows = reader.fieldnames, list(reader)
+        rows[0]["context"] = "Changed immutable evidence"
+        with self.packet.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        with self.assertRaisesRegex(AnnotationConflict, "evidence changed"):
+            self.workspace.snapshot()
+
+    def test_update_checks_revision_of_rows_it_will_mutate(self):
+        state = self.workspace.snapshot()
+        original = self.workspace._rows_with_revision
+        retained = []
+
+        def edit_before_capture():
+            if not retained:
+                with self.packet.open(newline="") as handle:
+                    reader = csv.DictReader(handle)
+                    fields, rows = reader.fieldnames, list(reader)
+                rows[0]["notes"] = "New external assessment"
+                with self.packet.open("w", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=fields)
+                    writer.writeheader()
+                    writer.writerows(rows)
+                retained.append(self.packet.read_bytes())
+            return original()
+
+        with patch.object(self.workspace, "_rows_with_revision", side_effect=edit_before_capture):
+            with self.assertRaises(AnnotationConflict):
+                self.workspace.update(case_id=state["cases"][0]["case_id"],
+                    label="question", notes="Stale overwrite", expected_revision=state["revision"])
+        self.assertEqual(retained[0], self.packet.read_bytes())
+
     def test_snapshot_includes_an_optional_privacy_safe_dashboard(self):
         dashboard = {"schema_version": 1, "calibration": {"total": 10}}
         workspace = AnnotationWorkspace(
@@ -139,7 +212,7 @@ class AnnotationWorkspaceTests(unittest.TestCase):
         self.assertEqual("", saved_case["human_label"])
         self.assertEqual(0, updated["progress"]["completed"])
 
-    def test_agent_first_assessment_accepts_or_corrects_without_notes(self):
+    def _proposal_workspace(self):
         with self.packet.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             rows = list(reader)
@@ -157,10 +230,13 @@ class AnnotationWorkspaceTests(unittest.TestCase):
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
         manifest["sample_sha256"] = _packet_fingerprint(self.packet)
         self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
-        workspace = AnnotationWorkspace(
+        return AnnotationWorkspace(
             source=self.packet, manifest_path=self.manifest,
             rubrics_path=PLUGIN_ROOT / "rubrics" / "rubrics.json",
             protocols_path=PLUGIN_ROOT / "rubrics" / "annotation-protocols.json")
+
+    def test_agent_first_assessment_accepts_or_corrects_without_notes(self):
+        workspace = self._proposal_workspace()
         state = workspace.snapshot()
         updated = workspace.update(
             case_id=state["cases"][0]["case_id"], label="correction",
@@ -174,34 +250,59 @@ class AnnotationWorkspaceTests(unittest.TestCase):
                 assessment="correct", notes="",
                 expected_revision=updated["revision"])
 
+        for assessment, label, contradictory in (
+                ("correct", "correction", "approval"),
+                ("incorrect", "approval", "correction"),
+                ("unsure", "", "approval")):
+            with self.subTest(retained_assessment=assessment):
+                state = workspace.snapshot()
+                case_id = state["cases"][0]["case_id"]
+                state = workspace.update(
+                    case_id=case_id, label=label, assessment=assessment,
+                    notes="Original note", expected_revision=state["revision"])
+                before = self.packet.read_bytes()
+                with self.assertRaisesRegex(ValueError, "assessment"):
+                    workspace.update(
+                        case_id=case_id, label=contradictory, notes="Changed",
+                        expected_revision=state["revision"])
+                self.assertEqual(before, self.packet.read_bytes())
+                updated = workspace.update(
+                    case_id=case_id, label=label, notes="Revised note",
+                    expected_revision=state["revision"])
+                self.assertEqual(assessment, updated["cases"][0]["assessment"])
+                self.assertEqual("Revised note", updated["cases"][0]["notes"])
+
     def test_proposal_review_exposes_truthful_evidence_roles_and_question(self):
-        with self.packet.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
-            rows = list(reader)
-            fields = tuple(reader.fieldnames or ())
-        extended = fields[:-2] + (
-            "proposed_label", "proposal_reason", "assessment") + fields[-2:]
-        for row in rows:
-            row.update({"proposed_label": "correction",
-                        "proposal_reason": "provisional_reason",
-                        "assessment": ""})
-        with self.packet.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=extended)
-            writer.writeheader()
-            writer.writerows(rows)
-        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
-        manifest["sample_sha256"] = _packet_fingerprint(self.packet)
-        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
-        state = AnnotationWorkspace(
-            source=self.packet, manifest_path=self.manifest,
-            rubrics_path=PLUGIN_ROOT / "rubrics" / "rubrics.json",
-            protocols_path=PLUGIN_ROOT / "rubrics" / "annotation-protocols.json",
-        ).snapshot()
+        state = self._proposal_workspace().snapshot()
         self.assertEqual("Preceding assistant context",
                          state["protocol"]["presentation"]["context_label"])
         self.assertEqual("User reply",
                          state["protocol"]["presentation"]["focal_label"])
         self.assertTrue(state["protocol"]["presentation"]["review_question"])
+
+    def test_snapshot_rejects_invalid_persisted_assessment(self):
+        workspace = self._proposal_workspace()
+        before = self.packet.read_bytes()
+        for assessment in ("accurate", "not_enough_context", "unsupported"):
+            with self.subTest(assessment=assessment):
+                with self.packet.open(newline="") as handle:
+                    reader = csv.DictReader(handle)
+                    fields, rows = reader.fieldnames, list(reader)
+                rows[0]["assessment"] = assessment
+                with self.packet.open("w", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=fields)
+                    writer.writeheader(); writer.writerows(rows)
+                invalid = self.packet.read_bytes()
+                with self.assertRaisesRegex(ValueError, "assessment"):
+                    workspace.snapshot()
+                with self.assertRaisesRegex(ValueError, "assessment"):
+                    AnnotationWorkspace(
+                        source=self.packet, manifest_path=self.manifest,
+                        rubrics_path=PLUGIN_ROOT / "rubrics" / "rubrics.json",
+                        protocols_path=PLUGIN_ROOT / "rubrics" / "annotation-protocols.json")
+                self.assertEqual(invalid, self.packet.read_bytes())
+            self.packet.write_bytes(before)
+        self.assertEqual(0, workspace.snapshot()["progress"]["completed"])
 
     def test_stale_revision_and_invalid_label_are_rejected(self):
         state = self.workspace.snapshot()
@@ -256,7 +357,6 @@ class AnnotationWorkspaceTests(unittest.TestCase):
         self.assertNotIn("data-label=", html)
         self.assertIn("const buttons = labels.map", script)
         self.assertIn("button.dataset.label = label", script)
-        self.assertIn("index < labels.length", script)
         self.assertIn("proposed_label", script)
         self.assertIn("assessment", script)
         self.assertIn("KeyboardEvent", script)
@@ -334,6 +434,19 @@ class AnnotationWorkspaceTests(unittest.TestCase):
             with urlopen(request) as response:
                 updated = json.load(response)
             self.assertEqual(1, updated["progress"]["completed"])
+            with self.packet.open(newline="") as handle:
+                reader = csv.DictReader(handle)
+                fields, rows = reader.fieldnames, list(reader)
+            rows[0]["context"] = "Changed evidence after initialization"
+            with self.packet.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows)
+            with self.assertRaises(HTTPError) as changed:
+                urlopen(base + "/api/state")
+            self.assertEqual(409, changed.exception.code)
+            self.assertEqual("conflict", json.load(changed.exception)["error"])
+            changed.exception.close()
         finally:
             server.shutdown()
             server.server_close()

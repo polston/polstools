@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -15,8 +16,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .annotation import FIELDS, _external, _load_packet_manifest, _packet_fingerprint
+from .annotation import (_assessment_values, _external, _load_packet,
+                         _packet_fingerprint, _rows_fingerprint,
+                         _validate_assessments)
 from .annotation_formatting import evidence_blocks
+from .annotation_lock import AnnotationBusy, packet_write_lock
 from .catalog import (load_annotation_protocol_catalogue,
                       load_rubric_catalogue)
 
@@ -52,7 +56,7 @@ def _validate_case_evidence(protocol, case):
 class AnnotationWorkspace:
     def __init__(self, *, source: Path, manifest_path: Path, rubrics_path: Path,
                  protocols_path: Path, dashboard=None):
-        self.source = Path(source)
+        self.source = Path(source).resolve()
         self.manifest_path = Path(manifest_path)
         _external(self.source)
         _external(self.manifest_path)
@@ -61,15 +65,21 @@ class AnnotationWorkspace:
             raw_manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
             rubric_id = str(raw_manifest["rubric_id"])
             rubric_version = int(raw_manifest["rubric_version"])
-            protocol_id = str(raw_manifest["annotation_protocol_id"])
-            protocol_version = int(raw_manifest["annotation_protocol_version"])
-            protocol_sha256 = str(raw_manifest["annotation_protocol_sha256"])
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise ValueError("annotation UI requires a protocol-bound manifest") from exc
         rubric = next((item for item in rubrics.rubrics
                        if item.id == rubric_id and item.version == rubric_version), None)
         if rubric is None:
             raise ValueError("annotation manifest rubric is absent from catalogue")
+        self.manifest, _ = _load_packet(
+            self.source, self.manifest_path, rubric_id=rubric.id,
+            rubric_version=rubric.version)
+        try:
+            protocol_id = str(self.manifest["annotation_protocol_id"])
+            protocol_version = int(self.manifest["annotation_protocol_version"])
+            protocol_sha256 = str(self.manifest["annotation_protocol_sha256"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("annotation UI requires a protocol-bound manifest") from exc
         protocol = load_annotation_protocol_catalogue(
             Path(protocols_path), rubrics).get(protocol_id, protocol_version)
         if (protocol.sha256 != protocol_sha256
@@ -78,28 +88,25 @@ class AnnotationWorkspace:
             raise ValueError("annotation protocol binding does not match catalogue")
         self.rubric = rubric
         self.protocol = protocol
-        self.manifest = _load_packet_manifest(
-            self.source, self.manifest_path, rubric_id=rubric.id,
-            rubric_version=rubric.version)
         self.dashboard = dashboard
         self._lock = threading.Lock()
 
-    def _revision(self):
-        return hashlib.sha256(self.source.read_bytes()).hexdigest()
-
-    def _rows(self):
-        with self.source.open("r", encoding="utf-8", newline="") as handle:
-            rows = list(csv.DictReader(handle))
+    def _rows_with_revision(self):
+        raw = self.source.read_bytes()
+        reader = csv.DictReader(io.StringIO(raw.decode("utf-8"), newline=""))
+        rows = list(reader)
+        if _rows_fingerprint(tuple(reader.fieldnames or ()), rows) != self.manifest["sample_sha256"]:
+            raise AnnotationConflict("annotation packet evidence changed")
         if not rows or any(not str(row.get("case_id") or "") for row in rows):
             raise ValueError("annotation packet has no usable cases")
         if len({row["case_id"] for row in rows}) != len(rows):
             raise ValueError("annotation packet contains duplicate case id")
-        return rows
+        _validate_assessments(rows, self.rubric.id)
+        return rows, hashlib.sha256(raw).hexdigest()
 
     def snapshot(self):
         with self._lock:
-            rows = self._rows()
-            revision = self._revision()
+            rows, revision = self._rows_with_revision()
         assessment_packet = "assessment" in rows[0]
         completed = sum(bool(str(row.get(
             "assessment" if assessment_packet else "human_label") or "").strip())
@@ -156,24 +163,22 @@ class AnnotationWorkspace:
         notes = str(notes)
         if len(notes) > 2000:
             raise ValueError("notes exceed 2000 characters")
-        with self._lock:
-            if expected_revision != self._revision():
+        with packet_write_lock(self.source, local_lock=self._lock):
+            rows, revision = self._rows_with_revision()
+            if expected_revision != revision:
                 raise AnnotationConflict("annotation packet changed; reload before saving")
-            if _packet_fingerprint(self.source) != self.manifest["sample_sha256"]:
-                raise AnnotationConflict("annotation packet evidence changed")
-            rows = self._rows()
             matches = [row for row in rows if row["case_id"] == case_id]
             if len(matches) != 1:
                 raise ValueError("unknown case id")
             target = matches[0]
+            if assessment is None and "assessment" in target:
+                assessment = target["assessment"] or ""
             if assessment is not None:
                 assessment = str(assessment).strip()
                 if "assessment" not in target:
                     raise ValueError("assessment is unsupported for this packet")
                 grounding = self.protocol.id == "interpretation-grounding"
-                allowed = ({"", "accurate", "partly_accurate", "wrong",
-                            "not_enough_context"} if grounding else
-                           {"", "correct", "incorrect", "unsure"})
+                allowed = _assessment_values(self.rubric.id)
                 if assessment not in allowed:
                     raise ValueError("unsupported assessment")
                 proposed = str(target.get("proposed_label") or "")
@@ -258,7 +263,11 @@ def _handler_type(workspace, assets_dir, csrf_token):
                 return
             path = urlsplit(self.path).path
             if path == "/api/state":
-                payload = workspace.snapshot()
+                try:
+                    payload = workspace.snapshot()
+                except AnnotationConflict as exc:
+                    self._send_json(409, {"error": "conflict", "message": str(exc)})
+                    return
                 payload["csrf_token"] = csrf_token
                 self._send_json(200, payload)
                 return
@@ -309,6 +318,9 @@ def _handler_type(workspace, assets_dir, csrf_token):
                     expected_revision=payload["expected_revision"])
             except AnnotationConflict as exc:
                 self._send_json(409, {"error": "conflict", "message": str(exc)})
+                return
+            except AnnotationBusy as exc:
+                self._send_json(503, {"error": "writer_busy", "message": str(exc)})
                 return
             except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
                 self._send_json(400, {"error": "invalid_request", "message": str(exc)})

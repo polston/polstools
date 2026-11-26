@@ -88,7 +88,7 @@
           <div id="ratePlot" class="rate-plot"></div>
           <div class="table-wrap">
             <table class="data-table metric-table">
-              <thead><tr><th>Harness</th><th>Metric</th><th>v</th><th>State</th><th class="numeric">Numerator</th><th class="numeric">Eligible</th><th class="numeric">Estimate</th><th>95% interval</th><th>Decision use</th></tr></thead>
+              <thead><tr><th>Harness</th><th>Metric</th><th>v</th><th>State</th><th class="numeric">Numerator</th><th class="numeric">Eligible</th><th class="numeric">Estimate</th><th>Reported interval</th><th>Decision use</th></tr></thead>
               <tbody id="metricTable"></tbody>
             </table>
           </div>
@@ -106,7 +106,7 @@
       <section class="analysis-section analysis-split" aria-labelledby="calibrationTitle">
         <div>
           <header class="analysis-heading">
-            <div><p class="eyebrow">Ten completed judgments</p><h2 id="calibrationTitle">Interpretation matrix</h2></div>
+            <div><p class="eyebrow">Recorded assessments</p><h2 id="calibrationTitle">Interpretation matrix</h2></div>
           </header>
           <div class="table-wrap">
             <table class="data-table data-table-compact">
@@ -154,11 +154,11 @@
         </div>
         <div>
           <header class="analysis-heading">
-            <div><p class="eyebrow">Calibration deltas</p><h2>Rule-change ledger</h2></div>
+            <div><p class="eyebrow">Calibration review</p><h2>Disagreement follow-up</h2></div>
           </header>
           <div class="table-wrap">
             <table class="data-table data-table-compact">
-              <thead><tr><th>Observed signal</th><th>Resulting rule change</th><th>Reason</th></tr></thead>
+              <thead><tr><th>Observed signal</th><th>Next review action</th><th>Reason</th></tr></thead>
               <tbody id="changeTable"></tbody>
             </table>
           </div>
@@ -221,6 +221,12 @@
           <label for="notes">Optional note</label>
           <textarea id="notes" rows="2" maxlength="2000"
                     placeholder="Record why only when the edge case matters."></textarea>
+          <div id="conflictNotice" class="conflict-notice" role="alert" hidden>
+            <strong>This case changed elsewhere.</strong>
+            <p>Your note is still an unsaved draft. Review the saved judgment and note, then choose a label or assessment to save.</p>
+            <p id="conflictSavedJudgment"></p>
+            <details><summary>Latest saved note</summary><p id="conflictSavedNote"></p></details>
+          </div>
         </div>
 
         <nav class="case-nav" aria-label="Cases">
@@ -242,7 +248,7 @@
           <p class="signal-label">Observed signal</p>
           <p id="proposalReason"></p>
         </div>
-        <div id="assessmentControls" class="label-stack" role="group"
+        <div id="assessmentControls" class="label-stack assessment-controls" role="group"
              aria-label="Assess the proposed diagnosis" hidden>
           <button id="assessmentCorrect" type="button"><span><strong>Correct</strong><small>The proposed diagnosis and reason fit.</small></span></button>
           <button id="assessmentIncorrect" type="button"><span><strong>Incorrect</strong><small>Choose the better label below.</small></span></button>

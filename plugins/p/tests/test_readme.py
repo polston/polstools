@@ -13,8 +13,6 @@ LICENSE_PATH = REPO_ROOT / "LICENSE"
 CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
 HARNESSES = ("Claude Code", "Codex", "Antigravity")
 STATE_CHANGING_SKILLS = (
-    "fmt-on",
-    "fmt-off",
     "home",
     "work",
     "update",
@@ -155,7 +153,6 @@ class RepositoryDocumentTests(unittest.TestCase):
     def test_skills_name_other_skills_without_one_harness_sigil(self):
         for name, sigils in (
             ("aligning-statuslines", ("$p:home", "$p:work")),
-            ("maintaining-the-format-plugin", ("/p:fmt-on",)),
         ):
             text = (PLUGIN_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
             for sigil in sigils:

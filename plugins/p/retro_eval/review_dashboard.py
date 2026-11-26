@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import difflib
 import json
 import os
@@ -10,7 +9,7 @@ import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .annotation import _load_packet_manifest
+from .annotation import _load_packet
 
 
 _ASSESSMENT_ORDER = ("accurate", "partly_accurate", "wrong",
@@ -31,14 +30,8 @@ def _read_packet(source: Path, manifest_path: Path):
         rubric_version = int(manifest["rubric_version"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("dashboard packet manifest is invalid") from exc
-    _load_packet_manifest(source, manifest_path, rubric_id=rubric_id,
-                          rubric_version=rubric_version)
-    try:
-        with source.open("r", encoding="utf-8", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-    except OSError as exc:
-        raise ValueError("dashboard packet is unreadable") from exc
-    return manifest, rows
+    return _load_packet(source, manifest_path, rubric_id=rubric_id,
+                        rubric_version=rubric_version)
 
 
 def _packets(review_dir: Path):
@@ -85,7 +78,8 @@ def _taxonomy_summary(packets, rubric_id):
                 if manifest.get("rubric_id") == rubric_id]
     if not relevant:
         return {"version": None, "sample_size": 0, "labeled": 0,
-                "validated": False, "class_support": {}}
+                "human_labeled": 0,
+                "validated": False, "class_support": {}, "splits": {}}
     versions = {int(manifest["rubric_version"]) for manifest, _ in relevant}
     version = max(versions)
     relevant = [(manifest, rows) for manifest, rows in relevant
@@ -102,24 +96,41 @@ def _taxonomy_summary(packets, rubric_id):
         reasons = Counter(str(row.get("proposal_reason") or "unknown")
                           for row in packet_rows)
         adaptive = manifest.get("adaptive_sampling") or {}
-        splits[split] = {
-            "sample_size": len(packet_rows),
-            "assessed": sum(bool(str(row.get("assessment") or "").strip())
-                            for row in packet_rows),
-            "human_labeled": sum(bool(str(row.get("human_label") or "").strip())
-                                 for row in packet_rows),
-            "proposed_support": dict(sorted(proposed.items())),
-            "reason_support": dict(sorted(reasons.items())),
+        state = splits.setdefault(split, {
+            "sample_size": 0, "assessed": 0, "human_labeled": 0,
+            "proposed_support": Counter(), "reason_support": Counter(),
+            "bindings": [],
+        })
+        state["sample_size"] += len(packet_rows)
+        state["assessed"] += sum(bool(str(row.get("assessment") or "").strip())
+                                 for row in packet_rows)
+        state["human_labeled"] += sum(bool(str(row.get("human_label") or "").strip())
+                                      for row in packet_rows)
+        state["proposed_support"].update(proposed)
+        state["reason_support"].update(reasons)
+        binding = {
             "protocol_id": str(manifest.get("annotation_protocol_id") or ""),
-            "protocol_version": int(
-                manifest.get("annotation_protocol_version") or 0),
+            "protocol_version": int(manifest.get("annotation_protocol_version") or 0),
             "adaptive_round": int(adaptive.get("round") or 0),
-            "minimum_heldout_per_label": int(
-                adaptive.get("minimum_heldout_per_label") or 0),
-            "support_labels": [str(value) for value in
-                               adaptive.get("support_labels", [])],
+            "minimum_heldout_per_label": int(adaptive.get("minimum_heldout_per_label") or 0),
+            "support_labels": sorted(str(value) for value in adaptive.get("support_labels", [])),
         }
+        if binding not in state["bindings"]:
+            state["bindings"].append(binding)
+    for state in splits.values():
+        state["bindings"].sort(key=lambda item: (
+            item["adaptive_round"], item["protocol_id"], item["protocol_version"],
+            item["minimum_heldout_per_label"], item["support_labels"]))
+        state["rounds"] = sorted({item["adaptive_round"] for item in state["bindings"]})
+        state["adaptive_round"] = max(state["rounds"])
+        # Preserve scalar compatibility only when every packet has that binding.
+        for key in ("protocol_id", "protocol_version", "minimum_heldout_per_label", "support_labels"):
+            values = [item[key] for item in state["bindings"]]
+            state[key] = values[0] if all(value == values[0] for value in values) else None
+        for key in ("proposed_support", "reason_support"):
+            state[key] = dict(sorted(state[key].items()))
     return {"version": version, "sample_size": len(rows), "labeled": labeled,
+            "human_labeled": sum(state["human_labeled"] for state in splits.values()),
             "validated": False, "class_support": dict(sorted(support.items())),
             "splits": splits}
 
@@ -139,19 +150,23 @@ def _metric(report, harness, scorer_id):
                  if item.get("scorer_id") == scorer_id), None)
 
 
+def _optional_count(value):
+    return None if value is None else int(value)
+
+
 def _corpus_summary(report):
     values = []
     versions = set()
-    for harness in ("claude", "codex"):
+    for harness in sorted(report.get("sources") or {}):
         metric = _metric(report, harness, "repeated_call_rate")
         if not metric:
             continue
         versions.add(int(metric["scorer_version"]))
         values.append({
             "harness": harness,
-            "count": int(metric.get("numerator") or 0),
-            "eligible": int(metric.get("eligible_population") or 0),
-            "rate": float(metric.get("value") or 0.0),
+            "count": _optional_count(metric.get("numerator")),
+            "eligible": _optional_count(metric.get("eligible_population")),
+            "rate": metric.get("value"),
             "decision_support": bool(
                 (metric.get("details") or {}).get("decision_support")),
         })
@@ -162,7 +177,7 @@ def _corpus_summary(report):
 
 def _metric_rows(report):
     rows = []
-    for harness in ("claude", "codex"):
+    for harness in sorted(report.get("sources") or {}):
         for metric in (report.get("sources") or {}).get(harness, []):
             details = metric.get("details") or {}
             rows.append({
@@ -170,14 +185,15 @@ def _metric_rows(report):
                 "metric_id": str(metric.get("scorer_id") or "unknown"),
                 "scorer_version": int(metric.get("scorer_version") or 0),
                 "state": str(metric.get("label") or "unknown"),
-                "numerator": int(metric.get("numerator") or 0),
-                "eligible": int(metric.get("eligible_population") or 0),
-                "population": int(metric.get("population") or 0),
+                "numerator": _optional_count(metric.get("numerator")),
+                "eligible": _optional_count(metric.get("eligible_population")),
+                "population": _optional_count(metric.get("population")),
                 "value": metric.get("value"),
                 "interval_low": metric.get("interval_low"),
                 "interval_high": metric.get("interval_high"),
                 "uncertainty_method": str(
                     metric.get("uncertainty_method") or ""),
+                "uncertainty": details.get("uncertainty") or {},
                 "abstained": bool(metric.get("abstained")),
                 "decision_support": bool(details.get("decision_support")),
             })
@@ -224,8 +240,6 @@ def _change_scope(path):
         return "P3 provenance"
     if "usage_comparability" in path:
         return "P5 accounting"
-    if "hook_lifecycle" in path or path.endswith("format-ctl"):
-        return "P7 owned hooks"
     if "/ui/annotation/" in path or "review_dashboard" in path:
         return "review interface"
     if "/retro_eval/" in path:
@@ -296,21 +310,43 @@ def _repository_changeset(repo_root, base_ref=None):
     }
 
 
-def _recommendations(p2, p3, p7):
+def _controlled_coverage(coverage):
+    """Require explicit, consistent observations before reporting a controlled pass."""
+    coverage = coverage if isinstance(coverage, dict) else {}
+    counts = {key: (coverage[key] if type(coverage.get(key)) is int
+                    and coverage[key] >= 0 else None)
+              for key in ("population", "resolved", "unresolved")}
+    if not coverage:
+        state = "not_observed"
+    elif any(value is None for value in counts.values()):
+        state = "incomplete_evidence"
+    elif counts["resolved"] + counts["unresolved"] != counts["population"]:
+        state = "inconsistent_evidence"
+    elif counts["population"] == 0:
+        state = "not_observed"
+    elif counts["unresolved"]:
+        state = "controlled_incomplete"
+    else:
+        state = "controlled_pass"
+    return {"state": state, **counts}
+
+
+def _taxonomy_evidence(summary):
+    return ("%d of %d captured cases have human labels. This dashboard does not "
+            "establish scoped validation for decision support."
+            % (summary["human_labeled"], summary["sample_size"]))
+
+
+def _recommendations(p2, p3, taxonomies):
     """Return the bounded policy decisions separately from measured evidence."""
-    p3_population = int(p3.get("population") or 0)
-    p3_resolved = int(p3.get("resolved") or 0)
-    p3_unresolved = int(p3.get("unresolved") or 0)
-    p3_passed = (p3_population > 0 and p3_resolved == p3_population
-                 and p3_unresolved == 0)
-    p7_precision = p7.get("capture_precision")
-    p7_recall = p7.get("capture_recall")
-    p7_unmatched = p7.get("unmatched_terminal_rate")
-    p7_bytes = p7.get("added_normalized_byte_share")
-    p7_passed = (p7_precision is not None and p7_precision >= 0.95
-                 and p7_recall is not None and p7_recall >= 0.95
-                 and p7_unmatched is not None and p7_unmatched <= 0.02
-                 and p7_bytes is not None and p7_bytes <= 0.02)
+    p3_passed = p3["state"] == "controlled_pass"
+    if p3["state"] in ("controlled_pass", "controlled_incomplete"):
+        p3_basis = ("%d/%d controlled sessions resolve to exactly one active "
+                    "manifest version; %d are unresolved."
+                    % (p3["resolved"], p3["population"], p3["unresolved"]))
+    else:
+        p3_basis = ("A controlled pass is not established: coverage is absent, "
+                    "empty, incomplete or inconsistent. See the observed counts.")
     return [
         {
             "proposal": "P1", "decision": "hold",
@@ -318,12 +354,10 @@ def _recommendations(p2, p3, p7):
             "recommended_action":
                 "Use only for candidate generation; do not use it to judge "
                 "wasteful duplication.",
-            "evidence_basis":
-                "The scorer has zero human truth labels and has not passed "
-                "its preregistered held-out gates.",
+            "evidence_basis": _taxonomy_evidence(taxonomies["P1"]),
             "revisit_when":
                 "Held-out precision, recall, agreement, polling false-positive, "
-                "and class-support gates all pass.",
+                "and class-support gates pass and a scoped validation decision is supported.",
         },
         {
             "proposal": "P2", "decision": "park",
@@ -345,12 +379,10 @@ def _recommendations(p2, p3, p7):
             "decision": "adopt" if p3_passed else "hold",
             "decision_support": p3_passed,
             "recommended_action":
-                "Use private hashed instruction manifests for sessions inside a "
-                "declared coverage window.",
-            "evidence_basis":
-                "%d/%d controlled sessions resolve to exactly one active "
-                "manifest version; %d are unresolved."
-                % (p3_resolved, p3_population, p3_unresolved),
+                ("Use private hashed instruction manifests for sessions inside a "
+                 "declared coverage window." if p3_passed else
+                 "Collect complete, consistent controlled coverage before adopting this manifest method."),
+            "evidence_basis": p3_basis,
             "revisit_when":
                 "A declared-window session cannot resolve uniquely or privacy "
                 "classification fails.",
@@ -361,12 +393,10 @@ def _recommendations(p2, p3, p7):
             "recommended_action":
                 "Use only for candidate generation; do not use failure classes "
                 "to justify changes.",
-            "evidence_basis":
-                "The taxonomy has zero human truth labels and has not passed its "
-                "preregistered held-out gates.",
+            "evidence_basis": _taxonomy_evidence(taxonomies["P4"]),
             "revisit_when":
                 "Held-out precision, recall, agreement, unknown-rate, and "
-                "class-support gates all pass.",
+                "class-support gates pass and a scoped validation decision is supported.",
         },
         {
             "proposal": "P5", "decision": "adopt_gate_only",
@@ -390,17 +420,14 @@ def _recommendations(p2, p3, p7):
             "revisit_when": "New evidence supports a separately authorized review.",
         },
         {
-            "proposal": "P7",
-            "decision": "adopt_scoped" if p7_passed else "hold",
-            "decision_support": p7_passed,
-            "recommended_action":
-                "Instrument repository-owned deterministic wrappers only.",
+            "proposal": "P7", "decision": "retired",
+            "decision_support": False,
+            "recommended_action": "Keep owned-hook instrumentation retired.",
             "evidence_basis":
-                "Owned-hook capture passed precision, recall, unmatched-terminal, "
-                "and byte-overhead targets.",
+                "Response formatting and its only owned hooks were removed in "
+                "v1.12.0; any retained measurements describe earlier versions.",
             "revisit_when":
-                "Additional harness surfaces become owned and deterministically "
-                "wrappable; never infer harness-wide opportunity coverage.",
+                "A separately authorized feature introduces new owned hooks.",
         },
         {
             "proposal": "P8", "decision": "preserve",
@@ -430,29 +457,38 @@ def build_review_dashboard(review_dir, *, repo_root=None, base_ref=None):
     p3_report = _read_json(p3_path) if p3_path else {}
     p3 = ((p3_report.get("dataset_manifest") or {})
           .get("instruction_manifest_coverage") or {})
+    p3 = _controlled_coverage(p3)
     p7_path = _find_report(retro_home / "current-base" / "p7-controlled",
                            "owned-hook-report.json")
     p7 = _read_json(p7_path) if p7_path else {}
     calibration = _calibration_summary(packets)
+    taxonomies = {
+        "P1": {**_taxonomy_summary(packets, "duplicate_work"),
+               "thresholds": {"precision": 0.90, "recall": 0.75,
+                              "polling_false_positive_rate": 0.05}},
+        "P4": {**_taxonomy_summary(packets, "tool_failure_kind"),
+               "thresholds": {"precision": 0.90, "recall": 0.80,
+                              "agreement": 0.80, "unknown_rate": 0.10}},
+    }
     assessment_counts = calibration["assessment_counts"]
     changes = []
     if assessment_counts["partly_accurate"]:
         changes.append({
             "signal": "%d partly accurate" % assessment_counts["partly_accurate"],
-            "change": "Carry standing preferences into later diagnoses.",
-            "reason": "The main interpretation fit, but omitted known brevity or recurrence expectations.",
+            "change": "Review the partly accurate cases and notes to identify what needs correction.",
+            "reason": "These assessments indicate partial agreement; their counts do not identify the omitted or incorrect details.",
         })
     if assessment_counts["wrong"]:
         changes.append({
             "signal": "%d wrong" % assessment_counts["wrong"],
-            "change": "Treat cumulative polling as an efficiency question.",
-            "reason": "An active job does not by itself justify repeated waits when completion notification is available.",
+            "change": "Review the cases marked wrong before choosing a workflow change.",
+            "reason": "These assessments reject an interpretation; their counts do not establish its cause or the appropriate remedy.",
         })
     if assessment_counts["not_enough_context"]:
         changes.append({
             "signal": "%d insufficient" % assessment_counts["not_enough_context"],
-            "change": "Abstain when repeat history is missing.",
-            "reason": "Two adjacent waits cannot establish cumulative cost without duration, repeat count, or notification context.",
+            "change": "Review the cases lacking context; retrieve relevant evidence or preserve uncertainty.",
+            "reason": "These assessments report insufficient context; their counts do not identify which evidence is missing.",
         })
     dataset_manifest = report.get("dataset_manifest") or {}
     repository_root = (Path(repo_root).resolve() if repo_root else
@@ -460,7 +496,7 @@ def build_review_dashboard(review_dir, *, repo_root=None, base_ref=None):
     return {
         "schema_version": 4,
         "changeset": _repository_changeset(repository_root, base_ref),
-        "recommendations": _recommendations(p2, p3, p7),
+        "recommendations": _recommendations(p2, p3, taxonomies),
         "run": {
             "dataset_id": str(dataset_manifest.get("dataset_id") or "unknown"),
             "trace_population": int(dataset_manifest.get("population") or 0),
@@ -486,14 +522,7 @@ def build_review_dashboard(review_dir, *, repo_root=None, base_ref=None):
                                   .get("population") or 0),
                    "repeated_call_scorer_version": scorer_version},
         "corpus_candidates": candidates,
-        "taxonomies": {
-            "P1": {**_taxonomy_summary(packets, "duplicate_work"),
-                   "thresholds": {"precision": 0.90, "recall": 0.75,
-                                  "polling_false_positive_rate": 0.05}},
-            "P4": {**_taxonomy_summary(packets, "tool_failure_kind"),
-                   "thresholds": {"precision": 0.90, "recall": 0.80,
-                                  "agreement": 0.80, "unknown_rate": 0.10}},
-        },
+        "taxonomies": taxonomies,
         "proposals": {
             "P1": {"state": "calibrating", "decision_support": False},
             "P2": {"state": "owned_events_measured",
@@ -511,15 +540,12 @@ def build_review_dashboard(review_dir, *, repo_root=None, base_ref=None):
                        "missed_trigger_rate", "not_observable"),
                    "opportunity_rate": p2.get(
                        "opportunity_rate", "not_observable")},
-            "P3": {"state": "controlled_pass",
-                   "population": int(p3.get("population") or 0),
-                   "resolved": int(p3.get("resolved") or 0),
-                   "unresolved": int(p3.get("unresolved") or 0)},
+            "P3": p3,
             "P4": {"state": "calibrating", "decision_support": False},
             "P5": {"state": "comparability_gate_implemented",
                    "paired_experiment": "parked"},
             "P6": {"state": "suppressed"},
-            "P7": {"state": "controlled_pass",
+            "P7": {"state": "retired", "historical_only": True,
                    "precision": p7.get("capture_precision"),
                    "recall": p7.get("capture_recall"),
                    "unmatched_terminal_rate": p7.get(

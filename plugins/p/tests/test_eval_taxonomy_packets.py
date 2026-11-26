@@ -1,10 +1,13 @@
 """Adaptive external annotation packets for P1 and P4."""
 
 import csv
+import contextlib
+import hashlib
 import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -27,12 +30,66 @@ from retro_eval.taxonomy_packets_cli import main as taxonomy_packets_main  # noq
 def record(trace, sequence, kind, *, signature="", tool="", status="ok",
            attributes=None):
     return TraceRecord(
-        schema_version=1, trace_id=trace, span_id=(trace[:20] + "%04d" % sequence),
+        schema_version=1, trace_id=trace, span_id=hashlib.sha256(
+            (trace + ":" + str(sequence)).encode()).hexdigest()[:24],
         parent_span_id=None, source="fixture", adapter_version=1,
         source_version="1", span_kind=kind, started_at=None,
         sequence=sequence, call_signature=signature, tool_kind=tool,
         status=status, attributes=dict(attributes or {}),
     )
+
+
+class TraceSplitTests(unittest.TestCase):
+    def test_trace_stays_in_one_phase_across_rubrics_and_rounds(self):
+        from retro_eval.taxonomy_packets import _candidates, _assigned_split
+        rows = []
+        for i in range(1, 65):
+            trace = "%024x" % i
+            rows.extend(record(trace, j, SpanKind.TOOL, signature="same", tool="Read")
+                        for j in (1, 2, 3))
+            rows.append(record(trace, 4, "retro.tool_result", tool="Read", status="error"))
+        trace_by_span = {r.span_id: r.trace_id for r in rows}
+        phases = {}
+        assignments = {}
+        for rubric in ("duplicate_work", "tool_failure_kind"):
+            for c in _candidates(rows, rubric):
+                split = _assigned_split(c, rubric)
+                phases.setdefault(trace_by_span[c.stable_key], set()).add(split)
+                assignments[rubric, c.stable_key] = split
+            self.assertEqual(
+                {c.stable_key: _assigned_split(c, rubric) for c in _candidates(rows, rubric)},
+                {c.stable_key: _assigned_split(c, rubric) for c in _candidates(list(reversed(rows)), rubric)})
+        self.assertTrue(all(len(values) == 1 for values in phases.values()))
+        self.assertEqual({"calibration", "test"}, set(assignments.values()))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            traces = root / "traces.jsonl"
+            JsonlTraceStore(traces).write(rows)
+            overrides = {r: {"calibration": 5, "test": 5}
+                         for r in ("duplicate_work", "tool_failure_kind")}
+            first = write_taxonomy_review_packets(traces, root / "first", size_overrides=overrides)
+            priors = [p["manifest"] for p in first["packets"]]
+            original = {p: Path(p).read_bytes() for p in priors}
+            second = write_taxonomy_review_packets(traces, root / "second", round_number=2,
+                prior_manifests=priors, size_overrides=overrides)
+            groups = {"calibration": set(), "test": set()}
+            for result in (first, second):
+                for packet in result["packets"]:
+                    manifest = json.loads(Path(packet["manifest"]).read_text())
+                    self.assertEqual("source_trace_v1", manifest["split_policy"])
+                    self.assertEqual(packet["population"], len(manifest["candidate_group_sha256"]))
+                    groups[packet["split"]].update(manifest["candidate_group_sha256"])
+            self.assertTrue(all(groups.values()))
+            self.assertFalse(groups["calibration"] & groups["test"])
+            self.assertEqual(original, {p: Path(p).read_bytes() for p in priors})
+            changed = json.loads(Path(priors[0]).read_text())
+            changed.pop("split_policy")
+            altered = root / "legacy.json"
+            altered.write_text(json.dumps(changed))
+            with self.assertRaisesRegex(ValueError, "split policy"):
+                write_taxonomy_review_packets(traces, root / "invalid", round_number=2,
+                    prior_manifests=[altered, *priors[1:]], size_overrides=overrides)
+            self.assertFalse((root / "invalid").exists())
 
 
 class AdaptiveSupportTests(unittest.TestCase):
@@ -57,11 +114,18 @@ class AdaptiveSupportTests(unittest.TestCase):
                        if item.id == "tool_failure_kind")
         self.assertEqual("unvalidated", assess_taxonomy_promotion(
             [], [], duplicate)["status"])
+        empty = assess_taxonomy_promotion([], [], duplicate)
+        for metric in ("precision", "recall", "agreement", "polling_false_positive_rate"):
+            self.assertIsNone(empty[metric])
 
         duplicate_truth = [label for label in duplicate.extensions[
             "adaptive_sampling"]["support_labels"] for _ in range(20)]
-        self.assertEqual("promoted", assess_taxonomy_promotion(
+        self.assertEqual("thresholds_met", assess_taxonomy_promotion(
             duplicate_truth, list(duplicate_truth), duplicate)["status"])
+        passing = assess_taxonomy_promotion(duplicate_truth, duplicate_truth, duplicate)
+        self.assertFalse(passing["decision_support"])
+        self.assertEqual("observed_label_pairs", passing["assessment_scope"])
+        self.assertEqual(2, passing["assessment_version"])
         duplicate_predictions = list(duplicate_truth)
         duplicate_predictions[40:45] = ["polling"] * 5
         self.assertEqual("unvalidated", assess_taxonomy_promotion(
@@ -69,7 +133,7 @@ class AdaptiveSupportTests(unittest.TestCase):
 
         failure_truth = [label for label in failure.extensions[
             "adaptive_sampling"]["support_labels"] for _ in range(20)]
-        self.assertEqual("promoted", assess_taxonomy_promotion(
+        self.assertEqual("thresholds_met", assess_taxonomy_promotion(
             failure_truth, list(failure_truth), failure)["status"])
         failure_predictions = list(failure_truth)
         failure_predictions[:11] = ["unknown"] * 11
@@ -80,6 +144,187 @@ class AdaptiveSupportTests(unittest.TestCase):
 
 
 class TaxonomyPacketTests(unittest.TestCase):
+    def test_manifest_cannot_certify_replaced_publication(self):
+        from retro_eval.annotation import _load_packet, _packet_fingerprint
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            traces = root / "traces.jsonl"
+            JsonlTraceStore(traces).write([
+                record("a" * 24, j, SpanKind.TOOL, signature="same", tool="Read")
+                for j in (1, 2)])
+            original = Path.open
+            replaced = []
+
+            @contextlib.contextmanager
+            def replace_after_write(path, *args, **kwargs):
+                with original(path, *args, **kwargs) as handle:
+                    yield handle
+                mode = args[0] if args else kwargs.get("mode", "r")
+                if path.suffix == ".csv" and mode in ("w", "x") and not replaced:
+                    with original(path, newline="") as handle:
+                        reader = csv.DictReader(handle)
+                        fields, rows = reader.fieldnames, list(reader)
+                    if rows:
+                        replaced.append(path)
+                        rows[0]["context"] = "Unvalidated replacement"
+                        with original(path, "w", newline="") as handle:
+                            writer = csv.DictWriter(handle, fieldnames=fields)
+                            writer.writeheader()
+                            writer.writerows(rows)
+
+            with patch.object(Path, "open", replace_after_write):
+                result = write_taxonomy_review_packets(traces, root / "packets")
+            self.assertEqual(1, len(replaced))
+            packet = next(packet for packet in result["packets"]
+                          if Path(packet["source"]) == replaced[0])
+            manifest_path = Path(packet["manifest"])
+            metadata = json.loads(manifest_path.read_text())
+            self.assertNotEqual(metadata["sample_sha256"], _packet_fingerprint(replaced[0]))
+            with self.assertRaisesRegex(ValueError, "fingerprint mismatch"):
+                _load_packet(replaced[0], manifest_path,
+                    rubric_id=metadata["rubric_id"], rubric_version=metadata["rubric_version"])
+
+    def test_sampling_budget_and_invalid_requests_reject_before_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            traces = root / "traces.jsonl"
+            JsonlTraceStore(traces).write([
+                record("%024x" % i, j, SpanKind.TOOL, signature="same", tool="Read")
+                for i in range(1, 1201) for j in (1, 2)])
+            for index, kwargs in enumerate((
+                    {"size_overrides": {"duplicate_work": {"calibration": 500, "test": 500}}},
+                    {"size_overrides": {"tool_failure_kind": {"test": -1}}},
+                    {"size_overrides": {"duplicate_work": {"calibration": True}}},
+                    {"size_overrides": {"duplicate_work": {"calibration": 1.5}}},
+                    {"round_number": True}, {"round_number": 2}, {"round_number": 5})):
+                output = root / ("invalid-%s" % index)
+                with self.assertRaises(ValueError):
+                    write_taxonomy_review_packets(traces, output, **kwargs)
+                self.assertFalse(output.exists())
+            first = write_taxonomy_review_packets(traces, root / "first",
+                size_overrides={"duplicate_work": {"calibration": 150, "test": 150}})
+            priors = [packet["manifest"] for packet in first["packets"]]
+            preserved = {Path(packet[field]): Path(packet[field]).read_bytes()
+                         for packet in first["packets"] for field in ("source", "manifest")}
+            for name, supplied, sizes in (
+                    ("over-budget", priors, {"calibration": 51, "test": 50}),
+                    ("missing-prior", priors[:-1], {"calibration": 0, "test": 0}),
+                    ("duplicate-prior", priors + priors[:1], {"calibration": 0, "test": 0})):
+                output = root / name
+                with self.assertRaises(ValueError):
+                    write_taxonomy_review_packets(traces, output, round_number=2,
+                        prior_manifests=supplied, size_overrides={"duplicate_work": sizes})
+                self.assertFalse(output.exists())
+            second = write_taxonomy_review_packets(traces, root / "second", round_number=2,
+                prior_manifests=priors,
+                size_overrides={"duplicate_work": {"calibration": 50, "test": 50}})
+            total = sum(packet["population"] for result in (first, second)
+                        for packet in result["packets"] if packet["rubric_id"] == "duplicate_work")
+            self.assertEqual(400, total)
+            self.assertEqual(preserved, {path: path.read_bytes() for path in preserved})
+
+    def test_adaptive_round_requires_unchanged_private_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            traces = root / "traces.jsonl"
+            rows = [record("a" * 24, j, SpanKind.TOOL, signature="same", tool="Read")
+                    for j in (1, 2)]
+            JsonlTraceStore(traces).write(rows)
+            evidence = {rows[1].span_id: {"tool_result": "unchanged"}}
+            first = write_taxonomy_review_packets(traces, root / "first", private_evidence=evidence)
+            priors = [packet["manifest"] for packet in first["packets"]]
+            for name, changed in (("omitted", None),
+                    ("changed", {rows[1].span_id: {"tool_result": "changed"}})):
+                output = root / name
+                with self.assertRaisesRegex(ValueError, "same private evidence"):
+                    write_taxonomy_review_packets(traces, output, round_number=2,
+                        prior_manifests=priors, private_evidence=changed)
+                self.assertFalse(output.exists())
+
+    def test_existing_annotation_packets_survive_repeated_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            traces = root / "traces.jsonl"
+            JsonlTraceStore(traces).write([
+                record("a" * 24, 1, SpanKind.TOOL, signature="same", tool="Read"),
+                record("a" * 24, 2, SpanKind.TOOL, signature="same", tool="Read")])
+            output = root / "packets"
+            first = write_taxonomy_review_packets(traces, output)
+            marked = False
+            for packet in first["packets"]:
+                path = Path(packet["source"])
+                with path.open(newline="") as handle:
+                    reader = csv.DictReader(handle)
+                    fields, rows = reader.fieldnames, list(reader)
+                if rows:
+                    rows[0].update(assessment="Correct", notes="Retain this assessment.")
+                    with path.open("w", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=fields)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    marked = True
+                    break
+            self.assertTrue(marked)
+            before = {path.name: path.read_bytes() for path in output.iterdir()}
+            with self.assertRaisesRegex(ValueError, "earlier round|destination already exists"):
+                write_taxonomy_review_packets(traces, output, prior_manifests=[
+                    packet["manifest"] for packet in first["packets"]])
+            self.assertEqual(before, {path.name: path.read_bytes()
+                                      for path in output.iterdir()})
+            late = root / "late-collision"
+            late.mkdir()
+            sentinel = late / "tool-failure-test-round1-manifest.json"
+            sentinel.write_bytes(b"existing review")
+            with self.assertRaisesRegex(ValueError, "destination already exists"):
+                write_taxonomy_review_packets(traces, late)
+            self.assertEqual([sentinel], list(late.iterdir()))
+            self.assertEqual(b"existing review", sentinel.read_bytes())
+
+    def test_existing_instructions_reject_before_packet_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            traces = root / "traces.jsonl"
+            JsonlTraceStore(traces).write([])
+            output = root / "packets"
+            output.mkdir()
+            path = output / "01-review-instructions.md"
+            path.write_text("Existing review instructions.\n")
+            before = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "destination already exists"):
+                write_taxonomy_review_packets(traces, output)
+            self.assertEqual([path], list(output.iterdir()))
+            self.assertEqual(before, path.read_bytes())
+
+    def test_missing_signatures_do_not_create_annotation_cases(self):
+        from retro_eval.taxonomy_packets import _candidates
+        rows = [record("a" * 24, 1, SpanKind.TOOL, tool="Read"),
+                record("a" * 24, 2, SpanKind.TOOL, tool="Edit")]
+        self.assertEqual((), _candidates(rows, "duplicate_work"))
+
+    def test_adaptive_round_rejects_changed_or_unknown_candidate_taxonomy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            traces = root / "traces.jsonl"
+            JsonlTraceStore(traces).write([
+                record("a" * 24, 1, SpanKind.TOOL, signature="same", tool="Read"),
+                record("a" * 24, 2, SpanKind.TOOL, signature="same", tool="Read")])
+            result = write_taxonomy_review_packets(traces, root / "first")
+            prior = json.loads(Path(result["packets"][0]["manifest"]).read_text())
+            self.assertEqual(7, prior["candidate_taxonomy_version"])
+            for index, version in enumerate((None, 5, True)):
+                changed = dict(prior)
+                if version is None:
+                    changed.pop("candidate_taxonomy_version")
+                else:
+                    changed["candidate_taxonomy_version"] = version
+                path = root / ("prior-%s.json" % index)
+                path.write_text(json.dumps(changed))
+                output = root / ("next-%s" % index)
+                with self.assertRaisesRegex(ValueError, "candidate taxonomy"):
+                    write_taxonomy_review_packets(traces, output,
+                        round_number=2, prior_manifests=(path,))
+                self.assertFalse(output.exists())
+
     def test_polling_proposal_requires_cost_context_and_flags_repeated_overhead(self):
         from retro_eval.taxonomy_packets import _candidates
 
@@ -247,6 +492,10 @@ class TaxonomyPacketTests(unittest.TestCase):
                     "duplicate_work": {"calibration": 3, "test": 3},
                     "tool_failure_kind": {"calibration": 4, "test": 4},
                 })
+            original_packets = {Path(packet[field]): Path(packet[field]).read_bytes()
+                                for packet in result["packets"]
+                                for field in ("source", "manifest")}
+            original_packets[Path(result["instructions"])] = Path(result["instructions"]).read_bytes()
             second = write_taxonomy_review_packets(
                 traces, output, round_number=2,
                 prior_manifests=tuple(packet["manifest"]
@@ -256,6 +505,8 @@ class TaxonomyPacketTests(unittest.TestCase):
                     "tool_failure_kind": {"calibration": 1, "test": 1},
                 })
 
+            self.assertEqual(original_packets, {path: path.read_bytes()
+                                                for path in original_packets})
             self.assertEqual(4, len(result["packets"]))
             instructions = output / "01-review-instructions.md"
             self.assertTrue(instructions.exists())
@@ -277,7 +528,7 @@ class TaxonomyPacketTests(unittest.TestCase):
                     all_ids |= ids
                     self.assertEqual(expected_round,
                                      manifest["adaptive_sampling"]["round"])
-                    self.assertEqual(6, manifest["annotation_packet_version"])
+                    self.assertEqual(7, manifest["annotation_packet_version"])
                     if packet["rubric_id"] == "duplicate_work":
                         self.assertEqual(
                             5, manifest["annotation_protocol_version"])

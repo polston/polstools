@@ -1,5 +1,8 @@
 # Codex Measurement Ingestion Implementation Plan
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Teach `retro.py extract` to measure Codex rollout transcripts into the same ledger as Claude transcripts, labelled per harness, with per-harness reporting.

@@ -7,13 +7,16 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import time
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from .adapters.base import parse_timestamp
 from .cli import command
 from .pipeline import _inside_repository
 
@@ -72,14 +75,45 @@ def _rows(path: Path):
                 yield json.loads(line)
 
 
+# Use the common, microsecond-resolution timestamp grammar supported by both
+# engines. Broader fromisoformat syntax is not portable to DuckDB's parser.
+_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+)
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_MICROSECOND = timedelta(microseconds=1)
+
+
+def _instant_us(value):
+    if value is None:
+        return None
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        raise ValueError("benchmark timestamps must have a known timezone or be null")
+    if _TIMESTAMP.fullmatch(value) is None:
+        raise ValueError("benchmark timestamps must use canonical ISO date/time syntax")
+    # Subtraction remains representable when UTC conversion would cross year
+    # 1 or 9999. Integer microseconds preserve exact boundary membership.
+    return (parsed - _EPOCH) // _MICROSECOND
+
+
+def _recent_cutoff(rows):
+    latest = None
+    for row in rows:
+        instant = _instant_us(row.get("started_at"))
+        if instant is not None:
+            latest = instant if latest is None else max(latest, instant)
+    return None if latest is None else latest - 30 * 86400 * 1000000
+
+
 def _stdlib_actions(path: Path, work_dir: Path):
     first = next(_rows(path), None)
     if first is None:
         raise ValueError("benchmark input has no trace rows")
     target = str(first["trace_id"])
     all_rows = list(_rows(path))
-    latest = max(str(row.get("started_at") or "") for row in all_rows)
-    cutoff = str(int(latest[:4]) - 1) + latest[4:] if latest else ""
+    cutoff = _recent_cutoff(all_rows)
     sample = all_rows[-min(1000, len(all_rows)):]
 
     def full_ingest():
@@ -93,7 +127,10 @@ def _stdlib_actions(path: Path, work_dir: Path):
         return len(sample)
 
     def recent_filter():
-        return sum(str(row.get("started_at") or "") >= cutoff for row in _rows(path))
+        if cutoff is None:
+            return 0
+        return sum(parsed is not None and parsed >= cutoff
+                   for parsed in (_instant_us(row.get("started_at")) for row in _rows(path)))
 
     def grouped():
         return len(Counter((row.get("source"), row.get("span_kind"))
@@ -126,7 +163,11 @@ def _duckdb_actions(path: Path, work_dir: Path, backend: str):
         import duckdb
     except ImportError as exc:
         raise ValueError("DuckDB backend requested but duckdb is not installed") from exc
+    if next(_rows(path), None) is None:
+        raise ValueError("benchmark input has no trace rows")
+    cutoff = _recent_cutoff(_rows(path))
     connection = duckdb.connect(str(work_dir / "benchmark.duckdb"))
+    connection.execute("SET TimeZone='UTC'")
     quoted = str(path).replace("'", "''")
     json_source = "read_json_auto('%s', format='newline_delimited')" % quoted
     parquet = work_dir / "traces.parquet"
@@ -137,13 +178,10 @@ def _duckdb_actions(path: Path, work_dir: Path, backend: str):
         source = "read_parquet('%s')" % parquet_quoted
     else:
         source = json_source
-    target, latest = connection.execute(
-        "SELECT trace_id, max(started_at::VARCHAR) OVER () FROM %s LIMIT 1" % source
-    ).fetchone()
-    cutoff = str(int(str(latest)[:4]) - 1) + str(latest)[4:] if latest else ""
+    target = connection.execute("SELECT trace_id FROM %s LIMIT 1" % source).fetchone()[0]
 
-    def scalar(sql):
-        return connection.execute(sql).fetchone()[0]
+    def scalar(sql, parameters=None):
+        return connection.execute(sql, parameters or []).fetchone()[0]
 
     def full_ingest():
         if backend == "duckdb-parquet":
@@ -162,13 +200,12 @@ def _duckdb_actions(path: Path, work_dir: Path, backend: str):
         return scalar("SELECT count(*) FROM append_sample")
 
     escaped_target = str(target).replace("'", "''")
-    escaped_cutoff = cutoff.replace("'", "''")
     actions = {
         "full_ingest": full_ingest,
         "incremental_append": incremental_append,
-        "30_day_filter": lambda: scalar(
-            "SELECT count(*) FROM %s WHERE started_at::VARCHAR >= '%s'" %
-            (source, escaped_cutoff)),
+        "30_day_filter": lambda: 0 if cutoff is None else scalar(
+            "SELECT count(*) FROM %s WHERE epoch_us(started_at::TIMESTAMPTZ) >= ?" % source,
+            [cutoff]),
         "grouped_aggregation": lambda: scalar(
             "SELECT count(*) FROM (SELECT source, span_kind FROM %s GROUP BY ALL)" % source),
         "trace_reconstruction": lambda: scalar(
@@ -221,6 +258,7 @@ def benchmark_storage(path: Path, backend: str, work_dir: Path, *, runs: int = 5
     trace_ids = {str(row["trace_id"]) for row in _rows(path)}
     result = {
         "schema_version": 1,
+        "workload_version": 2,
         "backend": backend,
         "runs": runs,
         "population": {"spans": sum(1 for _ in _rows(path)), "traces": len(trace_ids)},

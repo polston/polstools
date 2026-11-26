@@ -1,5 +1,6 @@
 """Contracts for private, versioned instruction-source provenance."""
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from retro_eval.instruction_manifest import (  # noqa: E402
     InstructionManifestIndex,
     InstructionSource,
     hash_instruction_source,
+    load_instruction_manifest,
     write_instruction_manifest,
 )
 from retro_eval.instruction_manifest_cli import main as instruction_manifest_main  # noqa: E402
@@ -105,6 +107,68 @@ class InstructionManifestTests(unittest.TestCase):
                 dataset_id="d2", schema_versions=(1,),
                 adapter_versions={"codex": 1}, start=T0, end=T1, seed="seed",
                 instruction_manifest_sha256="not-a-hash")
+
+    def test_directory_fingerprint_preserves_file_content_boundaries(self):
+        # Previously the next filename header could move between file bodies
+        # without changing the byte stream hashed for the directory.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            left, right = root / "left", root / "right"
+            left.mkdir()
+            right.mkdir()
+            header = len(b"b.md").to_bytes(8, "big") + b"b.md"
+            (left / "a.md").write_bytes(b"first")
+            (left / "b.md").write_bytes(header + b"last")
+            (right / "a.md").write_bytes(b"first" + header)
+            (right / "b.md").write_bytes(b"last")
+            digests = []
+            for index, source in enumerate((left, right)):
+                output = root / f"manifest-{index}.json"
+                self.assertEqual(0, instruction_manifest_main([
+                    "write", "--output", str(output),
+                    "--activated-at", "2026-08-01T12:00:00Z",
+                    "--source", "standing_instructions=" + str(source),
+                    "--version", "standing_instructions=same-version",
+                ]))
+                digests.append(json.loads(output.read_text())["sources"][0]["content_sha256"])
+            self.assertNotEqual(*digests)
+
+    def test_legacy_manifest_and_single_file_identity_remain_readable(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "rules.md"
+            source.write_bytes(b"original rules")
+            self.assertEqual(
+                hashlib.sha256(b"file\0original rules").hexdigest(),
+                hash_instruction_source(source))
+            old_digest = hashlib.sha256(
+                b"directory\0" + len(b"rules.md").to_bytes(8, "big")
+                + b"rules.md" + b"original rules").hexdigest()
+            manifest_path = root / "saved.json"
+            original = write_instruction_manifest(
+                manifest_path, (self.source(content_sha256=old_digest),),
+                activated_at=T0)
+            saved_bytes = manifest_path.read_bytes()
+            loaded = load_instruction_manifest(manifest_path)
+            self.assertEqual(original.manifest_sha256, loaded.manifest_sha256)
+            self.assertEqual(old_digest, loaded.sources[0].content_sha256)
+            self.assertEqual(saved_bytes, manifest_path.read_bytes())
+
+    def test_directory_fingerprint_is_relocatable_and_sensitive_to_empty_files(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            left, right = root / "left", root / "right"
+            left.mkdir()
+            right.mkdir()
+            for source in (left, right):
+                (source / "rules.md").write_text("same rules", encoding="utf-8")
+            original = hash_instruction_source(left)
+            self.assertEqual(original, hash_instruction_source(right))
+            (right / "empty.md").write_bytes(b"")
+            self.assertNotEqual(original, hash_instruction_source(right))
+            (right / "empty.md").unlink()
+            (right / "rules.md").rename(right / "renamed.md")
+            self.assertNotEqual(original, hash_instruction_source(right))
 
     def test_cli_hashes_sources_without_persisting_paths_or_content(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -7,6 +7,19 @@ import statistics
 from collections.abc import Iterable
 
 
+def descriptive_uncertainty(*, scope="observed_records"):
+    """Explain why observations alone do not supply a population interval."""
+    return {
+        "status": "not_estimated",
+        "reason": "sampling_design_not_established",
+        "scope": scope,
+        "next_action": (
+            "Create a comparison protocol specifying the target population, "
+            "sampling or assignment unit, dependence assumptions, and estimator; "
+            "evaluate those assumptions before calculating an interval."),
+    }
+
+
 def _ratio(numerator: int, denominator: int) -> float | None:
     return numerator / denominator if denominator else None
 
@@ -79,10 +92,19 @@ def paired_effect_interval(control, candidate, *, backend, statistic="mean",
         reducer = functions[statistic]
     except KeyError as exc:
         raise ValueError("unsupported paired statistic") from exc
-    return {
+    interval = tuple(backend.interval(differences, statistic, confidence, seed))
+    if len(interval) != 2 or any(type(value) not in (int, float) for value in interval):
+        raise ValueError("uncertainty backend must return two numeric endpoints")
+    unavailable = not all(math.isfinite(value) for value in interval)
+    if interval[0] > interval[1]:
+        raise ValueError("uncertainty backend returned reversed endpoints")
+    result = {
         "population": len(differences),
         "effect": reducer(differences),
-        "interval": tuple(backend.interval(differences, statistic, confidence, seed)),
+        "interval": None if unavailable else interval,
         "confidence": confidence,
         "backend": str(backend.name),
     }
+    if unavailable:
+        result["interval_reason"] = "nonfinite_backend_interval"
+    return result

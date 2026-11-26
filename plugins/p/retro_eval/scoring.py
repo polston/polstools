@@ -20,11 +20,13 @@ class ScoreResult:
     latency_ms: int
     estimated_cost: float
     limitations: tuple[str, ...]
-    numerator: int = 0
+    # Unknown observations must not masquerade as observed zero.
+    numerator: int | None = None
     interval_low: float | None = None
     interval_high: float | None = None
     uncertainty_method: str = ""
     details: dict[str, object] = field(default_factory=dict)
+    configured_minimum_n: int | None = None
 
     def __post_init__(self) -> None:
         if self.abstained and self.value is not None:

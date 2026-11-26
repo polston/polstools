@@ -32,11 +32,18 @@ class PolicyError(ValueError):
     """A policy source could not be evaluated safely."""
 
 
-def _read_json(path, label):
+class StateLocationError(PolicyError):
+    """State could not be located/read; even core checks must not bypass it."""
+
+
+def _read_json(path, label, strict_access=False):
     try:
         with Path(path).open(encoding="utf-8") as handle:
             value = json.load(handle)
-    except (OSError, json.JSONDecodeError, UnicodeError) as error:
+    except OSError as error:
+        error_type = StateLocationError if strict_access else PolicyError
+        raise error_type(label + " is unreadable") from error
+    except (json.JSONDecodeError, UnicodeError) as error:
         raise PolicyError(label + " is unreadable or malformed") from error
     if not isinstance(value, dict):
         raise PolicyError(label + " must contain a JSON object")
@@ -178,6 +185,79 @@ def _state_dir(env=None):
     return Path(tempfile.gettempdir()) / ("p-skill-activation-" + suffix)
 
 
+def _temporary_root_candidates(env, platform, home, cwd):
+    """Historical tempfile locations, without its write-to-test discovery.
+
+    Keep platform inputs explicit so Windows ordering is testable on POSIX.
+    These are lookup candidates, not a replacement for writer placement.
+    """
+    candidates = [env[name] for name in ("TMPDIR", "TEMP", "TMP") if env.get(name)]
+    if platform == "nt":
+        import ntpath
+        candidates.append(ntpath.join(home, "AppData", "Local", "Temp"))
+        if env.get("SYSTEMROOT"):
+            candidates.append(ntpath.join(env["SYSTEMROOT"], "Temp"))
+        candidates.extend((r"c:\temp", r"c:\tmp", r"\temp", r"\tmp"))
+    else:
+        candidates.extend(("/tmp", "/var/tmp", "/usr/tmp"))
+    candidates.append(cwd)
+    return candidates
+
+
+def _session_state_for_read(session_id, env):
+    """Find the exact session policy without requiring a writable temp root.
+
+    A writer may have skipped an unwritable higher-priority temp directory.
+    Search its possible locations and reject ambiguity instead of silently
+    inheriting a more permissive global/default policy.
+    """
+    explicit_root = bool(env.get("P_SKILL_STATE_DIR") or env.get("XDG_RUNTIME_DIR"))
+    if explicit_root:
+        directories = [_state_dir(env)]
+    else:
+        try:
+            cwd = os.getcwd()
+        except OSError as error:
+            raise StateLocationError("cannot determine session state lookup directory") from error
+        roots = _temporary_root_candidates(env, os.name, str(Path.home()), cwd)
+        if tempfile.tempdir is not None:
+            roots.insert(0, os.fsdecode(tempfile.tempdir))
+        suffix = str(os.getuid()) if hasattr(os, "getuid") else (env.get("USERNAME") or "default")
+        directories = [Path(root).absolute() / ("p-skill-activation-" + suffix)
+                       for root in roots]
+    filename = hashlib.sha256(session_id.encode("utf-8")).hexdigest() + ".json"
+    found = []
+    seen = set()
+    for directory in directories:
+        try:
+            try:
+                _private_dir(directory, create=False)
+            except NotADirectoryError:
+                # lstat of the activation directory only reports ENOTDIR for
+                # an ancestor: this temp root cannot contain session policy.
+                # An existing non-directory activation path is rejected by
+                # _private_dir itself, and explicit configuration stays strict.
+                if explicit_root:
+                    raise
+                continue
+            path = directory / filename
+            path.lstat()  # Only true absence may inherit global/default state.
+            info = directory.stat()
+        except FileNotFoundError:
+            continue
+        except (OSError, PolicyError) as error:
+            raise StateLocationError("cannot safely locate session policy") from error
+        identity = (info.st_dev, info.st_ino)
+        if identity not in seen:
+            seen.add(identity)
+            found.append(path)
+    if len(found) > 1:
+        raise StateLocationError(
+            "session policy exists in multiple temporary directories; "
+            "set P_SKILL_STATE_DIR to the intended existing directory")
+    return found[0] if found else None
+
+
 def global_state_path(env=None):
     env = os.environ if env is None else env
     override = env.get("P_SKILL_CONFIG_FILE")
@@ -277,8 +357,8 @@ def _validate_state(value, manifest, label):
     }, stale
 
 
-def _load_state(path, manifest, label):
-    return _validate_state(_read_json(path, label), manifest, label)
+def _load_state(path, manifest, label, strict_access=False):
+    return _validate_state(_read_json(path, label, strict_access), manifest, label)
 
 
 def _profile_capabilities(manifest, profile):
@@ -307,9 +387,9 @@ def resolve(manifest, session_id=None, env=None):
     if session_id is None:
         session_id = session_id_from_env(env)
     if session_id:
-        path = session_state_path(session_id, env)
-        if path.exists():
-            state, stale = _load_state(path, manifest, "session policy")
+        path = _session_state_for_read(session_id, env)
+        if path is not None:
+            state, stale = _load_state(path, manifest, "session policy", strict_access=True)
             _refresh(path)
             return _resolution(
                 manifest, state["profile"], state["overrides"], "session", stale

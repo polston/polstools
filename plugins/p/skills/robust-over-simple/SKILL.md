@@ -64,6 +64,13 @@ Bad: an enum switch that needs five files edited to add a case.
 
 ## When this skill steers you wrong
 
+When the task is to evaluate this design practice across cases, use the design
+evaluation procedure in `<plugin-root>/WORKFLOW.md`. Freeze alternatives before
+an independently prepared change challenge, include a simpler counterexample,
+and compare actual acceptance, regressions and effort. A boundary that helps one
+challenge does not establish universal maintainability. Do not collect session
+history without the local-history capability and existing task authority.
+
 Silently assess the outcome. Never ask the operator to rate this skill.
 
 If the operator redid, reverted, or corrected what this skill steered toward,

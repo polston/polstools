@@ -17,7 +17,7 @@ check exits 2 because session variables of two harnesses are set, rerun it once
 with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
 `antigravity`).
 
-Use the plugin's `bin/retro-eval-review` as the single entrypoint, run as
+Use the plugin's `bin/retro-eval-review` as the review-navigation entrypoint, run as
 `<python> <plugin-root>/bin/retro-eval-review <command>`.
 
 ## Default run
@@ -53,11 +53,23 @@ Incorrect, and Unsure contract.
    evidence before held-out review.
 3. Start held-out review only with the explicit `--phase heldout` option after
    calibration decisions are frozen.
-4. Run the registered promotion gate over held-out truth and the already-frozen
-   proposals. Never tune on held-out labels.
+4. Assess frozen proposals against captured labels with
+   `<python> <plugin-root>/bin/retro-eval-taxonomies assess --source <packet.csv> --manifest <packet-manifest.json> --criteria`.
+   Include every earlier same-rubric, same-split round with the repeatable
+   `--prior-packet <earlier.csv> <earlier-manifest.json>` option. The command
+   reports missing labels, numerical criteria and evidence bindings; it never
+   promotes a scorer. A passing result still requires review of predictor-freeze
+   and exposure history, the target population and sampling design, and evidence
+   for the intended use. Use the existing workflow comparison protocol where it
+   fits. Record the scoped validation decision and its supporting evidence before
+   proposing promotion. Never tune on held-out labels.
 5. If class support is short, create a new adaptive round using prior packet
    manifests. Never regenerate, replace, or implicitly accept an existing
-   immutable packet.
+   immutable packet. Assess accumulated support with the taxonomy assessment
+   command's repeatable `--prior-packet <earlier.csv> <earlier-manifest.json>`
+   option, supplying every earlier same-rubric, same-split round from retained
+   references. Without prior packets the result covers only the current packet.
+   A `ready` support result is not promotion or a decision-support authorization.
 
 Keep packets, labels, notes, reports, identities, and machine paths outside Git
 under `RETRO_HOME`. Do not call an external judge unless separately authorized.
@@ -70,6 +82,7 @@ under `RETRO_HOME`. Do not call an external judge unless separately authorized.
   sampling remains actionable without operator judgment.
 - `Blocked`: packet fingerprints do not resolve or required source evidence is
   unavailable; report the exact failed check.
-- `Complete`: held-out class support and every preregistered promotion threshold
-  pass, or the scorer is explicitly retained as unvalidated and barred from
-  decision support after the registered maximum rounds.
+- `Complete`: held-out criteria and a scoped validation decision are supported by
+  recorded evidence, or the scorer is explicitly retained as unvalidated and
+  barred from decision support after the registered maximum rounds. Numerical
+  thresholds alone do not establish validation or authorize decision support.

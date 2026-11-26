@@ -152,6 +152,55 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual((-0.25, 0.75), result["interval"])
         self.assertEqual("oracle", result["backend"])
 
+    def test_paired_interval_rejects_malformed_backend_bounds(self):
+        class Backend:
+            name = "authored"
+
+            def __init__(self, result):
+                self.result = result
+
+            def interval(self, *args):
+                return self.result
+
+        for bounds in ((), (1,), (1, 2, 3), (False, 1), ("0", 1), (2, 1),
+                       (float('inf'), 0), (0, float('-inf')),
+                       (float('inf'), float('-inf'))):
+            with self.subTest(bounds=bounds), self.assertRaises(ValueError):
+                paired_effect_interval([0, 0], [1, 2], backend=Backend(bounds))
+        result = paired_effect_interval([0, 0], [1, 1], backend=Backend((1, 1)))
+        self.assertEqual(result['interval'], (1, 1))
+        self.assertNotIn('interval_reason', result)
+
+    def test_paired_interval_preserves_effect_when_bounds_are_nonfinite(self):
+        class Backend:
+            name = "authored-nonfinite"
+
+            def __init__(self, bounds):
+                self.bounds = bounds
+
+            def interval(self, *args):
+                return self.bounds
+
+        for bounds in ((float('nan'), float('nan')), (0, float('inf')),
+                       (float('-inf'), 10)):
+            with self.subTest(bounds=bounds):
+                result = paired_effect_interval([0, 0], [0, 10], backend=Backend(bounds))
+                self.assertEqual(5, result["effect"])
+                self.assertIsNone(result["interval"])
+                self.assertEqual("nonfinite_backend_interval", result["interval_reason"])
+
+    @requires("scipy")
+    def test_real_bca_degenerate_sample_keeps_effect_without_fabricating_interval(self):
+        import warnings
+        from retro_eval.scipy_statistics import ScipyBcaBackend
+        for value in (0, 10):
+            with self.subTest(value=value), warnings.catch_warnings(record=True):
+                result = paired_effect_interval([0] * 20, [value] * 20,
+                    backend=ScipyBcaBackend(resamples=199), confidence=.95, seed=0)
+                self.assertEqual(value, result["effect"])
+                self.assertIsNone(result["interval"])
+                self.assertEqual("nonfinite_backend_interval", result["interval_reason"])
+
     @requires("scipy")
     def test_scipy_bca_interval_agrees_with_a_stdlib_bootstrap_reference(self):
         import random
@@ -218,6 +267,22 @@ class ProposalTests(unittest.TestCase):
                          "no exact change")
         self.assertEqual(self.proposal(experiment="").suppression_reason(),
                          "no falsifiable experiment")
+
+    def test_proposal_numeric_fields_preserve_types_and_finite_bounds(self):
+        for field in ("population", "session_count", "independent_evidence_count"):
+            for value in (True, False, -1, 1.5, float("nan"), float("inf"), "2"):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    self.proposal(**{field: value})
+        for field in ("confidence", "observed_rate", "avoidable_cost"):
+            for value in (True, False, -1, float("nan"), float("inf"), "1", 10 ** 400):
+                with self.subTest(field=field, value=str(value)), self.assertRaises(ValueError):
+                    self.proposal(**{field: value})
+        for field in ("confidence", "observed_rate"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.proposal(**{field: 1.01})
+        self.assertIsNone(self.proposal(observed_rate=None).observed_rate)
+        self.assertEqual(self.proposal(confidence=0, observed_rate=1, avoidable_cost=0).confidence, 0)
+        self.assertEqual(self.proposal(population=0).suppression_reason(), "no eligible population")
 
     def test_ranking_is_stable_and_components_remain_visible(self):
         low = self.proposal(proposal_id="low", confidence=0.5, avoidable_cost=10)

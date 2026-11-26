@@ -8,9 +8,11 @@ SKILL_ROOT = REPO_ROOT / "plugins" / "p" / "skills" / "writing-goals"
 SKILL = SKILL_ROOT / "SKILL.md"
 REFERENCES = SKILL_ROOT / "references"
 CLAUDE_ADAPTER = REFERENCES / "claude-code.md"
+ANTIGRAVITY_ADAPTER = REFERENCES / "antigravity.md"
 ADAPTERS = sorted(REFERENCES.glob("*.md"))
 SHARED_SLOTS = {
     "Objective",
+    "Baseline",
     "Read first",
     "Evidence",
     "Protected scope",
@@ -19,7 +21,30 @@ SHARED_SLOTS = {
     "Handoff",
 }
 ADAPTER_SLOTS = {"EVIDENCE", "ARTIFACT", "CONSTRAINTS", "PARKED", "BOUNDS"}
-ADAPTER_HEADINGS = ("## Capability or semantic", "## Adapter", "## Equivalent outcome")
+ANTIGRAVITY_SLOTS = {
+    "OBJECTIVE",
+    "BASELINE",
+    "READ FIRST",
+    "ARTIFACTS",
+    "CONSTRAINTS & AUTHORITY",
+    "EVIDENCE",
+    "EXECUTION LOOP",
+    "EXITS",
+    "HANDOFF",
+}
+ADAPTER_HEADINGS = (
+    "## Capability or semantic",
+    "## Adapter",
+    "## Equivalent outcome",
+    "## Disposition",
+)
+HARNESS_INTERNAL_TOOL_NAMES = (
+    "invoke_subagent",
+    "ArtifactMetadata",
+    "update_steps",
+    "manage_task",
+    "NotificationTimeoutSeconds",
+)
 
 
 def section(text, heading):
@@ -72,6 +97,32 @@ class CrossHarnessGoalGuidanceTests(unittest.TestCase):
         claude = CLAUDE_ADAPTER.read_text(encoding="utf-8")
 
         self.assertEqual(ADAPTER_SLOTS, table_keys(section(claude, "## Adapter")))
+
+    def test_antigravity_adapter_aligns_slots_with_shared_contract(self):
+        agy = ANTIGRAVITY_ADAPTER.read_text(encoding="utf-8")
+
+        self.assertEqual(ANTIGRAVITY_SLOTS, table_keys(section(agy, "## Adapter")))
+
+    def test_skill_and_adapters_have_no_empty_sections_or_brittle_tool_names(self):
+        for path in [SKILL, *ADAPTERS]:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertIsNone(
+                    re.search(r"^## .+\n\s*\n## ", text, re.MULTILINE),
+                    f"Empty section heading found in {path.name}",
+                )
+                for tool_name in HARNESS_INTERNAL_TOOL_NAMES:
+                    self.assertNotIn(tool_name, text)
+
+    def test_shared_rules_cover_delegation_right_sizing_and_authority(self):
+        text = SKILL.read_text(encoding="utf-8")
+        rules = section(text, "## Shared rules")
+
+        self.assertIn("cost", rules.lower())
+        self.assertIn("speed", rules.lower())
+        self.assertIn("reasoning", rules.lower())
+        self.assertIn("subagent", rules.lower())
+        self.assertIn("host state", rules.lower())
 
 
 if __name__ == "__main__":

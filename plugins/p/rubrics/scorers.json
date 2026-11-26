@@ -53,16 +53,7 @@
       "class": "InputTokensPerSourceCompletionScorer",
       "options": {
         "minimum_n": 20,
-        "max_evidence_refs": 20,
-        "confidence": 0.95,
-        "seed": 20260822,
-        "interval_backend": {
-          "module": "retro_eval.scipy_statistics",
-          "class": "ScipyBcaBackend",
-          "options": {
-            "resamples": 9999
-          }
-        }
+        "max_evidence_refs": 20
       }
     },
     {

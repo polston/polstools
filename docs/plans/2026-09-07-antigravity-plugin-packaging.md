@@ -1,5 +1,8 @@
 # Antigravity plugin packaging and session corpus integration
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 Date: 2026-09-07. Status: implemented. The body is the design as written, so
 its skill count and version are as of that date and its checklist is not a live
 tracker; the manifests and `plugins/p/skills/` hold the current values.

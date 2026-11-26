@@ -75,6 +75,7 @@ class ScorerRegistry:
                     eligible_population=0,
                     latency_ms=0, estimated_cost=0.0,
                     limitations=("source capability unavailable",),
+                    configured_minimum_n=getattr(scorer, "minimum_n", None),
                 ))
             else:
                 results.append(scorer.score(records))

@@ -42,7 +42,11 @@ class AdapterRegistration:
 
     def create(self, salt: bytes, runtime_options=None):
         options = dict(self.options or {})
+        configured_exclusions = options.get('excluded_session_ids') or ()
         options.update(runtime_options or {})
+        if runtime_options is not None and 'excluded_session_ids' in runtime_options:
+            options['excluded_session_ids'] = (*configured_exclusions,
+                *(runtime_options['excluded_session_ids'] or ()))
         if self.factory is not None:
             return self.factory(salt, options)
         adapter_class = getattr(importlib.import_module(self.module), self.class_name)

@@ -8,7 +8,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..schema import Capability, CapabilityState, LocalIdFactory, TraceRecord
+from ..schema import Capability, CapabilityState, LocalIdFactory, TraceRecord, SpanKind
+
+
+_LEGACY_BLOCK_STRIDE = 1000
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,8 @@ class AdapterResult:
     skills: tuple[str, ...] = ()
     # False when the source has no authoritative main/subagent marker.
     population_observable: bool = True
+    # None means no origin scan; an empty tuple means scanned, none recognized.
+    machine_message_origins: tuple[dict[str, object], ...] | None = None
 
 
 class SourceUnreadable(OSError):
@@ -86,6 +91,21 @@ class AdapterBase:
 
     def __init__(self, id_salt: bytes):
         self.ids = LocalIdFactory(id_salt)
+
+    def indexed_span_id(self, trace_id, source_index, block_index, kind):
+        """Preserve ordinary IDs; encode overflow without adjacent-record aliasing."""
+        kind_value = kind.value if isinstance(kind, SpanKind) else str(kind)
+        if block_index < _LEGACY_BLOCK_STRIDE:
+            return self.ids.make(trace_id,
+                                 source_index * _LEGACY_BLOCK_STRIDE + block_index,
+                                 kind_value)
+        return self.ids.make(trace_id, "indexed_block", source_index, block_index,
+                             kind_value)
+
+    @staticmethod
+    def indexed_sequence(previous, source_index, block_index):
+        """Keep streaming encounter order when a batch exceeds the legacy stride."""
+        return max(source_index * _LEGACY_BLOCK_STRIDE + block_index, previous + 1)
 
     @staticmethod
     def parse_capabilities(raw) -> dict[str, Capability]:

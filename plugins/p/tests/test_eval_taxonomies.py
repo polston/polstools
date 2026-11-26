@@ -29,11 +29,67 @@ def record(sequence, kind, *, signature="", tool="", status="ok", attributes=Non
 
 
 class ToolTaxonomyTests(unittest.TestCase):
+    def test_missing_signatures_do_not_establish_repeated_calls(self):
+        for second_tool in ("Read", "Edit"):
+            result = RepeatedCallScorer("repeat", minimum_n=1).score([
+                record(1, SpanKind.TOOL, tool="Read"),
+                record(2, SpanKind.TOOL, tool=second_tool)])
+            self.assertTrue(result.abstained)
+            self.assertEqual(0, result.numerator)
+            self.assertEqual(0, result.eligible_population)
+            self.assertEqual(2, result.population)
+            self.assertEqual(2, result.details["missing_call_signatures"])
+        result = RepeatedCallScorer("repeat", minimum_n=1).score([
+            record(1, SpanKind.TOOL, signature="known", tool="Read"),
+            record(2, SpanKind.TOOL, tool="Read")])
+        self.assertTrue(result.abstained)
+        self.assertEqual(0, result.eligible_population)
+
+    def test_unknown_signature_preserves_intervening_mutation_context(self):
+        result = RepeatedCallScorer("repeat", minimum_n=2).score([
+            record(1, SpanKind.TOOL, signature="same", tool="Read"),
+            record(2, SpanKind.TOOL, tool="Edit"),
+            record(3, SpanKind.TOOL, signature="same", tool="Read")])
+        self.assertEqual(.5, result.value)
+        self.assertEqual(2, result.eligible_population)
+        self.assertEqual(3, result.population)
+        self.assertEqual(1, result.details["missing_call_signatures"])
+        self.assertEqual(1, result.details["repeat_taxonomy"]["post_state_change"]["numerator"])
+        self.assertFalse(result.details["decision_support"])
+
+    def test_native_file_mutations_explain_repeated_verification(self):
+        for tool in ("replace_file_content", "write_to_file", "Edit", "apply_patch",
+                     "edit_file", "write_file"):
+            with self.subTest(tool=tool):
+                result = RepeatedCallScorer("repeat", minimum_n=1).score([
+                    record(1, SpanKind.TOOL, signature="test", tool="run_command"),
+                    record(2, SpanKind.TOOL, signature="change", tool=tool),
+                    record(3, SpanKind.TOOL, signature="test", tool="run_command")])
+                self.assertEqual(1, result.numerator)
+                self.assertEqual(1, result.details["repeat_taxonomy"]["post_state_change"]["numerator"])
+                self.assertEqual(0, result.details["repeat_taxonomy"]["candidate_waste"]["numerator"])
+                self.assertFalse(result.details["decision_support"])
+        for intervening in ([], [record(2, SpanKind.TOOL, signature="read", tool="view_file")]):
+            result = RepeatedCallScorer("repeat", minimum_n=1).score([
+                record(1, SpanKind.TOOL, signature="test", tool="run_command"),
+                *intervening,
+                record(3, SpanKind.TOOL, signature="test", tool="run_command")])
+            self.assertEqual(1, result.details["repeat_taxonomy"]["candidate_waste"]["numerator"])
+
+    def test_timed_wait_is_polling_without_hiding_generic_task_operations(self):
+        for tool, expected in (("sleep", "polling"), ("manage_task", "candidate_waste"),
+                               ("schedule", "candidate_waste")):
+            with self.subTest(tool=tool):
+                result = RepeatedCallScorer("repeat", minimum_n=1).score([
+                    record(1, SpanKind.TOOL, signature="same", tool=tool),
+                    record(2, SpanKind.TOOL, signature="same", tool=tool)])
+                self.assertEqual(1, result.details["repeat_taxonomy"][expected]["numerator"])
+
     def test_profile_is_versioned_and_declares_all_candidate_classes(self):
         profile = load_tool_taxonomy()
         self.assertEqual(1, profile.schema_version)
-        self.assertEqual(4, profile.repeated_call_version)
-        self.assertEqual(3, profile.tool_failure_version)
+        self.assertEqual(7, profile.repeated_call_version)
+        self.assertEqual(4, profile.tool_failure_version)
         self.assertEqual(
             {"polling", "post_state_change", "candidate_waste"},
             set(profile.repeated_call_classes),
@@ -54,7 +110,8 @@ class ToolTaxonomyTests(unittest.TestCase):
             "repeated_call_rate", minimum_n=1).score(records)
         taxonomy = result.details["repeat_taxonomy"]
 
-        self.assertEqual(4, result.scorer_version)
+        self.assertEqual(8, result.scorer_version)
+        self.assertEqual(7, result.details["candidate_taxonomy_version"])
         self.assertEqual(3, result.numerator)
         self.assertEqual(7, result.eligible_population)
         self.assertEqual(
@@ -82,7 +139,8 @@ class ToolTaxonomyTests(unittest.TestCase):
         result = ToolFailureScorer(
             "tool_failure_rate", minimum_n=1).score(records)
 
-        self.assertEqual(3, result.scorer_version)
+        self.assertEqual(5, result.scorer_version)
+        self.assertEqual(4, result.details["aggregation_taxonomy_version"])
         self.assertEqual(2, result.numerator)
         self.assertEqual(
             {"missing_target": 1, "unknown": 1},
@@ -93,6 +151,31 @@ class ToolTaxonomyTests(unittest.TestCase):
             result.details["failure_reason"])
         self.assertFalse(result.details["decision_support"])
         self.assertIn("unvalidated", " ".join(result.limitations))
+
+    def test_failure_diagnosis_versions_preserve_legacy_and_unknown(self):
+        records = [record(i, "retro.tool_result", tool="Bash", status="error",
+                          attributes={"error_kind": "missing_target",
+                                      "failure_taxonomy_version": version})
+                   for i, version in enumerate((3, 4, None, True, "4", 0), 1)]
+        result = ToolFailureScorer("tool_failure_rate", minimum_n=1).score(records)
+        self.assertEqual({"3": 1, "4": 1, "unknown": 4},
+                         result.details["failure_diagnosis_versions"])
+        self.assertEqual({"missing_target": 6}, result.details["failure_kind"])
+        self.assertEqual(6, result.numerator)
+
+    def test_failure_causes_require_result_evidence_and_hook_refusals_win(self):
+        cases = (
+            ("grep status example.txt", "PreToolUse:Bash hook error: command blocked - policy constraint", "control_refusal"),
+            ("grep status example.txt", "PreToolUse:Bash hook error: Function definitions are not allowed", "control_refusal"),
+            ("grep 'not found' example.txt", "Exit code 1", "expected_probe"),
+            ("grep 'permission' example.txt", "Exit code 1", "expected_probe"),
+            ("echo 'usage:'; build", "Compiler exited 2", "execution_failure"),
+            ("grep example missing.txt", "No such file or directory", "missing_target"),
+            ("grep example file.txt", "", "unknown"),
+        )
+        for tool_input, result, expected in cases:
+            with self.subTest(expected=expected, result=result):
+                self.assertEqual(expected, classify_failure_evidence(tool_input, result).kind)
 
     def test_failure_diagnosis_is_conservative_and_reason_coded(self):
         cases = (

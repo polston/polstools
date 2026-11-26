@@ -38,6 +38,43 @@ class WorkStoreTests(unittest.TestCase):
 
 
 class TraceStoreTests(unittest.TestCase):
+    def test_repeated_identities_cannot_inflate_observations(self):
+        from dataclasses import replace
+        from retro_eval.schema import SpanKind, TraceRecord
+        row = TraceRecord(
+            schema_version=1, trace_id="trace-a", span_id="span-a",
+            parent_span_id=None, source="fixture", adapter_version=1,
+            source_version="1", span_kind=SpanKind.TRACE,
+            started_at=None, sequence=0, status="complete")
+        invalid = (
+            ([row, row], "duplicate span"),
+            ([row, replace(row, status="failed")], "duplicate span"),
+            ([row, replace(row, span_id="another-root")], "multiple roots"),
+            ([row, replace(row, span_id="other-source", source="second")],
+             "multiple sources"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonlTraceStore(Path(directory) / "traces.jsonl")
+            for rows, message in invalid:
+                with self.subTest(message=message):
+                    store.write([row])
+                    original = store.path.read_bytes()
+                    with self.assertRaisesRegex(ValueError, message):
+                        store.write(iter(rows))
+                    self.assertEqual(original, store.path.read_bytes())
+                    self.assertEqual([store.path], list(store.path.parent.iterdir()))
+                    store.path.write_text("\n".join(
+                        json.dumps(item.to_dict()) for item in rows) + "\n")
+                    with self.assertRaisesRegex(ValueError, message):
+                        store.read_with_digest()
+            # Partial traces and interleaved distinct traces remain valid.
+            partial = replace(row, trace_id="trace-b", span_id="span-b",
+                              span_kind=SpanKind.PROMPT)
+            child = replace(row, span_id="span-c", span_kind=SpanKind.LLM,
+                            parent_span_id=row.span_id, sequence=1)
+            store.write([child, partial, row])
+            self.assertEqual([child, partial, row], store.read())
+
     def test_jsonl_round_trip_rejects_mixed_schema_versions(self):
         from datetime import datetime, timezone
         from retro_eval.schema import SpanKind, TraceRecord

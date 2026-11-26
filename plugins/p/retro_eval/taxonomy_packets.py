@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import hmac
 import json
@@ -13,11 +12,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from .annotation import FIELDS, _external, _packet_fingerprint, _salt
+from .annotation import (FIELDS, _external, _salt, _check_packet_destinations,
+                         _create_packet_csv)
 from .catalog import (load_annotation_protocol_catalogue,
                       load_rubric_catalogue)
 from .schema import SpanKind
 from .storage import JsonlTraceStore
+from .text_rules import evidence_excerpt
 from .taxonomies import (classify_failure_evidence, load_tool_taxonomy,
                          repeated_call_candidates)
 
@@ -25,7 +26,7 @@ from .taxonomies import (classify_failure_evidence, load_tool_taxonomy,
 FAILURE_SAMPLING_HINT_VERSION = 1
 TAXONOMY_FIELDS = FIELDS[:-2] + (
     "proposed_label", "proposal_reason", "assessment") + FIELDS[-2:]
-ANNOTATION_PACKET_VERSION = 6
+ANNOTATION_PACKET_VERSION = 7
 _NONTERMINAL_POLLING_RESULT = re.compile(
     r"\b(?:still\s+)?running\b|\btimed?\s*out\b|\bqueued\b|"
     r"\bin\s+progress\b|\bnot\s+(?:yet\s+)?(?:complete|finished|resolved)\b",
@@ -111,8 +112,85 @@ def assess_label_support(labels, plan: AdaptiveSamplingPlan, *, round_number):
     return result
 
 
+
+def assess_packet_support(packets, rubric, *, require_bindings=False):
+    """Assess captured current/prior packets; support is not promotion."""
+    if not packets:
+        raise ValueError("assessment requires a packet")
+    plan = AdaptiveSamplingPlan.from_rubric(rubric)
+    current = packets[0][0]
+    rounds = []
+    for manifest, rows in packets:
+        if (manifest.get("rubric_id") != rubric.id
+                or type(manifest.get("rubric_version")) is not int
+                or manifest["rubric_version"] != rubric.version):
+            raise ValueError("assessment packet rubric differs")
+        sampling = manifest.get("adaptive_sampling")
+        number = sampling.get("round") if isinstance(sampling, dict) else None
+        if type(number) is not int or not 1 <= number <= plan.maximum_rounds:
+            raise ValueError("invalid adaptive taxonomy packet round")
+        rounds.append(number)
+    if len(packets) > 1 or require_bindings:
+        if sorted(rounds) != list(range(1, rounds[0] + 1)):
+            raise ValueError("cumulative assessment requires each earlier round exactly once")
+        if current.get("split") not in ("calibration", "test"):
+            raise ValueError("cumulative assessment requires a valid split")
+        if current.get("split_policy") != SPLIT_POLICY:
+            raise ValueError("cumulative assessment requires the current split policy")
+        protocol_version = current.get("annotation_protocol_version")
+        candidate_version = current.get("candidate_taxonomy_version")
+        if (type(protocol_version) is not int or type(candidate_version) is not int
+                or candidate_version < 1):
+            raise ValueError("cumulative assessment requires versioned method bindings")
+        catalogue_root = Path(__file__).resolve().parents[1] / "rubrics"
+        protocols = load_annotation_protocol_catalogue(
+            catalogue_root / "annotation-protocols.json",
+            load_rubric_catalogue(catalogue_root / "rubrics.json"))
+        protocol = protocols.get(current.get("annotation_protocol_id"), protocol_version)
+        if (protocol.rubric_id != rubric.id or protocol.rubric_version != rubric.version
+                or current.get("annotation_protocol_sha256") != protocol.sha256):
+            raise ValueError("cumulative assessment protocol binding differs")
+        inputs = current.get("input_fingerprints")
+        if (not isinstance(inputs, dict) or not isinstance(inputs.get("normalized_traces"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", inputs["normalized_traces"])):
+            raise ValueError("cumulative assessment requires trace identity")
+        keys = ("rubric_id", "rubric_version", "split", "split_policy",
+                "candidate_taxonomy_version", "annotation_protocol_id",
+                "annotation_protocol_version", "annotation_protocol_sha256", "input_fingerprints")
+        seen = set()
+        for manifest, rows in packets:
+            if any(type(manifest.get(key)) is not type(current.get(key))
+                   or manifest.get(key) != current.get(key) for key in keys):
+                raise ValueError("cumulative assessment packet bindings differ")
+            identities = manifest.get("candidate_sha256")
+            if (not isinstance(identities, list) or len(identities) != len(rows)
+                    or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                           for value in identities)
+                    or len(set(identities)) != len(identities) or seen.intersection(identities)):
+                raise ValueError("cumulative assessment requires unique candidate identities")
+            seen.update(identities)
+            if any(row.get("split") != current["split"] for row in rows):
+                raise ValueError("cumulative assessment row split differs")
+        if sum(len(rows) for _, rows in packets) > plan.maximum_total:
+            raise ValueError("cumulative assessment exceeds case budget")
+    rows = [row for _, packet_rows in packets for row in packet_rows]
+    labels = [str(row.get("human_label") or "").strip() for row in rows
+              if str(row.get("human_label") or "").strip()]
+    if set(labels) - set(rubric.labels):
+        raise ValueError("annotation packet contains unsupported taxonomy labels")
+    result = assess_label_support(labels, plan, round_number=rounds[0])
+    result.update(labelled=len(labels), available_rows=len(rows),
+                  unlabelled=len(rows) - len(labels), rounds_included=sorted(rounds),
+                  assessment_scope="cumulative" if len(packets) > 1 else "packet",
+                  decision_support=False)
+    return result
+
+
 def assess_taxonomy_promotion(truth, predicted, rubric):
-    """Apply the preregistered held-out gate without treating absence as proof."""
+    """Historical API name: assess numerical criteria, never authorize promotion.
+
+    Bare label pairs cannot establish held-out provenance or intended-use validity.
+    """
     truth = tuple(str(label) for label in truth)
     predicted = tuple(str(label) for label in predicted)
     if len(truth) != len(predicted):
@@ -142,23 +220,25 @@ def assess_taxonomy_promotion(truth, predicted, rubric):
     precision_denominator = true_positive + false_positive
     recall_denominator = true_positive + false_negative
     precision = (true_positive / precision_denominator
-                 if precision_denominator else 0.0)
+                 if precision_denominator else None)
     recall = (true_positive / recall_denominator
-              if recall_denominator else 0.0)
+              if recall_denominator else None)
     agreement = (sum(actual == guess for actual, guess in zip(truth, predicted))
-                 / len(truth) if truth else 0.0)
+                 / len(truth) if truth else None)
     unknown_rate = (predicted.count("unknown") / len(predicted)
                     if predicted and "unknown" in rubric.labels else None)
 
     checks = {
         "adequate_class_support": not support_gaps,
-        "precision": precision >= rubric.target_precision,
-        "recall": recall >= rubric.target_recall,
-        "agreement": agreement >= rubric.target_agreement,
+        "precision": precision is not None and precision >= rubric.target_precision,
+        "recall": recall is not None and recall >= rubric.target_recall,
+        "agreement": agreement is not None and agreement >= rubric.target_agreement,
     }
     result = {
         "status": "unvalidated",
         "decision_support": False,
+        "assessment_version": 2,
+        "assessment_scope": "observed_label_pairs",
         "sample_size": len(truth),
         "support_counts": dict(sorted(support_counts.items())),
         "support_gaps": support_gaps,
@@ -179,19 +259,72 @@ def assess_taxonomy_promotion(truth, predicted, rubric):
             actual != "polling" and guess == "polling"
             for actual, guess in zip(truth, predicted))
         polling_rate = (polling_false_positives / non_polling
-                        if non_polling else 0.0)
+                        if non_polling else None)
         maximum = float(promotion["maximum_polling_false_positive_rate"])
-        checks["polling_false_positive_rate"] = polling_rate <= maximum
+        checks["polling_false_positive_rate"] = polling_rate is not None and polling_rate <= maximum
         result["polling_false_positive_rate"] = polling_rate
         result["maximum_polling_false_positive_rate"] = maximum
-    if truth and all(checks.values()):
-        result["status"] = "promoted"
-        result["decision_support"] = True
+    result["thresholds_met"] = bool(truth and all(checks.values()))
+    if result["thresholds_met"]:
+        result["status"] = "thresholds_met"
+    return result
+
+
+def assess_packet_criteria(packets, rubric):
+    """Assess frozen proposals against captured labels without promoting a scorer."""
+    result = assess_packet_support(packets, rubric, require_bindings=True)
+    rows = [row for _, packet_rows in packets for row in packet_rows]
+    if any(row.get("proposed_label") not in rubric.labels for row in rows):
+        raise ValueError("annotation packet contains unsupported proposed labels")
+    labelled = [row for row in rows if str(row.get("human_label") or "").strip()]
+    criteria = assess_taxonomy_promotion(
+        [str(row["human_label"]).strip() for row in labelled],
+        [row["proposed_label"] for row in labelled], rubric)
+    met = criteria["thresholds_met"] and result["unlabelled"] == 0
+    split = packets[0][0]["split"]
+    if result["unlabelled"]:
+        owner, action = "human_reviewer", "Complete the remaining packet labels before evaluating all selected cases."
+    elif result["status"] == "needs_more":
+        owner, action = "investigating_agent", (
+            "Collect the next preregistered round to address class-support gaps; "
+            "keep the method frozen and retain every previous packet.")
+    elif result["status"] == "insufficient_evidence":
+        owner, action = "investigating_agent", (
+            "Record insufficient evidence at the sampling bound; retain the scorer "
+            "as unvalidated without extending this sampling plan.")
+    elif not met:
+        owner = "investigating_agent"
+        action = ("Inspect calibration errors and revise using development evidence."
+                  if split == "calibration" else
+                  "Record the failed confirmation; any revision needs separate development evidence and new held-out confirmation.")
+    else:
+        owner, action = "investigating_agent", (
+            "Review predictor-freeze and exposure history, target population, sampling design "
+            "and intended-use evidence before proposing any promotion.")
+    result.update(
+        support_status=result["status"],
+        status="criteria_met" if met else "criteria_not_met",
+        assessment_version=2, split=split, criteria=criteria, criteria_met=met,
+        rubric_id=rubric.id, rubric_version=rubric.version,
+        candidate_taxonomy_version=packets[0][0]["candidate_taxonomy_version"],
+        packet_bindings=[{
+            "round": manifest["adaptive_sampling"]["round"],
+            "sample_sha256": manifest.get("sample_sha256"),
+            "annotation_protocol_id": manifest["annotation_protocol_id"],
+            "annotation_protocol_version": manifest["annotation_protocol_version"],
+            "annotation_protocol_sha256": manifest["annotation_protocol_sha256"],
+            "normalized_traces_sha256": manifest["input_fingerprints"]["normalized_traces"],
+        } for manifest, _ in sorted(packets, key=lambda item: item[0]["adaptive_sampling"]["round"])],
+        decision_support=False,
+        next_action={"owner": owner, "action": action,
+                     "prerequisites": "Retain the validated packets and the comparison protocol; do not tune on held-out labels.",
+                     "acceptance": "Document a scoped validation decision with supporting evidence; passing counts alone is insufficient."})
     return result
 
 
 @dataclass(frozen=True)
 class _Candidate:
+    trace_id: str
     stable_key: str
     source: str
     stratum: str
@@ -215,7 +348,7 @@ def _failure_sampling_stratum(evidence):
 
 def _shown(value, limit=600):
     value = str(value or "").strip()
-    return value[:limit] if value else "unavailable"
+    return evidence_excerpt(value, limit) if value else "unavailable"
 
 
 def _repeat_evidence(item, private_evidence):
@@ -290,8 +423,8 @@ def _validate_candidate_evidence(candidate, rubric_id):
         raise ValueError("repeat review evidence contains evaluator instructions")
 
 
-def _candidates(records, rubric_id, private_evidence=None):
-    taxonomy = load_tool_taxonomy()
+def _candidates(records, rubric_id, private_evidence=None, taxonomy=None):
+    taxonomy = taxonomy or load_tool_taxonomy()
     private_evidence = private_evidence or {}
     if rubric_id == "duplicate_work":
         candidates = []
@@ -307,6 +440,7 @@ def _candidates(records, rubric_id, private_evidence=None):
                 }[item.candidate_class]
                 proposal_reason = item.reason_code
             candidate = _Candidate(
+                trace_id=item.current.trace_id,
                 stable_key=item.current.span_id,
                 source=item.current.source,
                 stratum=item.candidate_class,
@@ -328,6 +462,7 @@ def _candidates(records, rubric_id, private_evidence=None):
             diagnosis = classify_failure_evidence(
                 evidence.get("tool_input"), evidence.get("tool_result"))
             candidates.append(_Candidate(
+                trace_id=record.trace_id,
                 stable_key=record.span_id,
                 source=record.source,
                 stratum=diagnosis.kind,
@@ -346,9 +481,19 @@ def _candidates(records, rubric_id, private_evidence=None):
     raise ValueError("unsupported taxonomy rubric")
 
 
+SPLIT_POLICY = "source_trace_v1"
+
+
+def _group_fingerprint(candidate):
+    # The same normalized trace stays in one phase across both rubrics.
+    # This is a grouping boundary, not a claim that traces are independent.
+    raw = json.dumps([candidate.source, candidate.trace_id], separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _assigned_split(candidate, rubric_id):
     digest = hashlib.sha256(
-        (rubric_id + "|" + candidate.stable_key).encode("utf-8")).digest()
+        (SPLIT_POLICY + "|" + _group_fingerprint(candidate)).encode("utf-8")).digest()
     return "calibration" if digest[0] < 128 else "test"
 
 
@@ -383,7 +528,7 @@ def _candidate_fingerprint(rubric_id, stable_key):
 
 def _write_packet(path, manifest_path, candidates, *, rubric, protocol,
                   dataset_id, split, plan, input_sha256, round_number,
-                  private_evidence_sha256=""):
+                  candidate_taxonomy_version, private_evidence_sha256=""):
     _external(path)
     _external(manifest_path)
     salt = _salt(path.parent)
@@ -400,24 +545,23 @@ def _write_packet(path, manifest_path, candidates, *, rubric, protocol,
             "proposal_reason": candidate.proposal_reason,
             "assessment": "", "human_label": "", "notes": "",
         })
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=TAXONOMY_FIELDS)
-        writer.writeheader()
-        writer.writerows(rows)
+    sample_sha256 = _create_packet_csv(path, TAXONOMY_FIELDS, rows)
     manifest = {
         "schema_version": 1,
         "annotation_packet_version": ANNOTATION_PACKET_VERSION,
         "dataset_id": dataset_id,
         "rubric_id": rubric.id,
         "rubric_version": rubric.version,
+        "candidate_taxonomy_version": candidate_taxonomy_version,
         "split": split,
-        "selection": "stable split then deterministic round-robin by candidate stratum",
+        "selection": "source/trace split across rubrics, then deterministic round-robin by candidate stratum",
+        "split_policy": SPLIT_POLICY,
+        "candidate_group_sha256": [_group_fingerprint(candidate) for candidate in candidates],
         "source_counts": dict(sorted(Counter(row["source"] for row in rows).items())),
         "candidate_strata": dict(sorted(Counter(
             candidate.stratum for candidate in candidates).items())),
         "input_fingerprints": {"normalized_traces": input_sha256},
-        "sample_sha256": _packet_fingerprint(path),
+        "sample_sha256": sample_sha256,
         "candidate_sha256": [
             _candidate_fingerprint(rubric.id, candidate.stable_key)
             for candidate in candidates],
@@ -440,20 +584,12 @@ def _write_packet(path, manifest_path, candidates, *, rubric, protocol,
     if private_evidence_sha256:
         manifest["input_fingerprints"]["private_evidence"] = (
             private_evidence_sha256)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                             encoding="utf-8")
+    with manifest_path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _instructions(output_dir, packets):
+def _instructions(path, packets):
     launcher = Path(__file__).resolve().parents[1] / "bin" / "retro-eval-labels"
     lines = [
         "# 01 - Optional taxonomy assessment review",
@@ -480,8 +616,8 @@ def _instructions(output_dir, packets):
         "If you choose to review, done means every case has an assessment. The "
         "Goal never treats an empty or partial packet as implicit acceptance.", "",
     ])
-    path = output_dir / "01-review-instructions.md"
-    path.write_text("\n".join(lines), encoding="utf-8")
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write("\n".join(lines))
     return path
 
 
@@ -491,69 +627,138 @@ def write_taxonomy_review_packets(trace_path: Path, output_dir: Path, *,
     trace_path = Path(trace_path)
     output_dir = Path(output_dir)
     _external(output_dir)
-    records = JsonlTraceStore(trace_path).read()
+    records, input_sha256 = JsonlTraceStore(trace_path).read_with_digest()
     plugin_root = Path(__file__).resolve().parents[1]
     rubrics = load_rubric_catalogue(plugin_root / "rubrics" / "rubrics.json")
     protocols = load_annotation_protocol_catalogue(
         plugin_root / "rubrics" / "annotation-protocols.json", rubrics)
     rubric_index = {item.id: item for item in rubrics.rubrics}
+    taxonomy = load_tool_taxonomy()
+    candidate_versions = {"duplicate_work": taxonomy.repeated_call_version,
+                          "tool_failure_kind": taxonomy.tool_failure_version}
     specs = (
         ("duplicate_work", "duplicate-work-taxonomy", 5, "duplicate-work"),
         ("tool_failure_kind", "tool-failure-taxonomy", 2, "tool-failure"),
     )
     packets = []
-    input_sha256 = _sha256(trace_path)
     private_evidence = dict(private_evidence or {})
     private_evidence_sha256 = (hashlib.sha256(json.dumps(
         private_evidence, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
         if private_evidence else "")
     size_overrides = dict(size_overrides or {})
-    if round_number < 1:
+    if type(round_number) is not int or round_number < 1:
         raise ValueError("round number must be positive")
+    plans = {rubric_id: AdaptiveSamplingPlan.from_rubric(rubric_index[rubric_id])
+             for rubric_id, _, _, _ in specs}
+    if any(round_number > plan.maximum_rounds for plan in plans.values()):
+        raise ValueError("round number exceeds adaptive sampling plan")
     prior_by_rubric = defaultdict(set)
+    prior_slots = set()
     for prior_path in prior_manifests:
         try:
             prior = json.loads(Path(prior_path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError("invalid prior taxonomy packet manifest") from exc
-        if prior.get("input_fingerprints", {}).get("normalized_traces") != input_sha256:
+        if not isinstance(prior, dict) or not isinstance(prior.get("input_fingerprints"), dict):
+            raise ValueError("invalid prior taxonomy packet manifest")
+        if prior["input_fingerprints"].get("normalized_traces") != input_sha256:
             raise ValueError("adaptive rounds require the same trace snapshot")
-        prior_by_rubric[str(prior.get("rubric_id") or "")].update(
-            str(value) for value in prior.get("candidate_sha256") or ())
+        prior_rubric = prior.get("rubric_id")
+        if (not isinstance(prior_rubric, str) or prior_rubric not in candidate_versions
+                or type(prior.get("candidate_taxonomy_version")) is not int
+                or prior["candidate_taxonomy_version"] != candidate_versions[prior_rubric]):
+            raise ValueError("prior packet candidate taxonomy differs or is unknown; "
+                             "start a separate review set")
+        if prior.get("split_policy") != SPLIT_POLICY:
+            raise ValueError("prior packet split policy differs or is unknown; "
+                             "start a separate review set")
+        if prior["input_fingerprints"].get("private_evidence", "") != private_evidence_sha256:
+            raise ValueError("adaptive rounds require the same private evidence")
+        rubric = rubric_index[prior_rubric]
+        _, protocol_id, protocol_version, _ = next(
+            spec for spec in specs if spec[0] == prior_rubric)
+        protocol = protocols.get(protocol_id, protocol_version)
+        if (prior.get("rubric_version") != rubric.version
+                or prior.get("annotation_protocol_id") != protocol.id
+                or prior.get("annotation_protocol_version") != protocol.version
+                or prior.get("annotation_protocol_sha256") != protocol.sha256):
+            raise ValueError("prior packet rubric or protocol differs; start a separate review set")
+        sampling = prior.get("adaptive_sampling")
+        prior_round = sampling.get("round") if isinstance(sampling, dict) else None
+        split = prior.get("split")
+        if (type(prior_round) is not int or not 1 <= prior_round < round_number
+                or split not in ("calibration", "test")):
+            raise ValueError("prior packet must name an earlier round and valid split")
+        slot = (prior_rubric, prior_round, split)
+        if slot in prior_slots:
+            raise ValueError("duplicate prior taxonomy packet")
+        fingerprints = prior.get("candidate_sha256")
+        if (not isinstance(fingerprints, list)
+                or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for value in fingerprints)
+                or len(set(fingerprints)) != len(fingerprints)
+                or prior_by_rubric[prior_rubric].intersection(fingerprints)):
+            raise ValueError("invalid or repeated prior candidate identities")
+        prior_slots.add(slot)
+        prior_by_rubric[prior_rubric].update(fingerprints)
+    expected_slots = {(rubric_id, number, split)
+                      for rubric_id in plans for number in range(1, round_number)
+                      for split in ("calibration", "test")}
+    if prior_slots != expected_slots:
+        raise ValueError("adaptive rounds require all earlier rubric and split manifests")
+    instructions_path = output_dir / (
+        "01-review-instructions.md" if round_number == 1
+        else "01-review-instructions-round%s.md" % round_number)
+    if instructions_path.exists() or instructions_path.is_symlink():
+        raise ValueError("taxonomy packet destination already exists; "
+                         "use a fresh round or review-set directory")
+    instructions_path = instructions_path.resolve()
+    destinations = {}
+    for rubric_id, _, _, stem in specs:
+        for split in ("calibration", "test"):
+            paths = (output_dir / ("%s-%s-round%s.csv" % (stem, split, round_number)),
+                     output_dir / ("%s-%s-round%s-manifest.json" %
+                                   (stem, split, round_number)))
+            _check_packet_destinations(*paths)
+            destinations[rubric_id, split] = tuple(path.resolve() for path in paths)
+    prepared = []
     for rubric_id, protocol_id, protocol_version, stem in specs:
         rubric = rubric_index[rubric_id]
         protocol = protocols.get(protocol_id, protocol_version)
-        plan = AdaptiveSamplingPlan.from_rubric(rubric)
+        plan = plans[rubric_id]
         candidates = tuple(candidate for candidate in _candidates(
-                               records, rubric_id, private_evidence)
+                               records, rubric_id, private_evidence, taxonomy)
                            if _candidate_fingerprint(
                                rubric_id, candidate.stable_key)
                            not in prior_by_rubric[rubric_id])
-        if round_number > plan.maximum_rounds:
-            raise ValueError("round number exceeds adaptive sampling plan")
+        selected_count = len(prior_by_rubric[rubric_id])
         for split, default_size in (("calibration", plan.initial_calibration),
                                     ("test", plan.initial_heldout)):
-            requested = int(size_overrides.get(rubric_id, {}).get(split,
-                                                                  default_size))
+            requested = size_overrides.get(rubric_id, {}).get(split, default_size)
+            if type(requested) is not int or requested < 0:
+                raise ValueError("sample sizes must be nonnegative integers")
             selected = _balanced(candidates, requested, rubric_id, split)
-            source = (output_dir / ("%s-%s-round%s.csv"
-                                    % (stem, split, round_number))).resolve()
-            manifest_path = (output_dir /
-                             ("%s-%s-round%s-manifest.json"
-                              % (stem, split, round_number))).resolve()
-            dataset_id = "%s-v%s-%s-round%s" % (
-                stem, rubric.version, split, round_number)
-            _write_packet(
-                source, manifest_path, selected, rubric=rubric,
-                protocol=protocol, dataset_id=dataset_id, split=split,
-                plan=plan, input_sha256=input_sha256,
-                round_number=round_number,
-                private_evidence_sha256=private_evidence_sha256)
-            packets.append({
-                "rubric_id": rubric_id, "split": split,
-                "source": str(source), "manifest": str(manifest_path),
-                "population": len(selected),
-            })
-    instructions = _instructions(output_dir, packets)
+            selected_count += len(selected)
+            if selected_count > plan.maximum_total:
+                raise ValueError("selected cases exceed the adaptive sampling maximum_total")
+            prepared.append((rubric_id, protocol, stem, plan, split, selected))
+    for rubric_id, protocol, stem, plan, split, selected in prepared:
+        rubric = rubric_index[rubric_id]
+        source, manifest_path = destinations[rubric_id, split]
+        dataset_id = "%s-v%s-%s-round%s" % (
+            stem, rubric.version, split, round_number)
+        _write_packet(
+            source, manifest_path, selected, rubric=rubric,
+            protocol=protocol, dataset_id=dataset_id, split=split,
+            plan=plan, input_sha256=input_sha256,
+            round_number=round_number,
+            candidate_taxonomy_version=candidate_versions[rubric_id],
+            private_evidence_sha256=private_evidence_sha256)
+        packets.append({
+            "rubric_id": rubric_id, "split": split,
+            "source": str(source), "manifest": str(manifest_path),
+            "population": len(selected),
+        })
+    instructions = _instructions(instructions_path, packets)
     return {"packets": packets, "instructions": str(instructions.resolve())}

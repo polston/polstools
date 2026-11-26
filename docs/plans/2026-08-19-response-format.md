@@ -1,5 +1,8 @@
 # Response-format feature — design record
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 2026-08-19, updated 2026-08-28. The `p` plugin makes every turn-ending reply
 open with a fixed triage block — FINDINGS, PROBLEMS, ASKS. Interim tool progress
 is one concise sentence instead. A horizontal rule separates optional detail

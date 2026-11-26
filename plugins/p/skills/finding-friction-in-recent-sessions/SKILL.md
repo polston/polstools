@@ -17,151 +17,25 @@ check exits 2 because session variables of two harnesses are set, rerun it once
 with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
 `antigravity`).
 
-## Overview
+## Automatic investigation
 
-This skill turns measured workflow evidence into at most three concrete
-proposals. Transcripts observe only part of the work; missing observations do
-not establish that a problem never occurred or that a rule was followed.
+Use `<plugin-root>/WORKFLOW.md` as the shared operating procedure. Run the
+bounded workflow command with configured/default source roots, inspect its
+private packet, and produce evidence-backed findings and an actionable next
+step. The planner chooses the window, source allocation, packs, and limits;
+do not ask the operator to design the study.
 
-## Coverage before interpretation
+Keep observations, agent interpretations, human observations, and efficacy
+claims distinct. Inspect positive candidates and noncandidates as well as
+complaints. A cue or repeated call is a retrieval lead, not a confirmed defect.
+No recommendation is a valid outcome when evidence or practical value is weak.
 
-The `retro.py` commands below ingest Claude, Codex, and Antigravity history,
-regardless of the active harness. Claude uses `CLAUDE_CONFIG_DIR` (default
-`~/.claude`); Codex uses `CODEX_HOME` (default `~/.codex`). Antigravity uses
-`~/.gemini/antigravity-cli/brain/*/.system_generated/logs/`, preferring
-`transcript_full.jsonl` over `transcript.jsonl` for each conversation. Set
-`RETRO_ANTIGRAVITY_HOME` to override the Antigravity CLI data directory for
-this reader. Run `extract` before reporting; a previously generated pack does
-not acquire new sources automatically.
+Choose an intervention only after considering counterexamples and existing
+capabilities. It may be a removal, a tool or configuration change, a bounded
+experiment, further observation, or no change. Do not require every finding to
+become a new instruction. Record local dispositions and follow-up triggers;
+apply broader changes only within the operator's existing authority.
 
-Antigravity moments are candidate-sampled across sessions of unknown
-main/child population, not friction-ranked or included in main-session rates.
-Its exported steps do not carry token usage on every step, so token usage is
-not measured; they provide no reliable tool-error markers, interrupt markers,
-permission changes, queued prompts, or skill attribution. Those fields are
-unavailable, not measured zeros. The separate evaluation
-adapters in `<plugin-root>/EVALUATION.md` cover Claude, Codex, and Antigravity.
-
-Report observed sources, main and child populations, exclusions, snapshot or
-window bounds, and unavailable signals before drawing conclusions. Preserve
-separate populations when inclusion rules differ. Use an isolated external
-`RETRO_HOME` for an audit; keep real evidence outside every repository.
-
-## The procedure
-
-**1. Measure.** Incremental: only transcripts whose size or mtime moved are
-re-read, so a routine run costs a fraction of a first build.
-
-```bash
-<python> <plugin-root>/bin/retro.py extract
-<python> <plugin-root>/bin/retro.py pack --days 7 --moments-per-session 3
-```
-
-`extract` exits 1 when a transcript would not read. It still writes the ledger,
-and retries that file on the next run.
-
-`pack` prints the path of one markdown file: trends for the window against the
-previous window, then the highest-friction sessions with the actual moments
-quoted. Each selected session samples candidates across the full transcript,
-including both ends when the limit is at least two. A limit of one selects the
-middle candidate. Report selected, available, and omitted counts; a capped
-sample cannot establish that later complaints are absent. Increase
-`--moments-per-session` when more context is needed; it accepts positive
-integers and does not change measured counters or session selection.
-
-**2. Read the pack. Only the pack.** Do not open transcripts. The pack is
-already redacted; raw transcripts are not.
-
-**3. Read trends as rates, not totals.** Compare each signal over its eligible
-population and check task mix and source coverage. The pack reports per-session
-rates; a change in these rates alone does not establish a behavioral cause.
-
-**4. Rank by consequence, not by count.** Current ranking uses tool-error
-markers and permission-mode changes. Legacy correction and interrupt labels
-are sampling aids and cannot support decisions until their rubric is validated.
-Repeated calls are reported but do not affect ranking. Diagnose consequential
-cases with actual context; an expected error or a legitimate repeat is not
-necessarily a failure of the workflow.
-
-Moments quoted under a ranked session carry a `kind` of `interrupt`,
-`correction`, or `approval`. An approval is not friction — it is the
-operator's liked behaviour, captured by example — so treat it as evidence for
-keeping or strengthening a rule already in place, never as grounds to add a
-new one. The "Codex moments" and "Antigravity moments" sections further down the pack are
-candidate-sampled, not ranked: their ordering says nothing about which moment
-cost the most.
-
-**5. Write at most three proposals.** Each one has four parts:
-
-- **What fought us** — one line, stated as consequence.
-- **Evidence** — date, project, and the quoted moment from the pack.
-- **The edit** — a named file and the text to add or change. Concrete enough to
-  apply without a follow-up question.
-- **The metric** — which counter should move if this works, and its value now.
-
-**A proposal without a named file and proposed text is not a proposal.** Cut it.
-"Be more careful about X" survives no contact with a future session.
-
-**6. Deliver as a file and stop.** Never edit CLAUDE.md, a skill, a hook, or a
-permission rule from inside this skill. Propose; wait to be asked.
-
-## Corrections are candidates, and judging them is your job
-
-`correction_candidates` is deliberately over-inclusive. Read the displayed
-moments and report how many you retained, but do not call a selected reading
-sample a population rate or classifier precision. Current legacy labels remain
-restricted to sampling and scorer validation by the rubric catalogue. A manual
-reading does not silently promote the rubric into decision support.
-
-## Reading the signals
-
-| Signal rising | Question to investigate |
-|---|---|
-| `repeat_calls` | the same call made twice with identical input — duplicated work, not necessarily a retry |
-| `correction_candidates` | is the moment an actual correction, with an observable applicable instruction? |
-| `interrupts` | was the interruption corrective, logistical, or unrelated to agent behavior? |
-| `queued_prompts` | was queuing normal task staging or a response to delay? |
-| `tool_errors` | was the failure expected, caused by the environment, or an avoidable call error? |
-| `subagent_transcripts` with flat output | did parent use and task quality justify the delegated work? |
-| `permission_mode_changes` | rare by nature — expect long stretches of zero. Any nonzero week is worth a look; do not expect a trend line |
-
-Two of these carry a known measurement caveat. `skill_runs` counts contiguous
-stretches of assistant turns attributed to the same skill, which is not the same
-as the number of times it was deliberately invoked, and the field it derives
-from is absent from transcripts written by older CLI versions. For Codex rows
-`skill_runs` counts injected skill messages instead, one per message. `tool_errors` counts records carrying
-a failure marker, which includes failures that were expected and handled. On a
-mixed corpus, `tool_errors`, `queued_prompts`, and `permission_mode_changes` are
-not observable for Codex rows; the pack marks those lines with the observable
-share, and per-session rates divide by it.
-
-Every metric's precise definition, and the measurement that settled it, lives in
-`docs/plans/2026-08-12-retro-design.md`. Read it before arguing with a number.
-
-## Common mistakes
-
-**Proposing a rule for something that happened once.** One occurrence is an
-anecdote. The pack shows counts; use them.
-
-**Writing the proposal as a description of the problem.** The deliverable is the
-edit. If the proposal does not contain text that could be pasted into a file, it
-is not finished.
-
-**Quoting the moment without the turn before it.** The pack includes the
-assistant text immediately preceding each correction because that is what was
-actually wrong. The correction alone reads as a complaint.
-
-**Letting the list grow past three.** A retrospective that returns nine findings
-gets read once and actioned never. Three that get applied beat nine that do not.
-
-**Treating a fall in a counter as improvement without checking session count.**
-See step 3.
-
-## Red flags
-
-- "I remember being annoyed by..." — check the pack, the counts disagree more often than not
-- "This one is hard to make concrete" — then it is not ready to propose
-- "I'll just fix this one while I'm here" — this skill proposes; it does not apply
-- Opening a transcript directly
-
-All of these mean: return to the evidence and check what it can support.
+For reproduction of old ledger counts or packs, use
+[the legacy ledger procedure](references/legacy-retro.md). Its per-session
+counters are not interchangeable with case outcomes or calibrated failure rates.

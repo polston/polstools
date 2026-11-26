@@ -1,5 +1,8 @@
 # Skill activation profiles — implementation plan
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 Date: 2026-08-24. Status: implemented on the feature branch; final release
 validation and publication remain outside this plan record.
 

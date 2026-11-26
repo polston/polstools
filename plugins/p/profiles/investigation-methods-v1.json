@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "id": "general",
+      "version": "1",
+      "policy_versions": [
+        1
+      ],
+      "domains": [],
+      "requires": [],
+      "capabilities": [],
+      "incompatible": [],
+      "claim_types": [
+        "factual",
+        "formal",
+        "interpretive"
+      ],
+      "obligations": [
+        "credible alternatives",
+        "counterevidence",
+        "bounded claims"
+      ],
+      "guidance": "skills/investigating-and-improving/references/general.md",
+      "methods": [
+        {
+          "id": "general",
+          "prerequisites": [
+            "framed outcome"
+          ],
+          "outputs": [
+            "evidence-bound decision"
+          ],
+          "verification": [
+            "claim-appropriate evidence"
+          ],
+          "failure_modes": [
+            "unsupported conclusion"
+          ],
+          "alternatives": [
+            "retain incumbent"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "software",
+      "version": "1",
+      "policy_versions": [
+        1
+      ],
+      "domains": [
+        "software",
+        "architecture"
+      ],
+      "requires": [
+        "general"
+      ],
+      "capabilities": [],
+      "incompatible": [],
+      "claim_types": [
+        "software"
+      ],
+      "obligations": [
+        "relevant executable oracle",
+        "regression constraints"
+      ],
+      "guidance": "skills/investigating-and-improving/references/software.md",
+      "methods": [
+        {
+          "id": "software",
+          "prerequisites": [
+            "framed outcome"
+          ],
+          "outputs": [
+            "evidence-bound decision"
+          ],
+          "verification": [
+            "claim-appropriate evidence"
+          ],
+          "failure_modes": [
+            "unsupported conclusion"
+          ],
+          "alternatives": [
+            "retain incumbent"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "empirical",
+      "version": "1",
+      "policy_versions": [
+        1
+      ],
+      "domains": [
+        "empirical",
+        "workflow"
+      ],
+      "requires": [
+        "general"
+      ],
+      "capabilities": [],
+      "incompatible": [],
+      "claim_types": [
+        "empirical"
+      ],
+      "obligations": [
+        "comparator",
+        "sampling unit",
+        "exposure history",
+        "missingness"
+      ],
+      "guidance": "skills/investigating-and-improving/references/empirical.md",
+      "methods": [
+        {
+          "id": "empirical",
+          "prerequisites": [
+            "framed outcome"
+          ],
+          "outputs": [
+            "evidence-bound decision"
+          ],
+          "verification": [
+            "claim-appropriate evidence"
+          ],
+          "failure_modes": [
+            "unsupported conclusion"
+          ],
+          "alternatives": [
+            "retain incumbent"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "subjective",
+      "version": "1",
+      "policy_versions": [
+        1
+      ],
+      "domains": [
+        "subjective",
+        "design"
+      ],
+      "requires": [
+        "general"
+      ],
+      "capabilities": [],
+      "incompatible": [],
+      "claim_types": [
+        "preference"
+      ],
+      "obligations": [
+        "factual constraints",
+        "attributed preference"
+      ],
+      "guidance": "skills/investigating-and-improving/references/subjective.md",
+      "methods": [
+        {
+          "id": "subjective",
+          "prerequisites": [
+            "framed outcome"
+          ],
+          "outputs": [
+            "evidence-bound decision"
+          ],
+          "verification": [
+            "claim-appropriate evidence"
+          ],
+          "failure_modes": [
+            "unsupported conclusion"
+          ],
+          "alternatives": [
+            "retain incumbent"
+          ]
+        }
+      ]
+    }
+  ]
+}

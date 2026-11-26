@@ -21,119 +21,177 @@
   "components": {
     "adequacy-review": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "aligning-statuslines": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "auditing-a-repo-for-private-data": {
       "source": "skill",
-      "requires": ["repository-publication-data"]
+      "requires": [
+        "repository-publication-data"
+      ]
     },
     "auditing-agent-contracts": {
       "source": "skill",
-      "requires": ["core"],
-      "conditional_capabilities": ["local-session-history"]
+      "requires": [
+        "core"
+      ],
+      "conditional_capabilities": [
+        "local-session-history"
+      ]
     },
     "auditing-workflow-rules-against-behavior": {
       "source": "skill",
-      "requires": ["local-session-history"]
+      "requires": [
+        "local-session-history"
+      ]
     },
     "checking-branch-base-before-a-pr": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "counting-stopped-promises": {
       "source": "skill",
-      "requires": ["local-session-history"]
+      "requires": [
+        "local-session-history"
+      ]
     },
     "deciding-the-prompt-cache-ttl": {
       "source": "skill",
-      "requires": ["local-session-history"]
+      "requires": [
+        "local-session-history"
+      ]
     },
     "doctor": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "finding-friction-in-recent-sessions": {
       "source": "skill",
-      "requires": ["local-session-history"]
+      "requires": [
+        "local-session-history"
+      ]
     },
     "finding-what-a-change-made-false": {
       "source": "skill",
-      "requires": ["core"]
-    },
-    "fmt-off": {
-      "source": "skill",
-      "requires": ["core"]
-    },
-    "fmt-on": {
-      "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "home": {
       "source": "skill",
-      "requires": ["control-plane"]
-    },
-    "maintaining-the-format-plugin": {
-      "source": "skill",
-      "requires": ["core"],
-      "conditional_capabilities": ["local-session-history"]
+      "requires": [
+        "control-plane"
+      ]
     },
     "managing-skill-activation": {
       "source": "skill",
-      "requires": ["control-plane"]
+      "requires": [
+        "control-plane"
+      ]
     },
     "reviewing-evaluation-taxonomies": {
       "source": "skill",
-      "requires": ["local-session-history"]
+      "requires": [
+        "local-session-history"
+      ]
     },
     "reviewing-improvement-effects": {
       "source": "skill",
-      "requires": ["core"],
-      "conditional_capabilities": ["local-session-history"]
+      "requires": [
+        "core"
+      ],
+      "conditional_capabilities": [
+        "local-session-history"
+      ]
     },
     "robust-over-simple": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "scouting-tools-for-open-frictions": {
       "source": "skill",
-      "requires": ["core"],
-      "conditional_capabilities": ["local-session-history"]
+      "requires": [
+        "core"
+      ],
+      "conditional_capabilities": [
+        "local-session-history"
+      ]
     },
     "shift-enter-in-windows-terminal": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "statusline-apply": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "statusline-check": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "statusline-preview": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "statusline-restore": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
     },
     "update": {
       "source": "skill",
-      "requires": ["control-plane"]
+      "requires": [
+        "control-plane"
+      ]
     },
     "work": {
       "source": "skill",
-      "requires": ["control-plane"]
+      "requires": [
+        "control-plane"
+      ]
     },
     "writing-goals": {
       "source": "skill",
-      "requires": ["core"]
+      "requires": [
+        "core"
+      ]
+    },
+    "investigating-and-improving": {
+      "source": "skill",
+      "requires": [
+        "core"
+      ],
+      "conditional_capabilities": [
+        "local-session-history"
+      ]
+    },
+    "writing-plans": {
+      "source": "skill",
+      "requires": [
+        "core"
+      ]
     }
   }
 }

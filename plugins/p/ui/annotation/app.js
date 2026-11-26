@@ -4,8 +4,9 @@ let state = null;
 let currentIndex = 0;
 let saving = false;
 let notesDirty = false;
+let noteDraft = null;
+let conflictDraft = null;
 let taxonomyObserver = null;
-let rateObserver = null;
 let changesetFiles = [];
 
 const $ = (selector) => document.querySelector(selector);
@@ -30,6 +31,8 @@ const elements = {
   progressTrack: $(".progress-track"), casePosition: $("#casePosition"),
   sourceBadge: $("#sourceBadge"), contextText: $("#contextText"), userText: $("#userText"),
   notes: $("#notes"), previous: $("#previousCase"), next: $("#nextCase"),
+  conflictNotice: $("#conflictNotice"), conflictSavedNote: $("#conflictSavedNote"),
+  conflictSavedJudgment: $("#conflictSavedJudgment"),
   clear: $("#clearLabel"), tieBreaks: $("#tieBreaks"), saveStatus: $("#saveStatus"),
   taskInstruction: $("#taskInstruction"), labelStack: $("#labelStack"),
   pageTitle: $("#pageTitle"), taxonomyEvidence: $("#taxonomyEvidence"),
@@ -71,6 +74,10 @@ function percent(value, digits = 0) {
 
 function number(value) {
   return Number(value || 0).toLocaleString();
+}
+
+function observedCount(value) {
+  return value === null || value === undefined ? "—" : number(value);
 }
 
 function versions(value) {
@@ -219,8 +226,16 @@ function metricEstimate(metric, value) {
 function renderMetrics(dashboard) {
   const rows = dashboard.metrics.map((metric) => {
     const row = document.createElement("tr");
-    const interval = metric.interval_low === null || metric.interval_low === undefined
-      ? "—" : `${metricEstimate(metric.metric_id, metric.interval_low)}–${metricEstimate(metric.metric_id, metric.interval_high)}`;
+    const missingInterval = metric.interval_low === null || metric.interval_low === undefined
+      || metric.interval_high === null || metric.interval_high === undefined;
+    const noSamplingDesign = metric.uncertainty?.reason === "sampling_design_not_established";
+    const interval = missingInterval
+      ? (noSamplingDesign ? "No sampling design" : "—")
+      : `${metricEstimate(metric.metric_id, metric.interval_low)}–${metricEstimate(metric.metric_id, metric.interval_high)}`;
+    const intervalCell = tableCell(interval, "numeric interval-cell");
+    if (missingInterval && noSamplingDesign) {
+      intervalCell.title = metric.uncertainty.next_action || metric.uncertainty_method;
+    }
     const decision = metric.decision_support === true ? "allowed"
       : metric.decision_support === false && ["repeated_call_rate", "tool_failure_rate"].includes(metric.metric_id)
         ? "barred" : "descriptive";
@@ -228,10 +243,10 @@ function renderMetrics(dashboard) {
                tableCell(metricLabels[metric.metric_id] || metric.metric_id),
                tableCell(String(metric.scorer_version), "numeric code-cell"),
                stateCell(metric.state),
-               tableCell(number(metric.numerator), "numeric"),
-               tableCell(number(metric.eligible), "numeric"),
+               tableCell(observedCount(metric.numerator), "numeric"),
+               tableCell(observedCount(metric.eligible), "numeric"),
                tableCell(metricEstimate(metric.metric_id, metric.value), "numeric estimate-cell"),
-               tableCell(interval, "numeric interval-cell"),
+               intervalCell,
                stateCell(decision));
     return row;
   });
@@ -242,60 +257,43 @@ function drawRatePlot(dashboard) {
   const rates = dashboard.metrics.filter((metric) =>
     metric.metric_id.endsWith("_rate") && metric.value !== null
     && metric.value !== undefined);
-  const metricIds = [...new Set(rates.map((metric) => metric.metric_id))];
-  const width = Math.max(340, Math.floor(elements.ratePlot.clientWidth || 340));
-  const left = width < 560 ? 142 : 206;
-  const right = 28;
-  const plotWidth = Math.max(160, width - left - right);
-  const top = 34;
-  const rowHeight = 42;
-  const height = top + metricIds.length * rowHeight + 30;
-  const svg = svgElement("svg", {viewBox: `0 0 ${width} ${height}`, role: "img",
-    "aria-labelledby": "rate-plot-title rate-plot-desc"});
-  const title = svgElement("title", {id: "rate-plot-title"});
-  title.textContent = "Measured rate estimates and 95% intervals";
-  const desc = svgElement("desc", {id: "rate-plot-desc"});
-  desc.textContent = rates.map((metric) =>
-    `${metric.harness} ${metricLabels[metric.metric_id] || metric.metric_id} ${percent(metric.value, 2)}`).join("; ");
-  svg.append(title, desc, svgElement("rect", {x: left, y: top - 8,
-    width: plotWidth, height: metricIds.length * rowHeight,
-    class: "rate-frame", "data-chart-frame": ""}));
-  for (const tick of [0, 0.25, 0.5, 0.75, 1]) {
-    const x = left + tick * plotWidth;
-    svg.append(svgElement("line", {x1: x, x2: x, y1: top - 8,
-      y2: top + metricIds.length * rowHeight - 8, class: "rate-grid"}));
-    const label = svgElement("text", {x, y: height - 7, class: "rate-axis",
-      "text-anchor": tick === 0 ? "start" : tick === 1 ? "end" : "middle"});
-    label.textContent = percent(tick);
-    svg.append(label);
+  if (!rates.length) {
+    elements.ratePlot.replaceChildren(textElement("p", "analysis-note",
+      "No measured rates are available; see the metric table for coverage states."));
+    return;
   }
-  metricIds.forEach((metricId, rowIndex) => {
-    const y = top + rowIndex * rowHeight + 13;
-    const label = svgElement("text", {x: left - 12, y: y + 4,
-      class: "rate-label", "text-anchor": "end"});
-    label.textContent = metricLabels[metricId] || metricId;
-    svg.append(label);
-    rates.filter((metric) => metric.metric_id === metricId).forEach((metric) => {
-      const offset = metric.harness === "claude" ? -7 : 7;
-      const cy = y + offset;
-      const x = left + Number(metric.value) * plotWidth;
-      if (metric.interval_low !== null && metric.interval_low !== undefined) {
-        svg.append(svgElement("line", {x1: left + metric.interval_low * plotWidth,
-          x2: left + metric.interval_high * plotWidth, y1: cy, y2: cy,
-          class: `rate-interval harness-${metric.harness}`}));
-      }
-      const marker = metric.harness === "claude"
-        ? svgElement("circle", {cx: x, cy, r: 4.5,
-          class: "rate-marker harness-claude"})
-        : svgElement("rect", {x: x - 4.5, y: cy - 4.5, width: 9, height: 9,
-          class: "rate-marker harness-codex"});
-      svg.append(marker);
-    });
-  });
-  const legend = svgElement("text", {x: left, y: 14, class: "rate-legend"});
-  legend.textContent = "● Claude    ■ Codex";
-  svg.append(legend);
-  elements.ratePlot.replaceChildren(svg);
+  const plot = textElement("div", "rate-rows", "");
+  plot.setAttribute("role", "img");
+  plot.setAttribute("aria-label", "Measured rates and available intervals by harness. " +
+    rates.map((metric) => `${metric.harness} ${metricLabels[metric.metric_id] || metric.metric_id} ${percent(metric.value, 2)}`).join("; "));
+  for (const metric of rates) {
+    const row = textElement("div", "rate-row", "");
+    const label = textElement("div", "rate-row-label", "");
+    label.append(textElement("div", "", metricLabels[metric.metric_id] || metric.metric_id),
+      textElement("div", "rate-source", metric.harness));
+    const track = textElement("div", "rate-track", "");
+    if (metric.interval_low !== null && metric.interval_low !== undefined
+        && metric.interval_high !== null && metric.interval_high !== undefined) {
+      const interval = textElement("span", "rate-interval", "");
+      interval.style.left = `${metric.interval_low * 100}%`;
+      interval.style.width = `${(metric.interval_high - metric.interval_low) * 100}%`;
+      track.append(interval);
+    }
+    const marker = textElement("span", "rate-marker", "");
+    marker.style.left = `${Number(metric.value) * 100}%`;
+    marker.setAttribute("data-harness", metric.harness);
+    track.append(marker);
+    row.append(label, track);
+    plot.append(row);
+  }
+  const axis = textElement("div", "rate-row rate-axis-row", "");
+  const ticks = textElement("div", "rate-ticks", "");
+  for (const tick of [0, 0.25, 0.5, 0.75, 1]) {
+    ticks.append(textElement("span", "", percent(tick)));
+  }
+  axis.append(textElement("div", "", ""), ticks);
+  plot.append(axis);
+  elements.ratePlot.replaceChildren(plot);
 }
 
 function drawCompositionChart(container, proposalId, taxonomy) {
@@ -368,7 +366,8 @@ function renderTaxonomies(dashboard) {
       body.append(row);
     });
     const binding = textElement("p", "binding-line", Object.entries(taxonomy.splits)
-      .map(([split, data]) => `${split}: protocol v${data.protocol_version}, round ${data.adaptive_round}, minimum held-out/class ${data.minimum_heldout_per_label}`)
+      .flatMap(([split, data]) => (data.bindings || [data]).map((binding) =>
+        `${split}: protocol v${binding.protocol_version}, round ${binding.adaptive_round}, minimum held-out/class ${binding.minimum_heldout_per_label}`))
       .join(" · "));
     table.append(head, body); tableWrap.append(table);
     block.append(heading, plot, tableWrap, binding);
@@ -439,15 +438,20 @@ function renderLifecycle(dashboard) {
   const p2 = dashboard.proposals.P2;
   const p3 = dashboard.proposals.P3;
   const p7 = dashboard.proposals.P7;
+  const p3Observed = [p3.population, p3.resolved, p3.unresolved].every(
+    value => Number.isInteger(value) && value >= 0)
+    && p3.population > 0 && p3.resolved + p3.unresolved === p3.population;
+  const p3Status = p3Observed
+    ? (p3.unresolved === 0 ? "passed" : "failed") : (p3.state === "controlled_pass" ? "not_observed" : p3.state);
   const rows = [
     lifecycleRow("P2", "matched terminals / starts", `${number(p2.matched_terminals)} / ${number(p2.starts)} (${percent(p2.completion_rate, 2)})`, ">= 95%", "parked", "explicit source events"),
     lifecycleRow("P2", "unmatched starts", `${number(p2.unmatched_starts)} (${percent(p2.unmatched_start_rate, 2)})`, "<= 2%", "parked", "explicit source events"),
     lifecycleRow("P2", "missed triggers / opportunities", `${p2.missed_trigger_rate} / ${p2.opportunity_rate}`, "calibrated classifier", "not_observable", "no opportunity surface"),
-    lifecycleRow("P3", "manifest resolution", `${number(p3.resolved)} / ${number(p3.population)} (${percent(p3.population ? p3.resolved / p3.population : null)})`, "100%", p3.unresolved === 0 ? "passed" : "failed", "declared coverage window"),
-    lifecycleRow("P7", "capture precision", percent(p7.precision, 2), ">= 95%", "passed", p7.coverage),
-    lifecycleRow("P7", "capture recall", percent(p7.recall, 2), ">= 95%", "passed", p7.coverage),
-    lifecycleRow("P7", "unmatched terminals", percent(p7.unmatched_terminal_rate, 2), "<= 2%", "passed", p7.coverage),
-    lifecycleRow("P7", "added normalized bytes", percent(p7.added_byte_share, 4), "<= 2%", "passed", p7.coverage),
+    lifecycleRow("P3", "manifest resolution", `${observedCount(p3.resolved)} / ${observedCount(p3.population)} (${percent(p3Observed ? p3.resolved / p3.population : null)})`, "100%", p3Status, "declared coverage window"),
+    lifecycleRow("P7", "capture precision", percent(p7.precision, 2), ">= 95%", "retired", p7.coverage),
+    lifecycleRow("P7", "capture recall", percent(p7.recall, 2), ">= 95%", "retired", p7.coverage),
+    lifecycleRow("P7", "unmatched terminals", percent(p7.unmatched_terminal_rate, 2), "<= 2%", "retired", p7.coverage),
+    lifecycleRow("P7", "added normalized bytes", percent(p7.added_byte_share, 4), "<= 2%", "retired", p7.coverage),
   ];
   elements.lifecycleTable.replaceChildren(...rows);
 }
@@ -455,13 +459,13 @@ function renderLifecycle(dashboard) {
 function proposalBasis(id, dashboard) {
   const p = dashboard.proposals[id];
   const bases = {
-    P1: `${dashboard.taxonomies.P1.labeled} labels; scorer barred from decisions.`,
+    P1: `${observedCount(dashboard.taxonomies.P1.human_labeled)} human labels; ${number(dashboard.taxonomies.P1.labeled)} assessments; scorer barred from decisions.`,
     P2: `${p.matched_terminals}/${p.starts} starts matched; opportunities remain not observable.`,
-    P3: `${p.resolved}/${p.population} controlled sessions resolved.`,
-    P4: `${dashboard.taxonomies.P4.labeled} labels; taxonomy barred from decisions.`,
+    P3: `${observedCount(p.resolved)}/${observedCount(p.population)} controlled sessions resolved.`,
+    P4: `${observedCount(dashboard.taxonomies.P4.human_labeled)} human labels; ${number(dashboard.taxonomies.P4.labeled)} assessments; taxonomy barred from decisions.`,
     P5: "Comparison fields are enforced; the 30-task experiment was not run.",
     P6: "Suppression preserved unchanged.",
-    P7: `Owned wrappers only; harness-wide coverage is ${p.harness_wide_coverage}.`,
+    P7: `Retired. Historical owned wrappers only; harness-wide coverage is ${p.harness_wide_coverage}.`,
     P8: "Previously implemented behavior preserved.",
   };
   return bases[id];
@@ -502,11 +506,6 @@ function renderDashboard(dashboard) {
   renderLifecycle(dashboard);
   renderProposals(dashboard);
   renderChanges(dashboard.changes || []);
-  if (rateObserver) rateObserver.disconnect();
-  if (window.ResizeObserver) {
-    rateObserver = new ResizeObserver(() => drawRatePlot(dashboard));
-    rateObserver.observe(elements.ratePlot);
-  }
 }
 
 function setStatus(message, error = false) {
@@ -633,8 +632,21 @@ function render() {
   formatEvidence(elements.contextText, item.context_blocks,
                  "No preceding assistant context was captured.");
   formatEvidence(elements.userText, item.user_turn_blocks, "No user turn was captured.");
-  elements.notes.value = item.notes;
-  notesDirty = false;
+  const draft = conflictDraft && conflictDraft.caseId === item.case_id ? conflictDraft : null;
+  elements.notes.value = noteDraft && noteDraft.caseId === item.case_id
+    ? noteDraft.notes : draft ? draft.notes : item.notes;
+  notesDirty = elements.notes.value !== item.notes;
+  elements.conflictNotice.hidden = !draft;
+  if (draft) {
+    const savedLabel = state.protocol.label_prompts[item.human_label]?.action
+      || assessmentLabels[item.human_label] || item.human_label || "None";
+    elements.conflictSavedJudgment.textContent = draft.latestAvailable
+      ? `Saved label: ${savedLabel}. Saved assessment: ${item.assessment || "None"}.`
+      : "The latest saved judgment could not be loaded. Reload before saving.";
+    elements.conflictSavedNote.textContent = draft.latestAvailable
+      ? item.notes || "No saved note."
+      : "The latest saved note is unavailable; your draft is preserved above.";
+  }
   elements.previous.disabled = currentIndex === 0;
   elements.next.disabled = currentIndex === total - 1;
   elements.clear.disabled = !(item.human_label || item.assessment);
@@ -663,8 +675,10 @@ function render() {
     button.classList.toggle("selected", label === item.assessment);
     button.setAttribute("aria-pressed", String(label === item.assessment));
   });
-  setStatus(item.assessment ? `Assessment saved as ${item.assessment}`
-    : item.human_label ? `Saved as ${item.human_label}` : "Not yet judged");
+  setStatus(draft ? "Changed elsewhere. Your draft is unsaved; review the saved judgment before choosing again."
+    : notesDirty ? "Your note is unsaved; choose a judgment or leave this case to save it."
+    : item.assessment ? `Assessment saved as ${item.assessment}`
+      : item.human_label ? `Saved as ${item.human_label}` : "Not yet judged", Boolean(draft));
 }
 
 function selectFirstOpen() {
@@ -673,17 +687,26 @@ function selectFirstOpen() {
   currentIndex = open === -1 ? Math.max(0, state.cases.length - 1) : open;
 }
 
-async function load() {
+async function load(options = {}) {
+  const pendingDraft = options.preserveDraft || conflictDraft;
   try {
     const response = await fetch("/api/state", { cache: "no-store" });
     if (!response.ok) throw new Error(`Server returned ${response.status}`);
-    state = await response.json();
+    const nextState = await response.json();
+    const draftIndex = pendingDraft
+      ? nextState.cases.findIndex((item) => item.case_id === pendingDraft.caseId) : -1;
+    if (pendingDraft && draftIndex < 0) {
+      throw new Error("The original case is no longer available. Your unsaved note is preserved; copy it before leaving.");
+    }
+    state = nextState;
+    conflictDraft = pendingDraft ? { ...pendingDraft, latestAvailable: true } : null;
     const presentation = state.protocol.presentation;
     elements.contextLabel.textContent = presentation.context_label;
     elements.focalLabel.textContent = presentation.focal_label;
     elements.reviewQuestion.textContent = presentation.review_question;
     elements.taskInstruction.textContent = state.protocol.human_instruction;
     selectFirstOpen();
+    if (pendingDraft) currentIndex = draftIndex;
     elements.tieBreaks.replaceChildren(...state.protocol.tie_breaks.map((rule) => {
       const item = document.createElement("li");
       item.textContent = rule;
@@ -697,42 +720,64 @@ async function load() {
     const completedCalibration = hasDashboard
       && state.dashboard.calibration.total > 0
       && state.dashboard.calibration.completed === state.dashboard.calibration.total;
-    showView(completedCalibration ? "evidence" : "review");
+    showView(completedCalibration && !pendingDraft ? "evidence" : "review");
   } catch (error) {
-    elements.reviewView.hidden = true;
+    elements.reviewView.hidden = !(pendingDraft && state);
     elements.evidenceView.hidden = true;
     elements.errorPanel.hidden = false;
     elements.errorMessage.textContent = error.message;
+    if (pendingDraft && state) {
+      conflictDraft = { ...pendingDraft, latestAvailable: false };
+      render();
+      setStatus("Could not refresh the changed case. Your note is still unsaved; reload before saving.", true);
+    }
   }
 }
 
 async function save(label, advance = true, assessment = null) {
   if (saving) return false;
+  if (conflictDraft && !conflictDraft.latestAvailable) {
+    setStatus("Reload the changed case before saving. Your unsaved note is preserved.", true);
+    return false;
+  }
   saving = true;
   setStatus("Saving...");
   const caseId = currentCase().case_id;
+  const submittedNotes = elements.notes.value;
+  noteDraft = { caseId, notes: submittedNotes };
   try {
     const response = await fetch("/api/labels", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Retro-CSRF": state.csrf_token },
       body: JSON.stringify({
-        case_id: caseId, label, assessment, notes: elements.notes.value,
+        case_id: caseId, label, assessment, notes: submittedNotes,
         expected_revision: state.revision,
       }),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || `Save failed (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(payload.message || `Save failed (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
     state = payload;
+    conflictDraft = null;
+    const editedWhileSaving = noteDraft && noteDraft.caseId === caseId
+      && noteDraft.notes !== submittedNotes;
+    if (!editedWhileSaving) noteDraft = null;
     const savedIndex = state.cases.findIndex((item) => item.case_id === caseId);
-    if (advance && (label || assessment) && savedIndex < state.cases.length - 1) {
+    if (!editedWhileSaving && advance && (label || assessment) && savedIndex < state.cases.length - 1) {
       currentIndex = savedIndex + 1;
     }
     else currentIndex = savedIndex;
     render();
-    return true;
+    return !editedWhileSaving;
   } catch (error) {
     setStatus(error.message, true);
-    if (String(error.message).includes("changed")) await load();
+    if (error.status === 409) {
+      conflictDraft = { caseId, notes: noteDraft.notes, latestAvailable: false };
+      await load({ preserveDraft: conflictDraft });
+    }
     return false;
   } finally {
     saving = false;
@@ -743,6 +788,10 @@ async function saveNotesBeforeMove(delta) {
   if (saving) return;
   const destination = Math.max(0, Math.min(state.cases.length - 1, currentIndex + delta));
   if (destination === currentIndex) return;
+  if (conflictDraft) {
+    setStatus("Your draft conflicts with a saved edit. Review it and choose a label or assessment before moving on.", true);
+    return;
+  }
   if (notesDirty) {
     const saved = await save(currentCase().human_label, false);
     if (!saved) return;
@@ -762,7 +811,13 @@ elements.clear.addEventListener("click", () => {
   save("", false, item.review_kind ? "" : item.proposed_label ? "" : null);
 });
 elements.notes.addEventListener("input", () => {
+  noteDraft = { caseId: currentCase().case_id, notes: elements.notes.value };
   notesDirty = elements.notes.value !== currentCase().notes;
+  if (conflictDraft) {
+    conflictDraft.notes = elements.notes.value;
+    setStatus("Your draft is unsaved. Review the saved judgment before choosing again.", true);
+    return;
+  }
   setStatus(notesDirty ? "Note will save when you leave this case"
     : currentCase().human_label ? `Saved as ${currentCase().human_label}` : "Not yet judged");
 });
@@ -783,17 +838,22 @@ function handleKeyboard(event /** @type {KeyboardEvent} */) {
   if (!state || elements.reviewView.hidden
       || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.target.matches("textarea, input")) return;
-  const labels = state.protocol.decision_order;
+  if (event.repeat && /^[1-9]$/.test(event.key)) {
+    event.preventDefault();
+    return;
+  }
   const index = Number(event.key) - 1;
   if (currentCase().review_kind && /^[1-4]$/.test(event.key)) {
     event.preventDefault();
     const assessment = ["accurate", "partly_accurate", "wrong",
                         "not_enough_context"][index];
     save(assessment, true, assessment);
-  } else if (!currentCase().proposed_label
-      && /^[1-9]$/.test(event.key) && index < labels.length) {
-    event.preventDefault();
-    save(labels[index]);
+  } else if (/^[1-9]$/.test(event.key) && !elements.labelStack.hidden) {
+    const choice = elements.labelStack.querySelectorAll("button[data-label]")[index];
+    if (choice && !choice.disabled) {
+      event.preventDefault();
+      choice.click();
+    }
   } else if (event.key === "ArrowLeft") {
     event.preventDefault(); saveNotesBeforeMove(-1);
   } else if (event.key === "ArrowRight") {

@@ -349,85 +349,7 @@ def validate_package(plugin_root):
 
     _validate_adequacy_review(plugin_root, errors)
     _validate_references(plugin_root, errors)
-    for contract in HOOK_CONTRACTS:
-        _validate_hook_contract(plugin_root, contract, errors)
     return errors
-
-
-# One entry per hook catalog a harness reads. Claude Code and Codex share
-# hooks/hooks.json; a harness with its own catalog adds its own entry.
-HOOK_CONTRACTS = (
-    {
-        "label": "Claude Code and Codex hook manifest",
-        "path": ("hooks", "hooks.json"),
-        "events": frozenset({"SessionStart", "UserPromptSubmit"}),
-    },
-    {
-        "label": "Antigravity hook manifest",
-        "path": ("hooks.json",),
-        "events": frozenset({"PreInvocation"}),
-        "shape": "antigravity",
-    },
-)
-# Antigravity reads <plugin-root>/hooks.json: hook name -> event -> a flat
-# handler list, run with the plugin root as the working directory.
-AGY_HOOK_NAME = "p-format"
-AGY_HOOK_COMMAND = "sh bin/agy-format-hook"
-AGY_HOOKS_LOADED_RE = re.compile(r"^\s*\S*\s*hooks\s*:\s*1 processed\s*$", re.M)
-HOOK_ROOT_TOKEN_RE = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([^\"'\s]+)")
-
-
-def _validate_hook_contract(plugin_root, contract, errors):
-    label = contract["label"]
-    manifest = _read_json(plugin_root.joinpath(*contract["path"]), label, errors)
-    if manifest is None:
-        return
-    if contract.get("shape") == "antigravity":
-        _validate_antigravity_hooks(manifest, contract, errors)
-        return
-    events = manifest.get("hooks")
-    if not isinstance(events, dict):
-        errors.append(label + " must map hook events to handler lists")
-        return
-    if set(events) != set(contract["events"]):
-        errors.append(
-            "%s declares %s; expected %s"
-            % (label, ", ".join(sorted(events)), ", ".join(sorted(contract["events"])))
-        )
-    for event, groups in sorted(events.items()):
-        commands = []
-        if isinstance(groups, list):
-            for group in groups:
-                handlers = group.get("hooks") if isinstance(group, dict) else None
-                for handler in handlers if isinstance(handlers, list) else []:
-                    if isinstance(handler, dict) and _non_empty(handler.get("command")):
-                        commands.append(handler["command"])
-        if not commands:
-            errors.append("%s %s has no command handler" % (label, event))
-        for command in commands:
-            for relative in HOOK_ROOT_TOKEN_RE.findall(command):
-                if not (plugin_root / relative).exists():
-                    errors.append(
-                        "%s %s references missing plugin file %s" % (label, event, relative)
-                    )
-
-
-def _validate_antigravity_hooks(manifest, contract, errors):
-    """One named hook whose single flat handler runs the format entry."""
-    spec = manifest.get(AGY_HOOK_NAME) if isinstance(manifest, dict) else None
-    handlers = spec.get("PreInvocation") if isinstance(spec, dict) else None
-    handler = handlers[0] if isinstance(handlers, list) and len(handlers) == 1 else None
-    timeout = handler.get("timeout", 30) if isinstance(handler, dict) else None
-    if (
-        set(manifest) != {AGY_HOOK_NAME}
-        or set(spec) != set(contract["events"])
-        or not isinstance(handler, dict)
-        or handler.get("type", "command") != "command"
-        or handler.get("command") != AGY_HOOK_COMMAND
-        or not isinstance(timeout, int) or isinstance(timeout, bool)
-        or not 0 < timeout <= 30
-    ):
-        errors.append(contract["label"] + " does not wire the format gate")
 
 
 def validate_repository(repo_root=REPO_ROOT, plugin_root=PLUGIN_ROOT):
@@ -613,7 +535,6 @@ def smoke_relocated_copy(plugin_root):
         })
         commands = (
             [sys.executable, "-B", str(copy_root / "bin" / "skill-profile-ctl"), "validate"],
-            [sys.executable, "-B", str(copy_root / "bin" / "format-e2e")],
         )
         for command in commands:
             result = subprocess.run(
@@ -662,8 +583,6 @@ def antigravity_validate(plugin_root):
         )
     if result.returncode != 0:
         return ["agy plugin validate rejected the package"]
-    if not AGY_HOOKS_LOADED_RE.search(re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)):
-        return ["agy plugin validate did not load hooks.json"]
     return []
 
 

@@ -3,9 +3,9 @@
   "status": "provisional",
   "metrics": [
     {
-      "id": "skill_invocation_rate", "version": 2, "domain": "skills", "unit": "rate", "direction": "contextual",
+      "id": "skill_invocation_rate", "version": 3, "domain": "skills", "unit": "rate", "direction": "contextual",
       "numerator": "traces with an explicit normalized skill start", "denominator": "eligible direct-user traces", "eligible_population": "traces from source versions that emit explicit skill attribution boundaries",
-      "source_capabilities": ["skill_lifecycle"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "skill-lifecycle-v2",
+      "source_capabilities": ["skill_lifecycle"], "version_floor": "adapter declared", "minimum_n": 20, "uncertainty_method": "not estimated: sampling design not established", "validation_dataset": "skill-lifecycle-v2",
       "known_biases": ["invocation does not prove the skill helped", "outcomes remain not_observable without an explicit terminal field"], "retirement_rule": "replace when every adapter emits invocation outcomes"
     },
     {
@@ -59,26 +59,26 @@
       "known_biases": ["a delivered result may still be low quality"], "retirement_rule": "replace when workflow engine emits contract verdicts"
     },
     {
-      "id": "tool_failure_rate", "version": 3, "domain": "agent_orchestration", "unit": "rate", "direction": "lower", "numerator": "tool results with authoritative failure status, stratified by versioned failure kind and reason code", "denominator": "tool results with authoritative status", "eligible_population": "tool calls with matched observable results",
-      "source_capabilities": ["tool_trajectory"], "version_floor": "adapter declared", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "tool-failure-v1",
+      "id": "tool_failure_rate", "version": 5, "domain": "agent_orchestration", "unit": "rate", "direction": "lower", "numerator": "tool results with authoritative failure status, stratified by versioned failure kind and reason code", "denominator": "tool results with authoritative status", "eligible_population": "tool calls with matched observable results",
+      "source_capabilities": ["tool_trajectory"], "version_floor": "adapter declared", "minimum_n": 30, "uncertainty_method": "not estimated: sampling design not established", "validation_dataset": "tool-failure-v1",
       "known_biases": ["expected probes remain unknown until human validation", "tool-specific task mix confounds rates"], "retirement_rule": "replace when source-native structured failure kinds meet held-out targets"
     },
     {
       "id": "input_tokens_per_source_completion",
-      "version": 1,
+      "version": 3,
       "domain": "context_cost",
       "unit": "tokens",
       "direction": "lower when quality holds",
       "numerator": "input tokens of source-completed traces with observable usage",
       "denominator": "source-completed traces with observable usage",
-      "eligible_population": "included source-completed traces with positive input usage",
+      "eligible_population": "included source-completed traces with complete observed nonnegative input usage; zero requires explicit coverage, while legacy positive usage without a coverage field remains eligible",
       "source_capabilities": [
         "usage",
         "source_completion"
       ],
       "version_floor": "adapter declared",
       "minimum_n": 20,
-      "uncertainty_method": "BCa bootstrap 95% interval",
+      "uncertainty_method": "not estimated: sampling design not established",
       "validation_dataset": "source-completion-cost-v1",
       "known_biases": [
         "source completion does not verify delivery",
@@ -115,8 +115,8 @@
       "known_biases": ["cache economics depend on current provider prices and TTL"], "retirement_rule": "replace if provider accounting changes"
     },
     {
-      "id": "repeated_call_rate", "version": 3, "domain": "context_cost", "unit": "rate", "direction": "lower after legitimate repeats removed", "numerator": "byte-identical tool call signatures repeated within a trace, stratified with explicit provisional reason codes", "denominator": "eligible tool calls; each repeat stratum separately uses all repeat candidates", "eligible_population": "traces with at least two observable tool calls",
-      "source_capabilities": ["tool_trajectory"], "version_floor": "none", "minimum_n": 30, "uncertainty_method": "Wilson 95% interval", "validation_dataset": "duplicate-work-v2",
+      "id": "repeated_call_rate", "version": 7, "domain": "context_cost", "unit": "rate", "direction": "lower after legitimate repeats removed", "numerator": "nonempty byte-identical tool call signatures repeated within a trace, stratified with explicit provisional reason codes", "denominator": "calls with observable signatures in eligible traces; each repeat stratum separately uses all repeat candidates", "eligible_population": "traces with at least two tool calls having observable signatures",
+      "source_capabilities": ["tool_trajectory"], "version_floor": "none", "minimum_n": 30, "uncertainty_method": "not estimated: sampling design not established", "validation_dataset": "duplicate-work-v2",
       "known_biases": ["candidate waste is not wasteful without held-out validation", "source-specific tool kinds can hide polling families"], "retirement_rule": "replace only when a later scorer improves held-out precision or recall"
     },
     {
@@ -156,7 +156,7 @@
     },
     {
       "id": "source_completion_rate",
-      "version": 1,
+      "version": 2,
       "domain": "outcomes",
       "unit": "rate",
       "direction": "higher",
@@ -168,7 +168,7 @@
       ],
       "version_floor": "adapter declared",
       "minimum_n": 20,
-      "uncertainty_method": "Wilson 95% interval",
+      "uncertainty_method": "not estimated: sampling design not established",
       "validation_dataset": "source-completion-v1",
       "known_biases": [
         "a source-completed reply can leave the requested task unfinished"

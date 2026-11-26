@@ -2,13 +2,13 @@
   "schema_version": 1,
   "status": "provisional",
   "repeated_call": {
-    "version": 4,
+    "version": 7,
     "classes": ["polling", "post_state_change", "candidate_waste"],
-    "polling_tools": ["wait", "wait_agent", "write_stdin", "taskoutput"],
-    "mutation_tools": ["edit", "write", "notebookedit", "apply_patch", "git_commit"]
+    "polling_tools": ["wait", "wait_agent", "write_stdin", "taskoutput", "sleep"],
+    "mutation_tools": ["edit", "write", "notebookedit", "apply_patch", "git_commit", "replace_file_content", "write_to_file", "edit_file", "write_file"]
   },
   "tool_failure": {
-    "version": 3,
+    "version": 4,
     "kinds": [
       "expected_probe",
       "control_refusal",

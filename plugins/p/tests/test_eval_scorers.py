@@ -32,6 +32,97 @@ def record(trace, sequence, kind, **values):
 
 
 class ScorerRegistryTests(unittest.TestCase):
+    def test_operational_rates_do_not_infer_sampling_precision_from_record_count(self):
+        from retro_eval.deterministic_scorers import ToolFailureScorer
+        for repetitions in (1, 100):
+            with self.subTest(repetitions=repetitions):
+                rows = [record("cluster-%d" % cluster, index, "retro.tool_result",
+                               status="error" if cluster < 5 else "ok")
+                        for cluster in range(10) for index in range(repetitions)]
+                result = ToolFailureScorer("tool_failure_rate", 1).score(rows)
+                self.assertEqual(5 * repetitions, result.numerator)
+                self.assertEqual(10 * repetitions, result.eligible_population)
+                self.assertEqual(.5, result.value)
+                self.assertIsNone(result.interval_low)
+                self.assertIsNone(result.interval_high)
+                self.assertEqual("not_estimated", result.details["uncertainty"]["status"])
+                self.assertEqual("sampling_design_not_established",
+                                 result.details["uncertainty"]["reason"])
+
+    def test_observed_cost_does_not_require_or_execute_an_interval_backend(self):
+        class ForbiddenBackend:
+            def interval(self, *args):
+                raise AssertionError("observations do not establish a sampling design")
+
+        rows = [record(str(i), 0, SpanKind.TRACE, status="complete",
+                       input_tokens=10 * (i + 1)) for i in range(20)]
+        for backend in (ForbiddenBackend(), {"module": "absent_backend", "class": "Missing"}):
+            with self.subTest(backend=type(backend).__name__):
+                result = InputTokensPerSourceCompletionScorer(
+                    "cost", 20, backend, .95, 0).score(rows)
+                self.assertFalse(result.abstained)
+                self.assertEqual(105, result.value)
+                self.assertEqual(2100, result.numerator)
+                self.assertIsNone(result.interval_low)
+                self.assertIsNone(result.interval_high)
+                self.assertEqual("sampling_design_not_established",
+                                 result.details["uncertainty"]["reason"])
+
+    def test_report_distinguishes_configured_and_catalogue_minimum(self):
+        from retro_eval.scorers import ScorerRegistration
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            JsonlTraceStore(root / "traces.jsonl").write([
+                record("a", 0, SpanKind.TRACE, status="complete")])
+            (root / "extraction.json").write_text(json.dumps({
+                "schema_version": 1, "sources": {"fixture": {
+                    "source_completion": {"state": "available"}}}}))
+            for minimum in (1, 3, 20):
+                registry = ScorerRegistry([ScorerRegistration(
+                    "source_completion_rate", "retro_eval.deterministic_scorers",
+                    "SourceCompletionScorer", {"minimum_n": minimum})])
+                report = run_deterministic_report(root, registry=registry)
+                score = report["sources"]["fixture"][0]
+                coverage = next(row for row in report["coverage"]["fixture"]
+                                if row["metric_id"] == "source_completion_rate")
+                self.assertEqual(20, coverage["minimum_n"])
+                self.assertEqual(minimum, coverage["configured_minimum_n"])
+                self.assertEqual(minimum, score["configured_minimum_n"])
+                self.assertEqual(minimum > 1, score["abstained"])
+                missing = registry.score([], capabilities={})[0]
+                self.assertEqual(minimum, missing.configured_minimum_n)
+                self.assertEqual("not_observable", missing.label)
+                unscored = next(row for row in report["coverage"]["fixture"]
+                                if row["metric_id"] == "tool_failure_rate")
+                self.assertIsNone(unscored["configured_minimum_n"])
+
+    def test_abstention_preserves_observations_without_estimating(self):
+        from retro_eval.deterministic_scorers import SourceCompletionScorer
+        from retro_eval.scorers import default_scorers
+        rows = [record("a", 0, SpanKind.TRACE, status="complete",
+                       input_tokens=23, attributes={
+                           "usage_complete": {"input_tokens": True}})]
+        small_rate = SourceCompletionScorer("completion", 2).score(rows)
+        small_cost = InputTokensPerSourceCompletionScorer(
+            "cost", 2, "stdlib", .95, 0).score(rows)
+        for result, count in ((small_rate, 1), (small_cost, 23)):
+            with self.subTest(label=result.label, scorer=result.scorer_id):
+                self.assertTrue(result.abstained)
+                self.assertIsNone(result.value)
+                self.assertIsNone(result.interval_low)
+                self.assertIsNone(result.interval_high)
+                self.assertEqual(count, result.numerator)
+                self.assertEqual(count, result.to_dict()["numerator"])
+                self.assertEqual(1, result.eligible_population)
+                self.assertEqual(2, result.configured_minimum_n)
+        observed_zero = SourceCompletionScorer("completion", 2).score([
+            record("a", 0, SpanKind.TRACE, status="failed")])
+        self.assertEqual(0, observed_zero.numerator)
+        unknown = next(result for result in default_scorers().score(
+            rows, capabilities={}) if result.scorer_id == "source_completion_rate")
+        self.assertIsNone(unknown.numerator)
+        self.assertIsNone(VerifiedOutcomeScorer("verified", 1).score(rows).numerator)
+
     def test_source_status_and_untrusted_attributes_never_verify_delivery(self):
         for attributes in ({}, {"done_contract": "create a file"},
                            {"done_contract": "create a file", "verified": True}):
@@ -152,8 +243,8 @@ class ScorerRegistryTests(unittest.TestCase):
                          by_id["tool_failure"].details["by_tool"]["Read"])
         self.assertEqual(2, by_id["repeat"].eligible_population)
         self.assertEqual(1, by_id["repeat"].numerator)
-        self.assertLess(by_id["repeat"].interval_low, .5)
-        self.assertGreater(by_id["repeat"].interval_high, .5)
+        self.assertIsNone(by_id["repeat"].interval_low)
+        self.assertIsNone(by_id["repeat"].interval_high)
         self.assertEqual(1, len(by_id["repeat"].evidence_refs))
         self.assertEqual(1, by_id["repeat"].details["duplicate_by_tool"][""])
 
@@ -187,6 +278,29 @@ class ScorerRegistryTests(unittest.TestCase):
         self.assertTrue(result.abstained)
         self.assertEqual("insufficient_evidence", result.label)
 
+    def test_report_rejects_mixed_adapter_versions_before_scoring(self):
+        class UnexpectedScoring:
+            def score(self, *args, **kwargs):
+                raise AssertionError("mixed adapter provenance must be checked before scoring")
+
+        for versions in ((1, 2), (2, 1)):
+            for complete_manifest in (False, True):
+                with self.subTest(versions=versions, complete=complete_manifest), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    JsonlTraceStore(root / "traces.jsonl").write([
+                        record(str(i), i, SpanKind.TRACE, adapter_version=version,
+                               started_at=datetime(2026, 1, i + 1, tzinfo=timezone.utc))
+                        for i, version in enumerate(versions)])
+                    (root / "extraction.json").write_text(json.dumps({
+                        "schema_version": 1, "included_traces": 2,
+                        "sources": {"fixture": {"source_set_sha256": "a" * 64}},
+                    }))
+                    if complete_manifest:
+                        (root / "id-salt.bin").write_bytes(b"authored-seed")
+                    with self.assertRaisesRegex(ValueError, "mixed adapter versions"):
+                        run_deterministic_report(root, registry=UnexpectedScoring(),
+                                                 created_commit="a" * 40)
+
     def test_report_groups_capabilities_by_source_and_contains_manifest(self):
         profile = {
             "schema_version": 1,
@@ -201,7 +315,7 @@ class ScorerRegistryTests(unittest.TestCase):
             JsonlTraceStore(root / "traces.jsonl").write([
                 record("a", 0, SpanKind.TRACE, source="one", status="complete",
                        started_at=datetime(2026, 8, 1, tzinfo=timezone.utc)),
-                record("b", 0, SpanKind.TRACE, source="two", status="open",
+                record("b", 0, SpanKind.TRACE, source="two", status="open", adapter_version=2,
                        started_at=datetime(2026, 8, 2, tzinfo=timezone.utc)),
             ])
             (root / "extraction.json").write_text(json.dumps({
@@ -230,6 +344,8 @@ class ScorerRegistryTests(unittest.TestCase):
         self.assertEqual(["empty", "one", "two"], report["source_selection"]["requested_sources"])
         self.assertEqual("not_observable", report["sources"]["two"][0]["label"])
         self.assertEqual(2, report["manifest"]["spans"])
+        self.assertEqual({"one": 1, "two": 2}, report["manifest"]["adapter_versions"])
+        self.assertEqual({"one": 1, "two": 2}, report["dataset_manifest"]["adapter_versions"])
         self.assertIn("trace_sha256", report["manifest"])
         self.assertNotIn(str(root), json.dumps(report))
 
@@ -254,7 +370,7 @@ class ScorerRegistryTests(unittest.TestCase):
         self.assertEqual(
             ["empty", "one", "two"], manifest["split_policy"]["fingerprint_source_order"])
 
-    def test_cost_scorer_uses_injected_uncertainty_backend(self):
+    def test_cost_scorer_preserves_mean_and_limits_evidence_without_inference(self):
         class OracleBackend:
             name = "oracle"
 
@@ -272,9 +388,36 @@ class ScorerRegistryTests(unittest.TestCase):
             record("c", 0, SpanKind.TRACE, status="open", input_tokens=100),
         ])
         self.assertEqual(15.0, result.value)
-        self.assertEqual((10.0, 20.0), (result.interval_low, result.interval_high))
-        self.assertEqual((10, 20), backend.values)
+        self.assertIsNone(result.interval_low)
+        self.assertIsNone(result.interval_high)
+        self.assertFalse(hasattr(backend, "values"))
+        self.assertEqual(1, len(result.evidence_refs))
         self.assertEqual(2, result.eligible_population)
+
+    def test_cost_scorer_distinguishes_observed_zero_from_unknown_zero(self):
+        class OracleBackend:
+            name = "authored"
+
+            def interval(self, values, statistic, confidence, seed):
+                self.values = tuple(values)
+                return (min(values), max(values))
+
+        backend = OracleBackend()
+        result = InputTokensPerSourceCompletionScorer(
+            "cost", 2, backend, .95, 0).score([
+                record("zero", 0, SpanKind.TRACE, status="complete", input_tokens=0,
+                       attributes={"usage_complete": {"input_tokens": True}}),
+                record("ten", 0, SpanKind.TRACE, status="complete", input_tokens=10),
+                record("unknown", 0, SpanKind.TRACE, status="complete", input_tokens=0),
+                record("partial", 0, SpanKind.TRACE, status="complete", input_tokens=9,
+                       attributes={"usage_complete": {"input_tokens": False}}),
+            ])
+        self.assertFalse(result.abstained)
+        self.assertEqual(result.value, 5)
+        self.assertEqual(result.eligible_population, 2)
+        self.assertEqual(result.population, 4)
+        self.assertEqual(result.numerator, 10)
+        self.assertFalse(hasattr(backend, "values"))
 
 
 if __name__ == "__main__":

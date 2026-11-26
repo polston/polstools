@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -80,8 +81,22 @@ class Proposal:
         if self.status not in {"proposed", "accepted", "implemented", "rejected",
                                "superseded"}:
             raise ValueError("invalid proposal status")
-        if self.session_count < 0 or self.independent_evidence_count < 0:
-            raise ValueError("proposal evidence counts cannot be negative")
+        for name in ("population", "session_count", "independent_evidence_count"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError("proposal %s must be a nonnegative integer" % name)
+        for name in ("confidence", "observed_rate", "avoidable_cost"):
+            value = getattr(self, name)
+            if name == "observed_rate" and value is None:
+                continue
+            try:
+                finite = type(value) in (int, float) and math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if not finite or value < 0:
+                raise ValueError("proposal %s must be a finite nonnegative number" % name)
+            if name != "avoidable_cost" and value > 1:
+                raise ValueError("proposal %s must be between zero and one" % name)
         if self.evidence_unit == "session":
             if (self.independent_evidence_count
                     and self.independent_evidence_count != self.session_count):

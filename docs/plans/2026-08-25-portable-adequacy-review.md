@@ -1,5 +1,8 @@
 # Portable adequacy review
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 Date: 2026-08-25. Status: candidate committed and validated on the isolated
 task branch; local integration awaits explicit approval and publication has not occurred.
 

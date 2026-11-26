@@ -62,9 +62,22 @@ def _coverage(catalogue, results, capabilities):
             "required_capabilities": list(metric.source_capabilities),
             "missing_capabilities": missing,
             "minimum_n": metric.minimum_n,
+            "configured_minimum_n": (result.configured_minimum_n
+                                     if result is not None else None),
             "validation_dataset": metric.validation_dataset,
         })
     return rows
+
+
+def _adapter_versions(records):
+    versions = {}
+    for record in records:
+        previous = versions.setdefault(record.source, record.adapter_version)
+        if previous != record.adapter_version:
+            raise ValueError(
+                "mixed adapter versions within one source; re-extract consistently "
+                "or report separate snapshots")
+    return dict(sorted(versions.items()))
 
 
 def _dataset_manifest(work_dir, records, extraction, results_by_source,
@@ -101,8 +114,7 @@ def _dataset_manifest(work_dir, records, extraction, results_by_source,
     manifest = DatasetManifest(
         dataset_id=dataset_id,
         schema_versions=tuple(sorted({record.schema_version for record in records})),
-        adapter_versions=dict(sorted({record.source: record.adapter_version
-                                      for record in records}.items())),
+        adapter_versions=_adapter_versions(records),
         start=start,
         end=end,
         seed=seed_fingerprint,
@@ -140,7 +152,8 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
                              ) -> dict[str, object]:
     trace_path = work_dir / "traces.jsonl"
     extraction_path = work_dir / "extraction.json"
-    records = JsonlTraceStore(trace_path).read()
+    records, trace_sha256 = JsonlTraceStore(trace_path).read_with_digest()
+    adapter_versions = _adapter_versions(records)
     try:
         extraction = json.loads(extraction_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -198,12 +211,11 @@ def run_deterministic_report(work_dir: Path, *, registry=None,
             "snapshot_end": max(timestamps).isoformat() if timestamps else None,
         }
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "manifest": {
-            "trace_sha256": _sha256(trace_path),
+            "trace_sha256": trace_sha256,
             "trace_schema_versions": sorted({record.schema_version for record in records}),
-            "adapter_versions": dict(sorted({record.source: record.adapter_version
-                                             for record in records}.items())),
+            "adapter_versions": adapter_versions,
             "spans": len(records),
             "traces": len({record.trace_id for record in records}),
         },

@@ -42,16 +42,20 @@ class MetricCatalogueTests(unittest.TestCase):
         raw = json.loads((RUBRICS / "metrics.json").read_text(encoding="utf-8"))
         self.assertEqual(raw["schema_version"], 1)
         versions = {item["id"]: item["version"] for item in raw["metrics"]}
-        self.assertEqual(3, versions["repeated_call_rate"])
-        self.assertEqual(3, versions["tool_failure_rate"])
-        self.assertEqual(2, versions["skill_invocation_rate"])
+        self.assertEqual(7, versions["repeated_call_rate"])
+        self.assertEqual(5, versions["tool_failure_rate"])
+        self.assertEqual(3, versions["skill_invocation_rate"])
+        self.assertEqual(2, versions["source_completion_rate"])
         self.assertEqual(2, versions["verified_outcome_rate"])
         self.assertEqual(2, versions["input_tokens_per_verified_outcome"])
+        self.assertEqual(3, versions["input_tokens_per_source_completion"])
         self.assertTrue(all(version == 1 for metric_id, version in versions.items()
                             if metric_id not in {
                                 "repeated_call_rate", "tool_failure_rate",
                                 "skill_invocation_rate", "verified_outcome_rate",
-                                "input_tokens_per_verified_outcome"}))
+                                "source_completion_rate",
+                                "input_tokens_per_verified_outcome",
+                                "input_tokens_per_source_completion"}))
 
     def test_catalogue_and_definition_extensions_survive_loading(self):
         payload = json.loads((RUBRICS / "metrics.json").read_text(encoding="utf-8"))

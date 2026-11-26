@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 from pathlib import Path
 
 from .cli import command
-from .annotation import _load_packet_manifest
+from .annotation import _load_packet
 from .catalog import load_rubric_catalogue
-from .taxonomy_packets import (AdaptiveSamplingPlan, assess_label_support,
+from .taxonomy_packets import (assess_packet_support, assess_packet_criteria,
                                write_taxonomy_review_packets)
 from .private_evidence import collect_private_tool_evidence
 
@@ -34,6 +33,10 @@ def main(argv=None):
     assess = commands.add_parser("assess")
     assess.add_argument("--source", type=Path, required=True)
     assess.add_argument("--manifest", type=Path, required=True)
+    assess.add_argument("--criteria", action="store_true",
+                        help="assess frozen proposals against labels without authorizing promotion")
+    assess.add_argument("--prior-packet", type=Path, nargs=2, action="append", default=[],
+                        metavar=("CSV", "MANIFEST"))
     args = parser.parse_args(argv)
 
     if args.command == "sample":
@@ -87,23 +90,20 @@ def main(argv=None):
         rubric = next(item for item in catalogue.rubrics
                       if item.id == raw_manifest["rubric_id"]
                       and item.version == int(raw_manifest["rubric_version"]))
-        round_number = int(raw_manifest["adaptive_sampling"]["round"])
     except (OSError, KeyError, TypeError, ValueError, StopIteration,
             json.JSONDecodeError) as exc:
         raise ValueError("invalid adaptive taxonomy packet") from exc
-    _load_packet_manifest(
+    manifest, rows = _load_packet(
         args.source, args.manifest, rubric_id=rubric.id,
         rubric_version=rubric.version)
-    with args.source.open("r", encoding="utf-8", newline="") as handle:
-        labels = [str(row.get("human_label") or "").strip()
-                  for row in csv.DictReader(handle)
-                  if str(row.get("human_label") or "").strip()]
-    result = assess_label_support(
-        labels, AdaptiveSamplingPlan.from_rubric(rubric),
-        round_number=round_number)
-    result["labelled"] = len(labels)
+    packets = [(manifest, rows)]
+    for source, prior_manifest in args.prior_packet:
+        packets.append(_load_packet(source, prior_manifest,
+            rubric_id=rubric.id, rubric_version=rubric.version))
+    result = (assess_packet_criteria(packets, rubric) if args.criteria
+              else assess_packet_support(packets, rubric))
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["status"] == "ready" else 1
+    return 0 if result["status"] in ("ready", "criteria_met") else 1
 
 
 if __name__ == "__main__":

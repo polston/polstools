@@ -76,6 +76,14 @@ class ReviewWorkflowTests(unittest.TestCase):
                          status["next_packet"]["progress"])
         self.assertEqual(2, status["packet_count"])
 
+    def test_taxonomy_completion_rejects_grounding_assessments(self):
+        for assessment in ("accurate", "not_enough_context", "unsupported"):
+            with self.subTest(assessment=assessment):
+                self.packet("duplicate-work-calibration-round1", rubric="duplicate_work",
+                            split="calibration", assessments=(assessment, assessment))
+                with self.assertRaisesRegex(ValueError, "assessment"):
+                    review_status(self.root)
+
     def test_mixed_interpretation_calibration_precedes_taxonomy_packets(self):
         source = self.root / "mixed-interpretation-calibration-round1.csv"
         fields = TAXONOMY_FIELDS + (

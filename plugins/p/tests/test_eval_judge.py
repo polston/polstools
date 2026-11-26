@@ -56,6 +56,48 @@ class ModelJudgeTests(unittest.TestCase):
             judge.evaluate(JudgeCase("case-a", "e-a", "private text", "private"))
         self.assertEqual([], provider.calls)
 
+    def test_all_non_synthetic_classes_require_external_authority(self):
+        for classification in ('private_redacted', 'private_metadata', 'private_raw',
+                               'unknown', '', None, 'public', [], {}):
+            with self.subTest(classification=classification):
+                provider = ExternalProvider()
+                judge = ModelJudge(rubric_id='example', rubric_version=1,
+                    labels=('correction',), prompt_template='{evidence}',
+                    provider=provider, model_config={})
+                with self.assertRaises(PermissionError):
+                    judge.evaluate(JudgeCase('case', 'ref', 'Authored example.', classification))
+                self.assertEqual(provider.calls, [])
+
+    def test_public_synthetic_and_explicit_external_authority_are_supported(self):
+        for classification, authority in [('public_synthetic', False), ('private_redacted', True)]:
+            with self.subTest(classification=classification):
+                provider = ExternalProvider()
+                judge = ModelJudge(rubric_id='example', rubric_version=1,
+                    labels=('correction',), prompt_template='{evidence}',
+                    provider=provider, model_config={}, allow_private_external=authority)
+                judge.evaluate(JudgeCase('case', 'ref', 'Authored example.', classification))
+                self.assertEqual(len(provider.calls), 1)
+
+    def test_truthy_flags_do_not_establish_external_authority_or_locality(self):
+        for flag in ('false', 'true', 0, 1, None, [], {}):
+            with self.subTest(authority=flag):
+                provider = ExternalProvider()
+                with self.assertRaises(ValueError):
+                    ModelJudge(rubric_id='example', rubric_version=1,
+                        labels=('correction',), prompt_template='{evidence}',
+                        provider=provider, model_config={}, allow_private_external=flag)
+                self.assertEqual(provider.calls, [])
+        for flag in ('false', 'true', 1, None):
+            with self.subTest(local=flag):
+                provider = ExternalProvider()
+                setattr(provider, "local", flag)
+                judge = ModelJudge(rubric_id='example', rubric_version=1,
+                    labels=('correction',), prompt_template='{evidence}',
+                    provider=provider, model_config={})
+                with self.assertRaises(PermissionError):
+                    judge.evaluate(JudgeCase('case', 'ref', 'Authored example.', 'private'))
+                self.assertEqual(provider.calls, [])
+
     def test_unknown_label_becomes_abstention(self):
         class InvalidProvider(FakeProvider):
             def judge(self, request):

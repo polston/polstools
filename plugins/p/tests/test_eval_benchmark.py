@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -47,6 +48,60 @@ class StorageBenchmarkTests(unittest.TestCase):
         for measurement in result["workloads"].values():
             self.assertIn("median_seconds", measurement)
             self.assertIn("p95_seconds", measurement)
+
+    def assert_thirty_day_window(self, backend):
+        samples = (
+            (["2024-03-31T00:00:00Z", "2024-03-01T00:00:00Z",
+              "2024-02-29T23:59:59.999999Z", "2024-03-01T01:00:00+01:00",
+              "2024-03-31T01:00:00+02:00", "2023-10-01T00:00:00Z", None], 4),
+            ([None, None], 0),
+            (["0001-01-01T00:00:00Z", None], 1),
+            (["0001-01-01T00:00:00+01:00", None], 1),
+            (["9999-12-31T23:59:59-01:00", None], 1),
+        )
+        for timestamps, expected in samples:
+            with self.subTest(backend=backend, expected=expected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                rows = [{"trace_id": "sample", "span_id": str(i), "source": "authored",
+                         "span_kind": "trace", "started_at": value,
+                         "input_tokens": 0, "output_tokens": 0}
+                        for i, value in enumerate(timestamps)]
+                source = root / 'traces.jsonl'
+                source.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                result = benchmark_storage(source, backend, root / 'work', runs=1)
+                self.assertEqual(result['answers']['30_day_filter'], expected)
+                self.assertEqual(result['workload_version'], 2)
+
+    def test_stdlib_filter_is_thirty_days_with_offsets_and_unknown_time(self):
+        self.assert_thirty_day_window('jsonl')
+
+    @requires("duckdb")
+    def test_duckdb_filters_meet_independent_thirty_day_oracle(self):
+        for backend in ('duckdb-json', 'duckdb-parquet'):
+            self.assert_thirty_day_window(backend)
+
+    def test_benchmark_rejects_unknown_timestamp_zone_before_measurement(self):
+        for value in ("2026-01-01T00:00:00", "invalid", "", 42):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / 'traces.jsonl'
+                source.write_text(json.dumps({'trace_id': 'sample', 'started_at': value}) + '\n')
+                with self.assertRaisesRegex(ValueError, 'known timezone'):
+                    benchmark_storage(source, 'jsonl', root / 'work', runs=1)
+
+    @requires("duckdb")
+    def test_backends_reject_noncanonical_timestamp_syntax_consistently(self):
+        for value in ("20260101T00:00:00+00:00", "2026-W01-4T00:00:00+00:00",
+                      "2026-01-01🐈00:00:00+00:00",
+                      "2026-01-01T00:00:00+00:00:00.5",
+                      "2026-01-01T00:00:00+01:99"):
+            for backend in ('jsonl', 'duckdb-json', 'duckdb-parquet'):
+                with self.subTest(value=value, backend=backend), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    source = root / 'traces.jsonl'
+                    source.write_text(json.dumps({'trace_id': 'sample', 'started_at': value}) + '\n')
+                    with self.assertRaisesRegex(ValueError, 'canonical'):
+                        benchmark_storage(source, backend, root / 'work', runs=1)
 
     def write_reference_traces(self, root):
         rows = [
@@ -135,6 +190,86 @@ class StorageBenchmarkTests(unittest.TestCase):
             result = benchmark_storage(
                 source, "custom", root / "work", runs=1, registry=registry)
         self.assertEqual("custom", result["backend"])
+
+    def test_cache_unavailable_backend_does_not_capture_or_create_output(self):
+        class UnavailableCache(DuckdbParquetCache):
+            def _duckdb(self):
+                raise RuntimeError("optional backend unavailable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = UnavailableCache(root / "output" / "cache.parquet")
+            with self.assertRaisesRegex(RuntimeError, "optional backend unavailable"):
+                cache.refresh(root / "missing.jsonl")
+            self.assertEqual(list(root.iterdir()), [])
+
+    @requires("duckdb")
+    def test_cache_binds_count_conversion_and_hash_to_one_input(self):
+        import duckdb
+        for trigger in ("after_count", "after_copy"):
+            with self.subTest(trigger=trigger), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = self.write_reference_traces(root)
+                original = source.read_bytes()
+
+                class Connection:
+                    def __init__(self):
+                        self.real = duckdb.connect()
+                        self.fired = False
+
+                    def execute(self, sql, *args):
+                        result = self.real.execute(sql, *args)
+                        match = (sql.startswith("SELECT count(*)") if trigger == "after_count"
+                                 else sql.startswith("COPY "))
+                        if match and not self.fired:
+                            self.fired = True
+                            replacement = root / "replacement.jsonl"
+                            replacement.write_bytes(original.splitlines()[0] + b"\n")
+                            replacement.replace(source)
+                        return result
+
+                    def close(self):
+                        self.real.close()
+
+                class Module:
+                    connect = Connection
+
+                class Cache(DuckdbParquetCache):
+                    def _duckdb(self):
+                        return Module
+
+                cache = Cache(root / "cache.parquet")
+                manifest = cache.refresh(source)
+                with duckdb.connect() as connection:
+                    count = connection.execute("SELECT count(*) FROM read_parquet(?)",
+                                               [str(cache.path)]).fetchone()[0]
+                self.assertEqual(count, 3)
+                self.assertEqual(manifest["spans"], count)
+                self.assertEqual(manifest["source_sha256"], hashlib.sha256(original).hexdigest())
+                self.assertEqual(manifest["source_bytes"], len(original))
+                self.assertNotEqual(source.read_bytes(), original)
+                self.assertEqual({p.name for p in root.iterdir()},
+                                 {"traces.jsonl", "cache.parquet", "cache.parquet.manifest.json"})
+
+    @requires("duckdb")
+    def test_failed_cache_capture_or_conversion_preserves_prior_files(self):
+        import duckdb
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.write_reference_traces(root)
+            cache = DuckdbParquetCache(root / "cache.parquet")
+            cache.refresh(source)
+            manifest_path = root / "cache.parquet.manifest.json"
+            before = (cache.path.read_bytes(), manifest_path.read_bytes())
+            malformed = root / "malformed.jsonl"
+            malformed.write_text("{invalid}\n")
+            for candidate in (root / "missing.jsonl", malformed):
+                with self.subTest(candidate=candidate.name):
+                    names = {p.name for p in root.iterdir()}
+                    with self.assertRaises((OSError, duckdb.Error)):
+                        cache.refresh(candidate)
+                    self.assertEqual(before, (cache.path.read_bytes(), manifest_path.read_bytes()))
+                    self.assertEqual(names, {p.name for p in root.iterdir()})
 
     @requires("duckdb")
     def test_parquet_cache_is_regenerable_and_query_fields_are_validated(self):

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import time
-import importlib
+import statistics
 from collections import Counter
 
 from .schema import SpanKind
 from .scoring import ScoreResult
-from .statistics import wilson_interval
-from .statistics import paired_effect_interval
-from .taxonomies import load_tool_taxonomy, repeated_call_candidates
+from .statistics import descriptive_uncertainty
+from .taxonomies import has_call_signature, load_tool_taxonomy, repeated_call_candidates
 
 
 def _kind(record):
@@ -18,7 +17,7 @@ def _kind(record):
 
 
 class _RateScorer:
-    version = 1
+    version = 2
     scope = "trace_set"
     required_capabilities = ()
     population_kind = SpanKind.TRACE.value
@@ -38,6 +37,10 @@ class _RateScorer:
     def score(self, records):
         started = time.perf_counter()
         numerator, denominator, population, evidence, limitations, details = self.counts(records)
+        limitations = tuple(limitations) + (
+            "observed counts do not establish an independent sampling design",
+        )
+        details = {**details, "uncertainty": descriptive_uncertainty()}
         evidence = tuple(evidence[:self.max_evidence_refs]
                          if self.max_evidence_refs is not None else evidence)
         if denominator < self.minimum_n:
@@ -49,9 +52,10 @@ class _RateScorer:
                 eligible_population=denominator,
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 estimated_cost=0.0, limitations=tuple(limitations),
-                details=details,
+                numerator=numerator, details=details,
+                configured_minimum_n=self.minimum_n,
+                uncertainty_method="not estimated: sampling design not established",
             )
-        low, high = wilson_interval(numerator, denominator)
         return ScoreResult(
             scorer_id=self.scorer_id, scorer_version=self.version, scope=self.scope,
             value=numerator / denominator, label="measured", abstained=False,
@@ -60,13 +64,15 @@ class _RateScorer:
             eligible_population=denominator,
             latency_ms=int((time.perf_counter() - started) * 1000),
             estimated_cost=0.0, limitations=tuple(limitations),
-            numerator=numerator, interval_low=low, interval_high=high,
-            uncertainty_method="Wilson 95% interval",
+            numerator=numerator,
+            uncertainty_method="not estimated: sampling design not established",
             details=details,
+            configured_minimum_n=self.minimum_n,
         )
 
 
 class RepeatedCallScorer(_RateScorer):
+    version = 8
     required_capabilities = ("tool_trajectory",)
     population_kind = SpanKind.TOOL.value
 
@@ -74,7 +80,6 @@ class RepeatedCallScorer(_RateScorer):
                  taxonomy=None):
         super().__init__(scorer_id, minimum_n, max_evidence_refs)
         self.taxonomy = taxonomy or load_tool_taxonomy()
-        self.version = self.taxonomy.repeated_call_version
 
     def counts(self, records):
         by_trace = {}
@@ -84,7 +89,10 @@ class RepeatedCallScorer(_RateScorer):
                 continue
             all_tools += 1
             by_trace.setdefault(record.trace_id, []).append(record)
-        eligible = [span for spans in by_trace.values() if len(spans) >= 2 for span in spans]
+        observed = [[span for span in spans if has_call_signature(span)]
+                    for spans in by_trace.values()]
+        eligible = [span for spans in observed if len(spans) >= 2 for span in spans]
+        missing_signatures = all_tools - sum(len(spans) for spans in observed)
         duplicates = 0
         duplicate_by_tool = Counter()
         evidence = []
@@ -104,7 +112,10 @@ class RepeatedCallScorer(_RateScorer):
         return duplicates, len(eligible), all_tools, evidence, (
             "identical calls can be legitimate after a state change",
             "candidate waste is uncalibrated and barred from decision support",
+            "calls without observable signatures are excluded from repeat eligibility",
         ), {"duplicate_by_tool": dict(sorted(duplicate_by_tool.items())),
+            "candidate_taxonomy_version": self.taxonomy.repeated_call_version,
+            "missing_call_signatures": missing_signatures,
             "repeat_taxonomy": taxonomy,
             "diagnosis_reasons": dict(sorted(diagnosis_reasons.items())),
             "validation_status": "unvalidated",
@@ -112,7 +123,7 @@ class RepeatedCallScorer(_RateScorer):
 
 
 class SkillLifecycleScorer(_RateScorer):
-    version = 2
+    version = 3
     required_capabilities = ("skill_lifecycle",)
 
     def counts(self, records):
@@ -193,10 +204,12 @@ class VerifiedOutcomeScorer(_RateScorer):
             evidence_refs=(), population=population, eligible_population=0,
             latency_ms=0, estimated_cost=0.0,
             limitations=("source completion is not verified task delivery",),
+            configured_minimum_n=self.minimum_n,
         )
 
 
 class ToolFailureScorer(_RateScorer):
+    version = 5
     required_capabilities = ("tool_result_status",)
     population_kind = "retro.tool_result"
 
@@ -204,7 +217,6 @@ class ToolFailureScorer(_RateScorer):
                  taxonomy=None):
         super().__init__(scorer_id, minimum_n, max_evidence_refs)
         self.taxonomy = taxonomy or load_tool_taxonomy()
-        self.version = self.taxonomy.tool_failure_version
 
     def counts(self, records):
         results = [record for record in records if _kind(record) == "retro.tool_result"]
@@ -213,6 +225,10 @@ class ToolFailureScorer(_RateScorer):
         by_tool = Counter(record.tool_kind for record in failures)
         failure_kind = Counter(self.taxonomy.failure_kind(
             record.attributes.get("error_kind")) for record in failures)
+        diagnosis_versions = Counter(
+            str(version) if type(version) is int and version > 0 else "unknown"
+            for record in failures
+            for version in [record.attributes.get("failure_taxonomy_version")])
         failure_reason = Counter(
             str(record.attributes.get("error_reason") or (
                 "source_unclassified"
@@ -224,45 +240,59 @@ class ToolFailureScorer(_RateScorer):
         return len(failures), len(results), len(results), [item.span_id for item in failures], (
             "authoritative source failures can include expected negative probes",
             "failure taxonomy is unvalidated and barred from decision support",
+            "recorded diagnoses retain their original versions; re-extraction applies the current classifier",
         ), {"by_tool": {tool: {"failures": by_tool[tool], "results": count}
                          for tool, count in sorted(results_by_tool.items())},
             "failure_kind": dict(sorted(failure_kind.items())),
+            "aggregation_taxonomy_version": self.taxonomy.tool_failure_version,
             "failure_reason": dict(sorted(failure_reason.items())),
+            "failure_diagnosis_versions": dict(sorted(diagnosis_versions.items())),
             "validation_status": "unvalidated",
             "decision_support": False}
 
 
 class InputTokensPerSourceCompletionScorer:
-    version = 1
+    """Describe observed usage; legacy interval options do not establish a design."""
+
+    version = 4
     scope = "trace_set"
     required_capabilities = ("usage", "source_completion")
     population_kind = SpanKind.TRACE.value
 
-    def __init__(self, scorer_id, minimum_n, interval_backend, confidence,
-                 seed, max_evidence_refs=None):
+    def __init__(self, scorer_id, minimum_n, interval_backend=None, confidence=None,
+                 seed=None, max_evidence_refs=None):
+        if minimum_n < 1:
+            raise ValueError("minimum_n must be positive")
+        if max_evidence_refs is not None and max_evidence_refs < 0:
+            raise ValueError("max_evidence_refs cannot be negative")
         self.scorer_id = scorer_id
         self.minimum_n = minimum_n
-        self.confidence = confidence
-        self.seed = seed
         self.max_evidence_refs = max_evidence_refs
-        if isinstance(interval_backend, dict):
-            backend_class = getattr(
-                importlib.import_module(str(interval_backend["module"])),
-                str(interval_backend["class"]),
-            )
-            self.interval_backend = backend_class(**dict(interval_backend.get("options") or {}))
-        else:
-            self.interval_backend = interval_backend
+        # Retain old profile arguments without importing or invoking a backend.
+        # Selecting an estimator cannot establish a sampling design.
 
     def score(self, records):
         started = time.perf_counter()
         traces = [record for record in records
                   if _kind(record) == SpanKind.TRACE.value]
-        eligible = [record for record in traces
-                    if record.status == "complete" and record.input_tokens > 0]
+        eligible = []
+        for record in traces:
+            if (record.status != "complete" or type(record.input_tokens) is not int
+                    or record.input_tokens < 0):
+                continue
+            coverage = record.attributes.get('usage_complete', {})
+            if not isinstance(coverage, dict):
+                continue
+            # Older records used zero for both absence and observed zero.
+            # Explicit coverage can now distinguish them without rewriting history.
+            observed = (coverage['input_tokens'] is True if 'input_tokens' in coverage
+                        else record.input_tokens > 0)
+            if observed:
+                eligible.append(record)
         evidence = [record.span_id for record in eligible]
         if self.max_evidence_refs is not None:
             evidence = evidence[:self.max_evidence_refs]
+        values = [record.input_tokens for record in eligible]
         if len(eligible) < self.minimum_n:
             return ScoreResult(
                 scorer_id=self.scorer_id, scorer_version=self.version,
@@ -272,36 +302,29 @@ class InputTokensPerSourceCompletionScorer:
                 eligible_population=len(eligible),
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 estimated_cost=0.0,
-                limitations=("zero-token traces are not observable for this metric",),
+                limitations=("zero input without explicit coverage and incomplete usage are ineligible",),
+                uncertainty_method="not estimated: sampling design not established",
+                details={"uncertainty": descriptive_uncertainty()},
+                numerator=sum(values),
+                configured_minimum_n=self.minimum_n,
             )
-        values = [record.input_tokens for record in eligible]
-        try:
-            effect = paired_effect_interval(
-                [0] * len(values), values, backend=self.interval_backend,
-                statistic="mean", confidence=self.confidence, seed=self.seed)
-        except RuntimeError as exc:
-            return ScoreResult(
-                scorer_id=self.scorer_id, scorer_version=self.version,
-                scope=self.scope, value=None, label="dependency_unavailable",
-                abstained=True, reason=str(exc), evidence_refs=tuple(evidence),
-                population=len(traces), eligible_population=len(eligible),
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                estimated_cost=0.0,
-                limitations=("configured uncertainty backend is unavailable",),
-            )
+        limitations = ["task difficulty is not yet matched",
+                       "source completion is not verified task delivery",
+                       "observed traces do not establish an independent sampling design"]
+        details = {"uncertainty": descriptive_uncertainty()}
         return ScoreResult(
             scorer_id=self.scorer_id, scorer_version=self.version,
-            scope=self.scope, value=effect["effect"], label="measured",
+            scope=self.scope, value=statistics.fmean(values), label="measured",
             abstained=False, reason="source-completed traces with observable usage",
             evidence_refs=tuple(evidence), population=len(traces),
             eligible_population=len(eligible),
             latency_ms=int((time.perf_counter() - started) * 1000),
             estimated_cost=0.0,
-            limitations=("task difficulty is not yet matched",
-                         "source completion is not verified task delivery"),
-            numerator=sum(values), interval_low=effect["interval"][0],
-            interval_high=effect["interval"][1],
-            uncertainty_method=effect["backend"],
+            limitations=tuple(limitations),
+            numerator=sum(values),
+            uncertainty_method="not estimated: sampling design not established",
+            details=details,
+            configured_minimum_n=self.minimum_n,
         )
 
 

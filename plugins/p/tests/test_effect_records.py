@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -277,6 +278,114 @@ class EffectRecordTests(unittest.TestCase):
         bind_manifest()
         with self.assertRaisesRegex(ValueError, "manifest fingerprint mismatch"):
             checker.check_record(*paths)
+
+    def test_effect_checker_resolves_the_index_it_preflighted(self):
+        paths = write_packet(self.root, self.bundle, self.record)
+        repo = self.root / "repository"
+        (repo / ".git").mkdir(parents=True)
+        artifact = repo / "origin.json"
+        artifact.write_text("{}")
+        changed = json.loads(paths[1].read_text())
+        for entry in changed["evidence"]:
+            if entry["ref"] == "origin":
+                entry.update(artifact=str(artifact), sha256=hashlib.sha256(artifact.read_bytes()).hexdigest())
+                entry.pop("json_pointer")
+        original_text, original_bytes = Path.read_text, Path.read_bytes
+        fired, repo_reads = [], []
+        def replace_index(path, *args, **kwargs):
+            data = original_text(path, *args, **kwargs)
+            if path.resolve() == paths[1].resolve() and not fired:
+                replacement = self.root / "replacement-index.json"
+                replacement.write_text(json.dumps(changed))
+                replacement.replace(paths[1])
+                fired.append(True)
+            return data
+        def read_bytes(path, *args, **kwargs):
+            if path.resolve() == artifact.resolve():
+                repo_reads.append(True)
+            return original_bytes(path, *args, **kwargs)
+        with patch.object(Path, "read_text", replace_index), patch.object(Path, "read_bytes", read_bytes):
+            result = checker.check_record(*paths)
+        self.assertTrue(fired)
+        self.assertFalse(repo_reads)
+        self.assertEqual([], result["gaps"])
+
+    def test_effect_checker_reads_the_artifact_path_it_preflighted(self):
+        paths = write_packet(self.root, self.bundle, self.record)
+        repo = self.root / "repository"
+        (repo / ".git").mkdir(parents=True)
+        artifact = repo / "origin.json"
+        artifact.write_text("{}")
+        alias = self.root / "origin-link.json"
+        try:
+            alias.symlink_to(self.root / "facts.json")
+        except OSError:
+            self.skipTest("symlink creation unavailable")
+        index = json.loads(paths[1].read_text())
+        for entry in index["evidence"]:
+            if entry["ref"] == "origin":
+                entry["artifact"] = alias.name
+                entry.pop("json_pointer")
+        paths[1].write_text(json.dumps(index))
+        original_resolve, original_read = Path.resolve, Path.read_bytes
+        fired, repo_reads = [], []
+        def resolve_then_replace(path, *args, **kwargs):
+            result = original_resolve(path, *args, **kwargs)
+            if path.absolute() == alias.absolute() and not fired:
+                replacement = self.root / "replacement-link"
+                replacement.symlink_to(artifact)
+                replacement.replace(alias)
+                fired.append(True)
+            return result
+        def read_bytes(path, *args, **kwargs):
+            if original_resolve(path) == original_resolve(artifact):
+                repo_reads.append(True)
+            return original_read(path, *args, **kwargs)
+        with patch.object(Path, "resolve", resolve_then_replace), patch.object(Path, "read_bytes", read_bytes):
+            result = checker.check_record(*paths)
+        self.assertTrue(fired)
+        self.assertFalse(repo_reads)
+        self.assertEqual([], result["gaps"])
+
+    def test_instruction_validation_uses_the_fingerprinted_capture(self):
+        from retro_eval.instruction_manifest import InstructionSource, write_instruction_manifest
+        from datetime import datetime, timezone
+        for captured_valid in (False, True):
+            for explicit_pointer in (False, True):
+                with self.subTest(captured_valid=captured_valid, explicit_pointer=explicit_pointer):
+                    manifest_path = self.root / "instructions.json"
+                    write_instruction_manifest(
+                        manifest_path, [InstructionSource("skill", "a" * 64, version="v2")],
+                        activated_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+                    valid = manifest_path.read_bytes()
+                    invalid = b'{"schema_version":1,"sources":[]}\n'
+                    manifest_path.write_bytes(valid if captured_valid else invalid)
+                    self.record["activation"]["instruction_manifest_ref"] = "instructions"
+                    paths = write_packet(self.root, self.bundle, self.record)
+                    index = json.loads(paths[1].read_text())
+                    entry = {"ref": "instructions", "artifact": manifest_path.name,
+                             "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()}
+                    if explicit_pointer:
+                        entry["json_pointer"] = ""
+                    index["evidence"].append(entry)
+                    paths[1].write_text(json.dumps(index))
+                    original_read = Path.read_bytes
+                    fired = []
+                    def read_then_replace(path, *args, **kwargs):
+                        data = original_read(path, *args, **kwargs)
+                        if path.resolve() == manifest_path.resolve() and not fired:
+                            replacement = self.root / "replacement-manifest.json"
+                            replacement.write_bytes(invalid if captured_valid else valid)
+                            replacement.replace(manifest_path)
+                            fired.append(True)
+                        return data
+                    with patch.object(Path, "read_bytes", read_then_replace):
+                        if captured_valid:
+                            self.assertEqual([], checker.check_record(*paths)["gaps"])
+                        else:
+                            with self.assertRaisesRegex(ValueError, "invalid instruction manifest"):
+                                checker.check_record(*paths)
+                    self.assertTrue(fired)
 
     def test_cli_exit_codes_distinguish_checked_gaps_and_invalid_input(self):
         paths = write_packet(self.root, self.bundle, self.record)

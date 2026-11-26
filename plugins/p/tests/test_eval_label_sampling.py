@@ -160,9 +160,14 @@ class LabelChainTests(unittest.TestCase):
     def test_sample_is_deterministic_for_one_extraction(self):
         self.assertEqual(0, self.sample().returncode)
         first = (self.out / "heldout.csv").read_bytes()
-        (self.out / "heldout.csv").unlink()
-        self.assertEqual(0, self.sample().returncode)
+        first_manifest = (self.out / "heldout-manifest.json").read_bytes()
+        repeated = self.sample("--output", self.out / "second.csv",
+                               "--manifest", self.out / "second-manifest.json")
+        self.assertEqual(0, repeated.returncode, repeated.stderr)
+        self.assertEqual(first, (self.out / "second.csv").read_bytes())
+        self.assertEqual(first_manifest, (self.out / "second-manifest.json").read_bytes())
         self.assertEqual(first, (self.out / "heldout.csv").read_bytes())
+        self.assertEqual(first_manifest, (self.out / "heldout-manifest.json").read_bytes())
 
     def test_sample_refuses_inputs_that_yield_no_cases(self):
         for extract in (self.work / "traces.jsonl", self.work / "extraction.json"):

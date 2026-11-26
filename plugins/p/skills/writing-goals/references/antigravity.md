@@ -22,48 +22,69 @@ direction, or the authorized time/turn bound is reached.
 ## Adapter
 
 Preserve the shared contract as an actionable, structured directive. Structure
-the goal prompt using these canonical slots:
+the goal prompt using these canonical slots (omitting `BASELINE` only when no
+prior measurement exists):
 
 | Slot | Requirement |
 |---|---|
-| OBJECTIVE | One bounded, coherent architectural outcome. Must not span multiple independent finish lines. |
+| OBJECTIVE | One bounded, coherent outcome. Must not span multiple independent finish lines. |
+| BASELINE | *(Optional)* Verified starting measurements, observed defects, or before-state numbers already established so the run does not waste turns re-auditing. |
 | READ FIRST | Durable plans, repository working agreements (`AGENTS.md`), contracts, or schemas that ground the run before making changes. |
 | ARTIFACTS | Concrete file paths and structures that must exist and be verified upon completion. |
-| CONSTRAINTS & AUTHORITY | Invariants, repo authority boundaries (e.g. no git push, no unreviewed PRs, no test weakening, zero-downtime rules). |
+| CONSTRAINTS & AUTHORITY | Invariants, explicit reconciliation with repo standing rules (affirm or override auto-push/auto-release per phase), and safety boundaries for both git and live host state outside git. |
 | EVIDENCE | Deterministic verification commands (tests, linters, types) and the exact exit status or output required. |
-| PARKED | Explicit blocker conditions, missing authority requirements, and exact resume checks. |
-| BOUNDS | Primary turn and time bounds for autonomous execution (e.g. 45 minutes / 25 turns). |
+| EXECUTION LOOP | Checkpoints, validation after meaningful changes, short progress tracking, and background-task hygiene before exit. |
+| EXITS | Distinct stop conditions: `Review needed` (operator choice required), `PARKED` (exact failure, attempted remedies, missing authority/state, resume check), and `BOUNDS` (primary turn/time cap; reaching it stops without claiming completion). |
+| HANDOFF | Final artifacts, validation results, before/after delta, and unresolved items. |
 
 ### Grounding and Execution Rules
 
-1. **Ground Before Mutating (`READ FIRST`):**
-   The agent must inspect referenced durable plans, handoffs, and working agreements
-   (`AGENTS.md`) before modifying code. Never assume architecture from memory.
-2. **Authority Boundaries (`CONSTRAINTS`):**
-   State explicit repository boundaries in the contract: permitted actions (e.g., local
-   commits for checkpoints) vs forbidden actions (e.g., git push, PR creation,
-   deleting historical benchmarks, or changing production secrets without confirmation).
-3. **Subagent Delegation (`invoke_subagent`):**
-   When research spans many files or a long compiler/test verification run is needed,
-   delegate to `research` or `self` subagents to keep the primary goal execution context lean.
-4. **Structured Artifacts (`ArtifactMetadata`):**
-   Use Antigravity's artifact system for complex plans, diffs, and validation summaries
-   stored in the session directory rather than cluttering the conversational transcript.
+1. **Ground Before Mutating (`BASELINE` + `READ FIRST`):**
+   Record already-verified measurements in `BASELINE` and inspect referenced
+   durable plans, handoffs, and working agreements (`AGENTS.md`) before
+   modifying code. Never assume architecture from memory.
+2. **Authority Boundaries (`CONSTRAINTS & AUTHORITY`):**
+   State permitted actions (e.g., local checkpoint commits) vs. forbidden
+   actions (e.g., `git push`, PR creation, test weakening, or destructive
+   cleanup without confirmation). Explicitly reconcile with repo standing rules
+   and require pre-mutation verification before changing live host state outside
+   the repository (installed binaries, user-scope skills or configs, hooks,
+   state logs).
+3. **Subagent Delegation & Right-Sizing:**
+   Apply Shared Rule 9 using Antigravity's native subagent delegation and
+   worker-tier selection when work spans broad read-only surveys, parallel
+   checks, or long verification runs. Keep contracts expressed in behavioral
+   roles and capability tiers rather than hardcoding internal tool names or
+   model IDs.
+4. **Structured Artifacts:**
+   Store complex plans, diffs, and validation summaries as session artifacts
+   rather than cluttering the conversational transcript.
 5. **Sequential Multi-Goal Phasing:**
-   For cross-cutting architectural work spanning multiple layers or repositories, do not
-   combine them into one monolithic goal. Decompose them into sequential goals where each
-   goal leaves a durable, verifiable contract or schema for the next.
+   For cross-cutting work spanning multiple layers or open operator decisions,
+   decompose into sequential single-finish-line goals with an up-front
+   open-decisions block. Each phase leaves a durable, verifiable handoff for the
+   next, and later phases may inherit shared repo invariants by referencing the
+   prior phase's handoff rather than duplicating boilerplate.
 
 ## Lifecycle
 
 In the chat UI or CLI, `/goal <contract>` launches autonomous execution.
-Progress is reported at task checkpoints. The agent concludes when all evidence
-is verified, an unresolvable blocker requires human direction, or the bound is reached.
-Upon completion, the agent updates durable repository tracking documents (e.g., `HANDOFF.md`)
-rather than recording ephemeral git hashes.
+Progress is reported at task checkpoints, external builds or waits use reactive
+notifications rather than polling loops, and background tasks are audited clean
+before declaring completion. The agent concludes when all evidence is verified,
+a `Review needed` or `PARKED` stop condition triggers, or the bound is reached.
+Upon completion, update durable repository tracking documents following the
+repository's own conventions (e.g., `HANDOFF.md`), preserving verifiable
+receipts without relying on ephemeral chat state.
 
 ## Equivalent outcome
 
 Execution proceeds toward one bounded objective, supported by concrete
 verification commands and artifact checks, and stops cleanly at the designated
 finish line.
+
+## Disposition
+
+Convergence test: if Antigravity, Claude Code, and Codex officially adopt the
+same evaluator visibility, lifecycle controls, and contract shape, move the
+remaining common rules into `SKILL.md` and delete this adapter.

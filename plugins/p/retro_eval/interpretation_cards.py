@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import hmac
 import json
 from collections import Counter
 from pathlib import Path
 
-from .annotation import FIELDS, _external, _packet_fingerprint, _salt
+from .annotation import (FIELDS, _check_packet_destinations, _create_packet_csv,
+                         _salt)
 from .catalog import (load_annotation_protocol_catalogue,
                       load_rubric_catalogue)
 
@@ -48,8 +48,7 @@ def write_interpretation_review(cards, output: Path, manifest_path: Path, *,
     """Write authored cards outside Git with immutable evidence and optional ratings."""
     output = Path(output)
     manifest_path = Path(manifest_path)
-    _external(output)
-    _external(manifest_path)
+    _check_packet_destinations(output, manifest_path)
     if split != "calibration" or review_round < 1:
         raise ValueError("interpretation review currently supports calibration rounds")
     cards = list(cards)
@@ -90,10 +89,7 @@ def write_interpretation_review(cards, output: Path, manifest_path: Path, *,
             "assessment": "", "human_label": "", "notes": "",
         }
         rows.append(row)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=INTERPRETATION_FIELDS)
-        writer.writeheader(); writer.writerows(rows)
+    sample_sha256 = _create_packet_csv(output, INTERPRETATION_FIELDS, rows)
     metadata = {
         "schema_version": 1,
         "annotation_packet_version": 1,
@@ -109,7 +105,7 @@ def write_interpretation_review(cards, output: Path, manifest_path: Path, *,
         "card_sha256": [hashlib.sha256(
             (dataset_id + "|" + key).encode("utf-8")).hexdigest()
             for key in stable_keys],
-        "sample_sha256": _packet_fingerprint(output),
+        "sample_sha256": sample_sha256,
         "annotation_protocol_id": protocol.id,
         "annotation_protocol_version": protocol.version,
         "annotation_protocol_sha256": protocol.sha256,
@@ -119,6 +115,7 @@ def write_interpretation_review(cards, output: Path, manifest_path: Path, *,
             "decision_support": False,
         },
     }
-    manifest_path.write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
     return metadata

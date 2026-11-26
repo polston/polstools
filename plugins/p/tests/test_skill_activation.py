@@ -82,7 +82,7 @@ class ActivationPolicyTests(unittest.TestCase):
             },
             {
                 "auditing-agent-contracts",
-                "maintaining-the-format-plugin",
+                "investigating-and-improving",
                 "reviewing-improvement-effects",
                 "scouting-tools-for-open-frictions",
             },
@@ -170,16 +170,16 @@ class ActivationPolicyTests(unittest.TestCase):
             resolved = self.activation.resolve(self.manifest, env=env)
             self.assertFalse(
                 self.activation.capability_enabled(
-                    resolved, "local-session-history", "maintaining-the-format-plugin"
+                    resolved, "local-session-history", "auditing-agent-contracts"
                 )
             )
             self.activation.set_override(
-                self.manifest, "maintaining-the-format-plugin", True, "session", env=env
+                self.manifest, "auditing-agent-contracts", True, "session", env=env
             )
             resolved = self.activation.resolve(self.manifest, env=env)
             self.assertTrue(
                 self.activation.capability_enabled(
-                    resolved, "local-session-history", "maintaining-the-format-plugin"
+                    resolved, "local-session-history", "auditing-agent-contracts"
                 )
             )
 
@@ -590,7 +590,7 @@ class ActivationInstrumentationTests(unittest.TestCase):
 
     def test_conditional_branches_declare_component_aware_capability_gate(self):
         for component in (
-            "maintaining-the-format-plugin",
+            "auditing-agent-contracts",
             "scouting-tools-for-open-frictions",
         ):
             text = (PLUGIN_ROOT / "skills" / component / "SKILL.md").read_text("utf-8")
@@ -600,9 +600,9 @@ class ActivationInstrumentationTests(unittest.TestCase):
                 text,
             )
 
-    def test_hook_wiring_has_no_activation_controller(self):
-        hooks = (PLUGIN_ROOT / "hooks" / "hooks.json").read_text("utf-8")
-        self.assertNotIn("skill-profile-ctl", hooks)
+    def test_plugin_installs_no_session_hooks(self):
+        self.assertFalse((PLUGIN_ROOT / "hooks" / "hooks.json").exists())
+        self.assertFalse((PLUGIN_ROOT / "hooks.json").exists())
 
 
 class MultiUserStateIsolationTests(unittest.TestCase):
@@ -678,6 +678,198 @@ class MultiUserStateIsolationTests(unittest.TestCase):
             self.assertEqual(self.activation.resolve(manifest, env=env)["profile"], "work")
             self.activation.set_profile(manifest, "home", "session", env=self.env(root, "other"))
             self.assertEqual(self.activation.resolve(manifest, env=env)["profile"], "work")
+
+class ReadOnlyActivationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.activation = load_activation()
+        cls.manifest = cls.activation.load_manifest(MANIFEST_PATH)
+
+    def state(self, root, overrides=None):
+        suffix = str(os.getuid()) if hasattr(os, "getuid") else os.environ.get("USERNAME", "default")
+        directory = root / ("p-skill-activation-" + suffix)
+        directory.mkdir(mode=0o700)
+        path = directory / (hashlib.sha256(b"read-only-session").hexdigest() + ".json")
+        self.activation.write_state(path, "work", overrides or {})
+        return path
+
+    def env(self, root):
+        return {"CODEX_THREAD_ID": "read-only-session",
+                "USERNAME": os.environ.get("USERNAME", "default"),
+                "P_SKILL_CONFIG_FILE": str(root / "global.json")}
+
+    def test_platform_candidates_have_no_filesystem_dependency(self):
+        candidates = self.activation._temporary_root_candidates
+        env = {"TMPDIR": "first", "TEMP": "second", "TMP": "third"}
+        self.assertEqual(candidates(env, "posix", "/fixture/home", "relative"),
+                         ["first", "second", "third", "/tmp", "/var/tmp", "/usr/tmp", "relative"])
+        windows = candidates(dict(env, SYSTEMROOT=r"C:\Windows"), "nt", r"C:\Profiles\fixture", r"C:\work")
+        self.assertEqual(windows, ["first", "second", "third",
+                                  r"C:\Profiles\fixture\AppData\Local\Temp",
+                                  r"C:\Windows\Temp", r"c:\temp", r"c:\tmp",
+                                  r"\temp", r"\tmp", r"C:\work"])
+
+    def test_fallback_policy_and_root_alias_are_preserved_without_temp_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, second = root / "first", root / "second"
+            first.mkdir()
+            second.mkdir()
+            self.state(second, {"writing-plans": False})
+            with mock.patch.object(self.activation, "_temporary_root_candidates",
+                                   return_value=[str(first), str(second), str(second / ".")]), \
+                    mock.patch.object(self.activation.tempfile, "tempdir", None), \
+                    mock.patch.object(self.activation.tempfile, "gettempdir", side_effect=AssertionError("write probe")):
+                resolved = self.activation.resolve(self.manifest, env=self.env(root))
+            self.assertEqual(resolved["source"], "session")
+            self.assertEqual(self.activation.component_state(resolved, "writing-plans"), "disabled")
+
+    def test_multiple_roots_and_access_denial_do_not_inherit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, second = root / "first", root / "second"
+            first.mkdir()
+            second.mkdir()
+            self.state(first)
+            self.state(second)
+            with mock.patch.object(self.activation, "_temporary_root_candidates",
+                                   return_value=[str(first), str(second)]), \
+                    mock.patch.object(self.activation.tempfile, "tempdir", None):
+                with self.assertRaisesRegex(self.activation.StateLocationError, "multiple"):
+                    self.activation.resolve(self.manifest, env=self.env(root))
+                with mock.patch.object(self.activation, "_private_dir", side_effect=PermissionError("denied")):
+                    with self.assertRaises(self.activation.StateLocationError):
+                        self.activation.resolve(self.manifest, env=self.env(root))
+
+    def test_file_temp_root_is_skipped_but_file_activation_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, second = root / "first", root / "second"
+            first.write_text("not a directory")
+            second.mkdir()
+            policy = self.state(second, {"writing-plans": False})
+            env = dict(self.env(root), TMPDIR=str(first), TEMP=str(second), TMP=str(second))
+            with mock.patch.object(self.activation.tempfile, "tempdir", None):
+                for candidate in (first, first / "nested"):
+                    with self.subTest(candidate=candidate):
+                        fallback_env = dict(env, TMPDIR=str(candidate))
+                        resolved = self.activation.resolve(self.manifest, env=fallback_env)
+                        self.assertEqual(resolved["source"], "session")
+                        self.assertEqual(self.activation.component_state(resolved, "writing-plans"), "disabled")
+                        # The existing writer must select the same fallback.
+                        with mock.patch.dict(os.environ, fallback_env):
+                            self.assertEqual(self.activation.session_state_path(
+                                "read-only-session", fallback_env), policy)
+                        self.activation.tempfile.tempdir = None
+                first.unlink()
+                first.mkdir()
+                (first / policy.parent.name).write_text("invalid activation directory")
+                with self.assertRaises(self.activation.StateLocationError):
+                    self.activation.resolve(self.manifest, env=env)
+                # Explicit roots retain configuration-error behavior even
+                # when their ancestor is a file rather than a directory.
+                with self.assertRaises(self.activation.StateLocationError):
+                    self.activation.resolve(self.manifest, env=dict(
+                        env, P_SKILL_STATE_DIR=str(first / policy.parent.name / "nested")))
+
+    def test_symlinked_temp_root_alias_is_one_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target"
+            target.mkdir()
+            self.state(target)
+            alias = root / "alias"
+            try:
+                alias.symlink_to(target, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("directory symlinks unavailable")
+            with mock.patch.object(self.activation, "_temporary_root_candidates",
+                                   return_value=[str(target), str(alias)]), \
+                    mock.patch.object(self.activation.tempfile, "tempdir", None):
+                self.assertEqual(self.activation.resolve(self.manifest, env=self.env(root))["source"], "session")
+
+    def test_explicit_and_xdg_reads_never_probe_temp_and_unreadable_state_is_distinct(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.state(root)
+            env = dict(self.env(root), P_SKILL_STATE_DIR=str(path.parent))
+            with mock.patch.object(self.activation.tempfile, "gettempdir", side_effect=AssertionError("write probe")):
+                self.assertEqual(self.activation.resolve(self.manifest, env=env)["profile"], "work")
+                with mock.patch.object(Path, "open", side_effect=PermissionError("denied")):
+                    with self.assertRaises(self.activation.StateLocationError):
+                        self.activation.resolve(self.manifest, env=env)
+                runtime = root / "runtime"
+                runtime.mkdir()
+                path.parent.rename(runtime / "p-skill-activation")
+                xdg_env = dict(self.env(root), XDG_RUNTIME_DIR=str(runtime))
+                self.assertEqual(self.activation.resolve(self.manifest, env=xdg_env)["profile"], "work")
+
+    def test_absence_inherits_global_without_creating_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = self.env(root)
+            self.activation.write_state(root / "global.json", "work", {})
+            with mock.patch.object(self.activation, "_temporary_root_candidates", return_value=[str(root)]), \
+                    mock.patch.object(self.activation.tempfile, "tempdir", None), \
+                    mock.patch.object(self.activation.tempfile, "gettempdir", side_effect=AssertionError("write probe")):
+                self.assertEqual(self.activation.resolve(self.manifest, env=env)["source"], "global")
+                (root / "global.json").unlink()
+                self.assertEqual(self.activation.resolve(self.manifest, env=env)["source"], "default")
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_fresh_controller_denies_writes_and_preserves_core_disable(self):
+        # The child has a cold tempfile cache. An audit hook rejects even an
+        # attempted temp write; permissions alone do not suffice when run as root.
+        script = '''
+import os, runpy, sys
+def deny_writes(event, args):
+    if event == "open":
+        if args[0] == os.environ.get("P_ACTIVATION_TEST_DENY_READ"):
+            raise PermissionError("test denies policy access")
+        mode, flags = args[1], args[2]
+        if (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+            isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC)):
+            raise PermissionError("test denies writes")
+    if event in {"os.mkdir", "os.remove", "os.rename", "os.chmod", "os.utime"}:
+        raise PermissionError("test denies mutations")
+sys.addaudithook(deny_writes)
+controller = sys.argv[1]
+sys.argv = [controller] + sys.argv[2:]
+runpy.run_path(controller, run_name="__main__")
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, second = root / "first", root / "second"
+            first.mkdir()
+            second.mkdir()
+            policy = self.state(first, {"writing-plans": False})
+            # Also exercise the best-effort refresh under denied utime.
+            os.utime(policy, (1, 1))
+            env = {key: value for key, value in os.environ.items()
+                   if key not in {"P_SKILL_STATE_DIR", "P_SKILL_PROFILE", "XDG_RUNTIME_DIR", "P_SKILL_HARNESS"}
+                   and key not in self.activation.SESSION_ENV_VARS}
+            env.update(self.env(root), TMPDIR=str(first), TEMP=str(second), TMP=str(second))
+            def check(*args):
+                return subprocess.run([sys.executable, "-B", "-c", script, str(CTL_PATH), *args],
+                                      env=env, text=True, capture_output=True)
+            disabled = check("check", "writing-plans")
+            self.assertEqual(disabled.returncode, 1, disabled.stderr)
+            self.activation.write_state(policy, "work", {"writing-plans": True})
+            enabled = check("check", "writing-plans")
+            self.assertEqual(enabled.returncode, 0, enabled.stderr)
+            self.state(second)
+            for args in (("check", "writing-plans"), ("check-capability", "core")):
+                ambiguous = check(*args)
+                self.assertEqual(ambiguous.returncode, 2, ambiguous.stderr)
+                self.assertIn("multiple", ambiguous.stderr)
+            # Pin the known root to isolate unreadability from ambiguity.
+            env["P_SKILL_STATE_DIR"] = str(policy.parent)
+            env["P_ACTIVATION_TEST_DENY_READ"] = str(policy)
+            for args in (("check", "writing-plans"), ("check-capability", "core")):
+                unreadable = check(*args)
+                self.assertEqual(unreadable.returncode, 2, unreadable.stderr)
+                self.assertIn("unreadable", unreadable.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

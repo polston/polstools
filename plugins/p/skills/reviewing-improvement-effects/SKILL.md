@@ -35,6 +35,39 @@ history into the review.
 
 ## Register or recover the pilot
 
+For a new automatic investigation, follow `<plugin-root>/WORKFLOW.md`: run the
+bounded planner, inspect its evidence, check due decisions, and let the agent
+select a feasible comparison. `pilot prepare` registers an installed replay
+before grading; `pilot compare` retains all assigned labels and abstentions.
+Save a completed copy of the label packet; edit only each unit's `label`,
+`reason`, and `assessor_type`. Keep its rubric, excerpts, context, and evidence
+identities unchanged. Comparison rejects mismatched packets, stale inputs,
+recorded discovery exposure after registration, and changed labels after the
+first predictions were published. An identical submission recovers the original
+comparison. Preserve subsequent label corrections as review notes; collect fresh
+unexposed families for another blind comparison. Do not inspect held-out families
+through the assisted discovery path before comparing them.
+The agent supplies attributed semantic judgments when needed, never invented
+human preference. A retired or infeasible study calls for a different concrete
+test or no change, not repeated setup questions.
+
+When an inspected finding supports a different comparison, use the optional
+[custom-pilot procedure](references/custom-pilots.md) and its templates.
+`pilot register --spec FILE` binds the finding and justification to the plan;
+`pilot review --spec FILE` checks assigned-unit and guardrail accounting and
+retains an attributed decision. The agent fills the contract and performs
+already authorized work; do not turn it into a study-configuration menu for the
+requester. `status.pilot_followups` shows next actions without mining more history.
+Registration and a declared keep do not prove execution or benefit. For a direct
+repair that needs no comparison, this recordkeeping can be unnecessary overhead.
+
+For an existing v1 effect record, retain the compatibility procedure below.
+`retro-eval-workflow effect-import --record FILE --evidence-index FILE` can
+preserve it in the new registry without upgrading its evidential status.
+`status.legacy_effects` lists these retained records and their declared review
+triggers separately from registered pilots. Inspect the bound evidence before
+acting; importing a record does not schedule its review or establish benefit.
+
 Read the existing proposal and its evidence, experiment, success threshold, and
 rollback. Preserve its stable ID; do not create a parallel backlog. A proposal
 that exists only in prose may receive an ID when represented in the existing

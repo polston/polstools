@@ -13,7 +13,8 @@ from .schema import SpanKind
 _FAILURE_PATTERNS = (
     ("control_refusal", "source_control_refusal", re.compile(
         r"\b(refus(?:e|ed|ing)|permission|approval|sandbox|access is denied)\b|"
-        r"outside.{0,40}worktree", re.I | re.S)),
+        r"outside.{0,40}worktree|"
+        r"PreToolUse:[^\r\n]{0,80}hook error:[^\r\n]{0,240}\b(?:blocked|not allowed)\b", re.I | re.S)),
     ("missing_target", "source_missing_target", re.compile(
         r"\b(no such file|not found|cannot find|does not exist|missing target)\b",
         re.I)),
@@ -37,11 +38,10 @@ def classify_failure_evidence(tool_input, tool_result) -> FailureDiagnosis:
     """Classify source evidence conservatively without retaining its content."""
     tool_input = str(tool_input or "")
     tool_result = str(tool_result or "")
-    combined = tool_input + "\n" + tool_result
-    if not combined.strip():
+    if not tool_result.strip():
         return FailureDiagnosis("unknown", "source_unclassified")
     for kind, reason, pattern in _FAILURE_PATTERNS:
-        if pattern.search(combined):
+        if pattern.search(tool_result):
             return FailureDiagnosis(kind, reason)
     if _EXPECTED_PROBE.search(tool_input):
         return FailureDiagnosis("expected_probe", "source_expected_probe")
@@ -92,6 +92,10 @@ class RepeatCandidate:
     reason_code: str
 
 
+def has_call_signature(record):
+    return isinstance(record.call_signature, str) and bool(record.call_signature)
+
+
 def repeated_call_candidates(records, taxonomy: ToolTaxonomy | None = None):
     """Return each repeated call once with its structural candidate class."""
     taxonomy = taxonomy or load_tool_taxonomy()
@@ -106,6 +110,10 @@ def repeated_call_candidates(records, taxonomy: ToolTaxonomy | None = None):
         spans = sorted(spans, key=lambda item: item.sequence)
         previous = {}
         for index, span in enumerate(spans):
+            # Unknown input is not a matching input. Keep its tool span in the
+            # context below so an observed mutation still explains a repeat.
+            if not has_call_signature(span):
+                continue
             prior_index = previous.get(span.call_signature)
             if prior_index is not None:
                 intervening_records = tuple(spans[prior_index + 1:index])

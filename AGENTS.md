@@ -38,6 +38,15 @@ into repository metadata. Use `git commit -F -` fed by a single-quoted
 heredoc, or write no backticks at all. Read the message back afterwards —
 substitution is silent, and nobody re-reads metadata.
 
+## Framework investigation time bound
+
+For future investigations of this framework, use six hours as the default maximum
+elapsed time when the operator says “continue,” unless they specify another bound.
+Do not ask for the time limit again when this default applies. For a new run,
+record its actual start and absolute deadline. Continuing an active run retains
+its original deadline; this default does not silently renew an exhausted grant.
+The default supplies a time bound, not additional task scope or permissions.
+
 ## Layout and conventions
 
 - `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json` list
@@ -50,15 +59,6 @@ substitution is silent, and nobody re-reads metadata.
 - `plugins/p/bin/` — POSIX `sh` or stdlib-only Python 3. No build step, no
   dependencies, no compiled artifacts. A tracked file is executable in the git
   index exactly when it starts with a shebang; `p-validate` enforces that.
-  `format-gate` and `agy-format-hook` are shell on purpose: a hook must still
-  run when no Python is installed. `format-gate` reports a failure as exit 1
-  with empty stdout; `agy-format-hook` always exits 0, prints `{}` and one line
-  on stderr.
-- `plugins/p/hooks/hooks.json` — hook wiring for Claude Code and Codex session
-  events; both events enter through `bin/format-gate`, and commands reference
-  plugin files via `${CLAUDE_PLUGIN_ROOT}`. Antigravity reads hooks only from
-  `plugins/p/hooks.json`, a separate file with its own events.
-- `plugins/p/style/` — the response-format payloads the format hooks print.
 - `plugins/p/lib/` — Python modules shared by several `bin/` scripts and copied
   beside the bundled status line renderers.
 - `plugins/p/renderer/` — the status line renderers `statusline-ctl` installs
@@ -77,7 +77,7 @@ substitution is silent, and nobody re-reads metadata.
   Only the seven behaviours that began as slash commands have one; a new skill
   needs none, because Claude Code already lists every skill as `/p:<skill>`.
   `p-validate` checks that each adapter forwards to its skill with
-  `$ARGUMENTS`. In a command adapter or a hook command, refer to plugin files
+  `$ARGUMENTS`. In a command adapter, refer to plugin files
   as `${CLAUDE_PLUGIN_ROOT}/…`. In a `SKILL.md`, `<plugin-root>` is the absolute
   path two directories above that file and every program runs as
   `sh <plugin-root>/bin/python-launcher <plugin-root>/bin/<program>`, because

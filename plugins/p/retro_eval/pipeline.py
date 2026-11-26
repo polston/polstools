@@ -148,8 +148,9 @@ class EvaluationPipeline:
             for registration in self.registry:
                 if registration.name in roots and registration.accepts_option(
                         "excluded_session_ids"):
-                    adapter_options.setdefault(registration.name, {})[
-                        "excluded_session_ids"] = tuple(exclude_session_ids)
+                    options = adapter_options.setdefault(registration.name, {})
+                    options["excluded_session_ids"] = (
+                        *(options.get("excluded_session_ids") or ()), *exclude_session_ids)
         all_records = []
         excluded = Counter()
         sources = {}

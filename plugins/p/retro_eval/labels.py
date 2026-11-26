@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import hashlib
 import hmac
 import os
@@ -11,7 +12,16 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .statistics import confusion_metrics, wilson_interval
+from .statistics import confusion_metrics, descriptive_uncertainty
+
+
+def _finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -38,8 +48,8 @@ class LabelRecord:
             raise ValueError("unsupported annotator kind")
         if not self.evidence_refs:
             raise ValueError("labels require evidence references")
-        if self.sampling_weight <= 0:
-            raise ValueError("sampling weight must be positive")
+        if not _finite_number(self.sampling_weight) or self.sampling_weight <= 0:
+            raise ValueError("sampling weight must be a finite positive number")
 
     def to_dict(self):
         return asdict(self)
@@ -75,17 +85,25 @@ class LabelStore:
             raise
 
     def read(self):
+        return self.read_with_digest()[0]
+
+    def read_with_digest(self, *, expected_digest=None):
+        """Parse and fingerprint the same captured label bytes."""
         labels = []
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            raw = self.path.read_bytes()
         except OSError as exc:
             raise ValueError("label dataset is unreadable") from exc
+        digest = hashlib.sha256(raw).hexdigest()
+        if expected_digest is not None and digest != expected_digest:
+            raise ValueError("prediction artifact fingerprint mismatch")
+        lines = raw.decode("utf-8").splitlines()
         for line in lines:
             try:
                 labels.append(LabelRecord.from_dict(json.loads(line)))
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 raise ValueError("invalid label record") from exc
-        return labels
+        return labels, digest
 
 
 def _case_map(labels):
@@ -110,15 +128,19 @@ def multiclass_agreement(left, right):
     labels = set(left_counts) | set(right_counts)
     expected = sum(left_counts[label] * right_counts[label] for label in labels) / len(pairs) ** 2
     kappa = None if expected == 1 else (observed - expected) / (1 - expected)
-    low, high = wilson_interval(sum(a == b for a, b in pairs), len(pairs))
     return {"population": len(pairs), "agreement": observed, "kappa": kappa,
-            "agreement_interval": (low, high)}
+            "agreement_interval": None, "analysis_version": 2,
+            "uncertainty": descriptive_uncertainty(scope="observed_labels")}
 
 
 def calibration_report(truth, predicted, *, positive_label,
                        splits=("calibration", "test")):
-    truth_map = _case_map(truth)
-    predicted_map = _case_map(predicted)
+    truth = tuple(truth)
+    predicted = tuple(predicted)
+    splits = tuple(splits)
+    truth_map, predicted_map = _validate_prediction_alignment(
+        truth, predicted, name="predictions",
+        labels={item.label for item in (*truth, *predicted)}, splits=splits)
     report = {}
     for split in splits:
         cases = sorted(case for case in set(truth_map) & set(predicted_map)
@@ -138,6 +160,8 @@ def calibration_report(truth, predicted, *, positive_label,
                    "fp" if guessed_positive else "tn")
             weighted[key] += weight
         weighted_total = sum(weighted.values())
+        if not _finite_number(weighted_total):
+            raise ValueError("sampling weight total exceeds supported numeric range")
         metrics.update({
             "weighted_population": weighted_total,
             "weighted_precision": _weighted_ratio(
@@ -150,13 +174,9 @@ def calibration_report(truth, predicted, *, positive_label,
         agreement = multiclass_agreement(
             [truth_map[case] for case in cases], [predicted_map[case] for case in cases])
         metrics.update({"agreement": agreement["agreement"], "kappa": agreement["kappa"],
-                        "agreement_interval": agreement["agreement_interval"]})
-        if metrics["tp"] + metrics["fp"]:
-            metrics["precision_interval"] = wilson_interval(
-                metrics["tp"], metrics["tp"] + metrics["fp"])
-        if metrics["tp"] + metrics["fn"]:
-            metrics["recall_interval"] = wilson_interval(
-                metrics["tp"], metrics["tp"] + metrics["fn"])
+                        "agreement_interval": None, "precision_interval": None,
+                        "recall_interval": None, "analysis_version": 2,
+                        "uncertainty": agreement["uncertainty"]})
         report[split] = metrics
     return report
 
@@ -169,6 +189,10 @@ def multiclass_calibration_report(truth, predicted, *, labels,
                                   splits=("calibration", "test")):
     truth = tuple(truth)
     predicted = tuple(predicted)
+    labels = tuple(labels)
+    splits = tuple(splits)
+    _validate_prediction_alignment(
+        truth, predicted, name="predictions", labels=labels, splits=splits)
     class_reports = {
         label: calibration_report(
             truth, predicted, positive_label=label, splits=splits)
@@ -237,7 +261,7 @@ def strict_multiclass_comparison_report(truth, predictions, *, labels,
         reports[name] = multiclass_calibration_report(
             truth, predicted, labels=labels, splits=splits)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "population": selected_population,
         "splits": list(splits),
         "labels": list(labels),
@@ -291,8 +315,11 @@ def import_legacy_turn_labels(source: Path, target: Path,
                                     or "none"),
                 annotator_kind="deterministic", annotator_id="legacy-rule-v1",
             ))
+    total_weight = sum(item.sampling_weight for item in human)
+    if not _finite_number(total_weight):
+        raise ValueError("sampling weight total exceeds supported numeric range")
     LabelStore(target).write(human)
     if prediction_target is not None:
         LabelStore(prediction_target).write(predicted)
     return {"imported": len(human),
-            "total_weight": sum(item.sampling_weight for item in human)}
+            "total_weight": total_weight}

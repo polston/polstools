@@ -94,6 +94,16 @@
       "required_evidence": ["direct-human text", "preceding assistant character count"], "abstain_when": ["preceding context is absent"], "minimum_n": 100,
       "targets": {"precision": 0.80, "recall": 0.80, "agreement": 0.80},
       "positive_examples": ["human marked a turn under the legacy five-class protocol"], "negative_examples": ["unmarked turn or machine-generated user-role record"]
+    },
+    {
+      "id": "goal_contract_quality", "version": 1, "calibration_status": "unvalidated", "scope": "goal_contract",
+      "labels": ["complete_contract", "multi_finish_line", "unverifiable_evidence", "missing_authority_reconciliation", "incomplete_exits", "harness_coupled", "unbounded", "unrightsized_delegation", "ambiguous"],
+      "required_evidence": ["drafted goal contract text", "target harness identifier (claude, codex, or antigravity)", "task context indicating any prior baseline, standing rules, host mutations, open decisions, or delegation"],
+      "abstain_when": ["target harness cannot be determined", "contract text is empty or truncated"],
+      "minimum_n": 20,
+      "targets": {"precision": 0.85, "recall": 0.85, "agreement": 0.80},
+      "positive_examples": ["single-finish-line contract with runnable evidence, explicit authority reconciliation, distinct exit states, primary bound, and harness-neutral delegation right-sizing"],
+      "negative_examples": ["monolithic multi-goal prompt with vibe-only evidence, hardcoded harness tool names, unreconciled push rules, or a bound treated as completion"]
     }
   ]
 }

@@ -87,21 +87,6 @@ class LauncherSelectionTests(unittest.TestCase):
                 result = self.run_launcher([self.good], **extra)
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
 
-    def test_single_start_replays_the_input_byte_for_byte(self):
-        replay = Path(self.tmp.name) / "replay"
-        replay.mkdir()
-        write_script(replay / "python3",
-                     'printf "%s" "$POLSTOOLS_READY_TOKEN"; cat')
-        env = {k: v for k, v in os.environ.items() if k != "POLSTOOLS_PYTHON"}
-        env.update(PATH=str(replay) + os.pathsep + os.environ["PATH"],
-                   POLSTOOLS_SINGLE_START="1")
-        for text in ("", "\n", "one", "one\ntwo", "one\ntwo\n", "a\n\n\n",
-                     "  lead\\n  tab\t\n"):
-            with self.subTest(text=text):
-                result = subprocess.run([SH, str(LAUNCHER), "target"], input=text,
-                                        text=True, capture_output=True, env=env)
-                self.assertEqual((result.returncode, result.stdout), (0, text))
-
 
 class UvFallbackCacheTests(unittest.TestCase):
     """With no Python on PATH the launcher falls back to uv; a stub uv reports

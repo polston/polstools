@@ -1,5 +1,8 @@
 # Agent evaluation infrastructure v1 — implementation plan
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 **Status:** Complete; locally integrated and verified, with no push or publication
 **Recommendation:** extend `retro` behind a normalized trace and scorer boundary,
 keep the proven commands compatible, and earn every new dependency against the

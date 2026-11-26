@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "policy": "An explicit correction revises only the attributed interpretation of an exact result event in the same run. Target the latest correction to revise it again; competing or repeated targets are rejected. Preserve all original records and accounting. Corrections are reconciliation, including after closure or the deadline, and never authorize new execution. Supporting evidence must resolve; attribution and structural validity do not establish truth. References to superseded interpretations become stale, including dependent acceptance. Older readers cannot read runs containing this extension; preserve an export before opting in.",
+  "event": {
+    "contract_sha256": "text",
+    "target": "record_ref",
+    "interpretation": "text",
+    "source": "text",
+    "reason": "text",
+    "evidence": "evidence"
+  }
+}

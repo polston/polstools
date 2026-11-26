@@ -1,5 +1,8 @@
 # Universal plugin packaging
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 Date: 2026-08-25. Status: integrated and validated on local `main`; publication
 remains outside this plan.
 

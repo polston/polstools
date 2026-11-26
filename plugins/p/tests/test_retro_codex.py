@@ -71,7 +71,7 @@ class CodexReducer(unittest.TestCase):
 
     def test_every_machine_opener_filters_on_the_codex_path(self):
         retro = self.retro
-        for opener in retro.MACHINE_PROMPT_OPENERS:
+        for opener in retro.CODEX_MACHINE_PROMPT_OPENERS:
             if not opener.startswith("<"):
                 continue   # the prose openers are Claude-transcript shapes
             body = opener + ' x="1">' if not opener.endswith(">") else opener

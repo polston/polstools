@@ -9,7 +9,7 @@ from pathlib import Path
 from .cli import command, full_commit
 from .annotation import (import_annotations, predict_annotations,
                          render_annotation_guide, sample_annotations,
-                         sample_trace_annotations, validate_prediction_artifact)
+                         sample_trace_annotations, load_prediction_artifact)
 from .annotation_ui import AnnotationWorkspace, serve_annotation_ui
 from .catalog import (load_annotation_protocol_catalogue,
                       load_rubric_catalogue)
@@ -225,20 +225,19 @@ def main(argv=None):
         prediction_paths = {}
         for value in args.predictions:
             name, separator, raw_path = value.partition("=")
-            if not separator or not name or not raw_path or name in predictions:
+            if not separator or not name or not raw_path or name in prediction_paths:
                 raise ValueError("predictions must be unique NAME=PATH values")
             prediction_paths[name] = Path(raw_path)
-            predictions[name] = LabelStore(prediction_paths[name]).read()
         manifests = {}
         for value in args.prediction_manifest:
             name, separator, raw_path = value.partition("=")
             if not separator or not name or not raw_path or name in manifests:
                 raise ValueError("prediction manifests must be unique NAME=PATH values")
             manifests[name] = Path(raw_path)
-        if set(manifests) != set(predictions):
+        if set(manifests) != set(prediction_paths):
             raise ValueError("every predictor requires one matching manifest")
-        for name in predictions:
-            validate_prediction_artifact(
+        for name in prediction_paths:
+            _, predictions[name] = load_prediction_artifact(
                 prediction_paths[name], manifests[name],
                 sample_manifest_path=args.sample_manifest)
         result = strict_multiclass_comparison_report(

@@ -5,7 +5,7 @@
       "name": "claude",
       "module": "retro_eval.adapters.claude",
       "class": "ClaudeAdapter",
-      "glob": "*.jsonl",
+      "discover": "retro_eval.adapters.discovery:claude",
       "options": {
         "direct_prompt_sources": ["typed", "queued", "suggestion_accepted"],
         "capabilities": {
@@ -34,7 +34,7 @@
       "name": "codex",
       "module": "retro_eval.adapters.codex",
       "class": "CodexAdapter",
-      "glob": "rollout-*.jsonl",
+      "discover": "retro_eval.adapters.discovery:codex",
       "options": {
         "handoff_tools": ["spawn_agent", "followup_task", "send_message", "interrupt_agent"],
         "machine_prompt_openers": [
@@ -43,7 +43,7 @@
           "This session is being continued", "Caveat: The messages below were generated",
           "<environment_context>", "<recommended_plugins>", "<skill>",
           "<turn_aborted>", "<codex_delegation>",
-          "<codex_internal_context", "<in-app-browser-context", "<image"
+          "<codex_internal_context", "<in-app-browser-context"
         ],
         "capabilities": {
           "human_provenance": {"state": "available"},
@@ -82,8 +82,8 @@
           "skill_opportunities": {"state": "unavailable", "reason": "trigger opportunities and missed triggers require a separately calibrated classifier"},
           "tool_trajectory": {"state": "available"},
           "tool_result_status": {"state": "unavailable", "reason": "tool results are not linked to calls by an authoritative per-call status; GENERIC steps are not results"},
-          "usage": {"state": "unavailable", "reason": "token fields are absent from most steps, so totals would undercount"},
-          "cache_usage": {"state": "unavailable", "reason": "cache token accounting is not emitted"},
+          "usage": {"state": "unavailable", "reason": "step-export token fields do not have a validated complete accounting mapping in this adapter"},
+          "cache_usage": {"state": "unavailable", "reason": "step-export cache fields do not have a validated accounting scope in this adapter"},
           "handoffs": {"state": "unavailable", "reason": "exports do not normalize parent-child dispatch links"},
           "agent_prompt_structure": {"state": "unavailable", "reason": "normalized traces intentionally omit prompt content"},
           "source_completion": {"state": "available"},

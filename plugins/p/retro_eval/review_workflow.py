@@ -3,21 +3,18 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 from pathlib import Path
 
 from .cli import command
-from .annotation import _load_packet_manifest
+from .annotation import _load_packet
 from .annotation_ui import AnnotationWorkspace, serve_annotation_ui
 from .review_dashboard import build_review_dashboard
 
 
 _RUBRIC_ORDER = {"interpretation_grounding": -1,
                  "duplicate_work": 0, "tool_failure_kind": 1}
-_ASSESSMENTS = {"", "correct", "incorrect", "unsure", "accurate",
-                "partly_accurate", "wrong", "not_enough_context"}
 DEFAULT_REVIEW_PORT = 8123
 
 
@@ -61,30 +58,30 @@ def _packet_states(review_dir: Path, split: str):
                 continue
             rubric_id = str(raw["rubric_id"])
             rubric_version = int(raw["rubric_version"])
-            round_number = int(raw.get("review_round") or
-                               raw.get("adaptive_sampling", {})["round"])
         except (OSError, KeyError, TypeError, ValueError,
                 json.JSONDecodeError) as exc:
             raise ValueError("invalid review packet manifest") from exc
         source = manifest_path.with_name(
             manifest_path.name.removesuffix("-manifest.json") + ".csv")
-        _load_packet_manifest(
+        raw, rows = _load_packet(
             source, manifest_path, rubric_id=rubric_id,
             rubric_version=rubric_version)
         try:
-            with source.open("r", encoding="utf-8", newline="") as handle:
-                rows = list(csv.DictReader(handle))
-        except OSError as exc:
-            raise ValueError("taxonomy review packet is unreadable") from exc
+            if _is_label_packet(raw):
+                label_packets.append(manifest_path.name)
+                continue
+            if str(raw["split"]) != split:
+                continue
+            round_number = int(raw.get("review_round") or
+                               raw.get("adaptive_sampling", {})["round"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid review packet manifest") from exc
         if not rows:
             raise ValueError("%s has no cases to review; resample from a "
                              "larger extraction" % source.name)
         if "assessment" not in rows[0]:
             raise ValueError("taxonomy review packet lacks assessments")
         assessments = [str(row.get("assessment") or "").strip() for row in rows]
-        invalid = sorted(set(assessments) - _ASSESSMENTS)
-        if invalid:
-            raise ValueError("taxonomy review packet has unsupported assessment")
         completed = sum(bool(value) for value in assessments)
         packets.append({
             "rubric_id": rubric_id,

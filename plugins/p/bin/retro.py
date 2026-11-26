@@ -129,10 +129,11 @@ sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
 import skill_activation  # noqa: E402
 
 from retro_eval.catalog import ensure_rubric_use, load_rubric_catalogue
+from retro_eval.claude_usage import ClaudeMessageUsage
 from retro_eval.text_rules import (  # noqa: E402,F401 -- re-exported
     CORRECTION_MAX_CHARS, CORRECTION_MIN_PRIOR_CHARS, _INTERRUPT,
     _predict_at, _redaction_patterns, classify_user_turn, content_text,
-    is_approval, prose_of, redact, strip_controls, text_of)
+    is_approval, prose_of, redact, strip_controls, text_of, machine_prompt_origin, codex_machine_prompt_origin, codex_question_reply)
 
 _content_text = content_text
 
@@ -161,7 +162,7 @@ def legacy_turn_labels_allow(use):
 # definitions at once is worse than no ledger: it reports a number belonging to
 # neither, and nothing in the output says so. `extract` rebuilds on a mismatch
 # rather than trusting prose to prevent it.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 13
 COUNTERS = ["turns", "user_prompts", "tool_calls", "tool_errors", "repeat_calls",
             "correction_candidates", "approval_turns", "interrupts",
             "permission_mode_changes", "queued_prompts", "skill_runs"]
@@ -479,7 +480,7 @@ HUMAN_PROMPT_SOURCES = frozenset(("typed", "queued", "suggestion_accepted"))
 # the start deliberately -- a person quoting one of these phrases mid-message is
 # still a person.
 #
-# One list for both harnesses (spec D3). Codex wrapper tags whose every
+# Legacy fallback list. Codex wrapper tags whose every
 # occurrence carries attributes enter as bracket-less prefixes; bare tags
 # keep the closed form so a person merely quoting a tag name mid-sentence
 # still counts. Anchored at the start deliberately. Measured over the
@@ -495,6 +496,11 @@ MACHINE_PROMPT_OPENERS = (
     "<codex_internal_context", "<in-app-browser-context", "<image",
 )
 
+# An attached image can precede a person's written feedback. Preserve the older
+# Claude fallback while keeping Codex's default aligned with its source profile.
+CODEX_MACHINE_PROMPT_OPENERS = tuple(
+    opener for opener in MACHINE_PROMPT_OPENERS if opener != "<image")
+
 
 def is_human_prompt(rec, body):
     """Did a person write this, or did the harness?"""
@@ -503,7 +509,7 @@ def is_human_prompt(rec, body):
     source = rec.get("promptSource")
     if source:
         return source in HUMAN_PROMPT_SOURCES
-    return not body.lstrip().startswith(MACHINE_PROMPT_OPENERS)
+    return not machine_prompt_origin(body, MACHINE_PROMPT_OPENERS)
 
 
 def parse_ts(value):
@@ -623,7 +629,7 @@ def measure(path, harness="claude", root=None):
     skills = set()
     prior_assistant_chars = 0
     conversation = 0
-    tokens_in = tokens_out = cache_read = 0
+    usage_snapshots = ClaudeMessageUsage()
     prev_mode = None
     prev_skill = ""
     tool_by_id = {}
@@ -691,10 +697,10 @@ def measure(path, harness="claude", root=None):
             msg = _dict_or_skip(rec.get("message"), skipped, "bad_message")
             last_assistant = msg
             usage = _dict_or_skip(msg.get("usage"), skipped, "bad_usage")
-            tokens_in += _token_count(usage.get("input_tokens"), skipped)
-            tokens_out += _token_count(usage.get("output_tokens"), skipped)
-            cache_read += _token_count(usage.get("cache_read_input_tokens"),
-                                       skipped)
+            # Diagnose every captured snapshot, even one later superseded.
+            measured_usage = {field: _token_count(usage.get(field), skipped)
+                for field in ('input_tokens', 'output_tokens', 'cache_read_input_tokens')}
+            usage_snapshots.add({'id': msg.get('id'), 'usage': measured_usage})
             body = text_of(msg, skipped)
             # Accumulate, do not replace. One assistant turn is often several
             # records -- text, then a tool call, then more text -- and taking
@@ -772,6 +778,12 @@ def measure(path, harness="claude", root=None):
 
     if not conversation:
         return None
+
+    tokens_in = tokens_out = cache_read = 0
+    for usage in usage_snapshots.usages:
+        tokens_in += usage['input_tokens']
+        tokens_out += usage['output_tokens']
+        cache_read += usage['cache_read_input_tokens']
 
     # Subagent transcripts live under <session>/subagents/ and carry the PARENT
     # session's id. Keying rows by session id would let them overwrite the
@@ -988,7 +1000,7 @@ def measure_codex(path, root):
                 prior_assistant_chars += len(body)
             elif role == "user":
                 saw_message = True
-                opener = body.lstrip().startswith(MACHINE_PROMPT_OPENERS)
+                opener = codex_machine_prompt_origin(payload, body, CODEX_MACHINE_PROMPT_OPENERS)
                 if opener:
                     stripped = body.lstrip()
                     if stripped.startswith("<skill"):
@@ -997,12 +1009,18 @@ def measure_codex(path, root):
                             skills.add(match.group(1).split(":")[-1])
                             m["skill_runs"] += 1
                 elif body.strip():
-                    kind = classify_user_turn(body, prior_assistant_chars)
+                    body, questions = codex_question_reply(body)
+                    kind = classify_user_turn(
+                        body, prior_assistant_chars + sum(map(len, questions)))
                     if kind == "interrupt":
                         # Matches the Claude reducer: an interrupt is not a
                         # prompt. The marker is Claude-shaped and expected
                         # to be absent from rollouts.
                         m["interrupts"] += 1
+                        # A structured answer remains a prompt even if its text
+                        # matches the provisional interruption classifier.
+                        if questions:
+                            m["user_prompts"] += 1
                     else:
                         m["user_prompts"] += 1
                         if kind == "correction":
@@ -1561,7 +1579,7 @@ def _moment_of(rec, body, prior):
         "at": rec.get("timestamp") or "",
         "kind": kind,
         "said": redact(body.strip())[:400],
-        "after": redact(prior.strip()[-300:]),
+        "after": redact(prior.strip())[-300:],
     }
 
 
@@ -1613,10 +1631,11 @@ def _moments_codex(row):
         if role == "assistant":
             prior += body
         elif role == "user":
-            if body.lstrip().startswith(MACHINE_PROMPT_OPENERS) \
+            if codex_machine_prompt_origin(payload, body, CODEX_MACHINE_PROMPT_OPENERS) \
                     or not body.strip():
                 continue
-            moment = _moment_of(rec, body, prior)
+            body, questions = codex_question_reply(body)
+            moment = _moment_of(rec, body, prior + "".join(questions))
             if moment:
                 out.append(moment)
             prior = ""
@@ -1993,8 +2012,7 @@ def concentration(rows, key):
     return by_project.most_common(1)[0][1] / total * 100
 
 
-# The table lib/skill_activation.py owns (format-ctl keeps a copy, pinned
-# equal by a test).
+# The shared harness session-variable table.
 HARNESS_SESSION_VARS = skill_activation.HARNESS_SESSION_VARS
 
 

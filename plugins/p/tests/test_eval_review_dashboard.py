@@ -19,6 +19,69 @@ from retro_eval.taxonomy_packets import TAXONOMY_FIELDS  # noqa: E402
 
 
 class ReviewDashboardTests(unittest.TestCase):
+    def test_recommendations_follow_captured_human_labels_not_assessments(self):
+        from retro_eval.catalog import load_rubric_catalogue
+        rubrics = {r.id: r for r in load_rubric_catalogue(
+            PLUGIN_ROOT / "rubrics" / "rubrics.json").rubrics}
+        for stem, rubric_id, label in (("duplicate-work", "duplicate_work", "wasteful_duplicate"),
+                                      ("tool-failure", "tool_failure_kind", "execution_failure")):
+            self.packet(stem + "-test-round1", rubric=rubric_id,
+                        version=rubrics[rubric_id].version, split="test", rows=[
+                            {"proposed_label": label, "human_label": label},
+                            {"proposed_label": label, "assessment": "unsure"},
+                        ])
+        dashboard = build_review_dashboard(self.review_dir, repo_root=self.repo)
+        recommendations = {r["proposal"]: r for r in dashboard["recommendations"]}
+        for proposal in ("P1", "P4"):
+            self.assertEqual(1, dashboard["taxonomies"][proposal]["human_labeled"])
+            self.assertIn("1 of 2", recommendations[proposal]["evidence_basis"])
+            self.assertNotIn("zero human", recommendations[proposal]["evidence_basis"])
+            self.assertFalse(recommendations[proposal]["decision_support"])
+            self.assertIn("scoped validation", recommendations[proposal]["revisit_when"])
+
+    def test_controlled_coverage_requires_explicit_consistent_nonempty_counts(self):
+        coverage_path = self.retro_home / "current-base" / "p3-controlled" / "report.json"
+        cases = [
+            ({}, "not_observed", False),
+            ({"population": 0, "resolved": 0, "unresolved": 0}, "not_observed", False),
+            ({"population": 2, "resolved": 2, "unresolved": 0}, "controlled_pass", True),
+            ({"population": 2, "resolved": 1, "unresolved": 1}, "controlled_incomplete", False),
+            ({"population": 2, "resolved": 2}, "incomplete_evidence", False),
+            ({"population": 2, "resolved": 2, "unresolved": 1}, "inconsistent_evidence", False),
+            ({"population": True, "resolved": True, "unresolved": False}, "incomplete_evidence", False),
+            ({"population": 2, "resolved": -1, "unresolved": 3}, "incomplete_evidence", False),
+        ]
+        for coverage, state, passed in cases:
+            with self.subTest(coverage=coverage):
+                coverage_path.write_text(json.dumps({"dataset_manifest": {
+                    "instruction_manifest_coverage": coverage}}))
+                dashboard = build_review_dashboard(self.review_dir, repo_root=self.repo)
+                self.assertEqual(state, dashboard["proposals"]["P3"]["state"])
+                recommendation = next(r for r in dashboard["recommendations"]
+                                      if r["proposal"] == "P3")
+                self.assertEqual(passed, recommendation["decision_support"])
+                self.assertEqual("adopt" if passed else "hold", recommendation["decision"])
+                if "unresolved" not in coverage:
+                    self.assertIsNone(dashboard["proposals"]["P3"]["unresolved"])
+
+    def test_metric_rows_preserve_reason_for_withheld_interval(self):
+        from retro_eval.review_dashboard import _metric_rows
+        uncertainty = {
+            "status": "not_estimated",
+            "reason": "sampling_design_not_established",
+            "scope": "observed_records",
+            "next_action": "Specify and evaluate a sampling design.",
+        }
+        rows = _metric_rows({"sources": {"fixture": [{
+            "scorer_id": "tool_failure_rate", "value": .5,
+            "numerator": 5, "eligible_population": 10,
+            "details": {"uncertainty": uncertainty},
+        }, {"scorer_id": "legacy_rate"}]}})
+        self.assertEqual(uncertainty, rows[0]["uncertainty"])
+        self.assertIsNone(rows[0]["interval_low"])
+        self.assertEqual(.5, rows[0]["value"])
+        self.assertEqual({}, rows[1]["uncertainty"])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.retro_home = Path(self.temporary.name)
@@ -82,6 +145,37 @@ class ReviewDashboardTests(unittest.TestCase):
         }
         (self.review_dir / (stem + "-manifest.json")).write_text(
             json.dumps(manifest), encoding="utf-8")
+
+    def test_taxonomy_split_counts_include_every_review_round(self):
+        from retro_eval.review_dashboard import _packets, _taxonomy_summary
+        for round_number, count in ((1, 3), (2, 2)):
+            stem = "duplicate-work-test-round%d" % round_number
+            self.packet(stem, rubric="duplicate_work", version=5, split="test",
+                rows=[{"proposed_label": "wasteful_duplicate", "assessment": "correct",
+                       "human_label": "wasteful_duplicate"} for _ in range(count)])
+            path = self.review_dir / (stem + "-manifest.json")
+            manifest = json.loads(path.read_text())
+            manifest["adaptive_sampling"]["round"] = round_number
+            path.write_text(json.dumps(manifest))
+        packets = _packets(self.review_dir)
+        result = _taxonomy_summary(packets, "duplicate_work")
+        split = result["splits"]["heldout"]
+        self.assertEqual(5, split["sample_size"])
+        self.assertEqual(5, split["human_labeled"])
+        self.assertEqual(5, split["assessed"])
+        self.assertEqual({"wasteful_duplicate": 5}, split["proposed_support"])
+        self.assertEqual([1, 2], split["rounds"])
+        self.assertEqual([1, 2], [b["adaptive_round"] for b in split["bindings"]])
+        self.assertEqual(result, _taxonomy_summary(list(reversed(packets)), "duplicate_work"))
+        self.assertEqual(5, result["sample_size"])
+        self.assertFalse(result["validated"])
+        packets[1][0]["annotation_protocol_version"] = 99
+        packets[1][0]["adaptive_sampling"]["minimum_heldout_per_label"] = 30
+        mixed = _taxonomy_summary(packets, "duplicate_work")["splits"]["heldout"]
+        self.assertIsNone(mixed["protocol_version"])
+        self.assertIsNone(mixed["minimum_heldout_per_label"])
+        self.assertEqual([6, 99], [binding["protocol_version"] for binding in mixed["bindings"]])
+        self.assertEqual(5, mixed["sample_size"])
 
     def reports(self):
         report = {
@@ -148,6 +242,60 @@ class ReviewDashboardTests(unittest.TestCase):
         (self.retro_home / "current-base" / "p7-controlled" /
          "owned-hook-report.json").write_text(json.dumps(p7), encoding="utf-8")
 
+    def test_generic_metrics_include_every_report_source_and_preserve_missingness(self):
+        self.reports()
+        report_path = self.retro_home / "cross-harness-v4" / "report.json"
+        report = json.loads(report_path.read_text())
+        for source, value in (("antigravity", 0.1), ("extension", None)):
+            metric = dict(report["sources"]["codex"][0])
+            metric.update(value=value, numerator=None, eligible_population=0,
+                          population=None, interval_low=None, interval_high=None)
+            report["sources"][source] = [metric]
+        report_path.write_text(json.dumps(report))
+        dashboard = build_review_dashboard(self.review_dir, repo_root=self.repo)
+        for taxonomy in dashboard["taxonomies"].values():
+            self.assertEqual(taxonomy["splits"], {})
+        self.assertEqual({m["harness"] for m in dashboard["metrics"]}, set(report["sources"]))
+        self.assertEqual({m["harness"] for m in dashboard["corpus_candidates"]}, set(report["sources"]))
+        candidate = next(m for m in dashboard["corpus_candidates"] if m["harness"] == "extension")
+        self.assertIsNone(candidate["rate"])
+        self.assertIsNone(candidate["count"])
+        self.assertEqual(candidate["eligible"], 0)
+        metric = next(m for m in dashboard["metrics"] if m["harness"] == "extension")
+        for key in ("value", "numerator", "population"):
+            self.assertIsNone(metric[key])
+        report["sources"]["antigravity"][0]["scorer_version"] = 99
+        report_path.write_text(json.dumps(report))
+        with self.assertRaisesRegex(ValueError, "mixed repeated-call versions"):
+            build_review_dashboard(self.review_dir, repo_root=self.repo)
+
+    def test_disagreement_actions_do_not_invent_causes_from_counts(self):
+        self.packet("unrelated-calibration", rubric="interpretation_grounding",
+                    version=1, split="calibration", rows=[
+                        {"assessment": "wrong", "review_kind": "agent_judgment",
+                         "situation_summary": "An arithmetic calculation returned the wrong sum."},
+                        {"assessment": "partly_accurate", "review_kind": "user_understanding",
+                         "situation_summary": "The requested file type was misunderstood."},
+                        {"assessment": "not_enough_context", "review_kind": "agent_judgment",
+                         "situation_summary": "The cited source is unavailable."},
+                    ])
+        dashboard = build_review_dashboard(self.review_dir, repo_root=self.repo)
+        self.assertEqual(dashboard["calibration"]["completed"], 3)
+        self.assertEqual(len(dashboard["changes"]), 3)
+        rendered = json.dumps(dashboard["changes"]).lower()
+        for unsupported in ("polling", "standing preferences", "brevity",
+                            "two adjacent waits", "repeat history"):
+            self.assertNotIn(unsupported, rendered)
+        self.assertIn("review", rendered)
+        self.assertIn("context", rendered)
+        self.assertNotIn("arithmetic", rendered)
+        self.assertNotIn("file type", rendered)
+        self.assertNotIn("cited source", rendered)
+        self.packet("unrelated-calibration", rubric="interpretation_grounding",
+                    version=1, split="calibration", rows=[
+                        {"assessment": "accurate", "review_kind": "agent_judgment"}])
+        self.assertEqual(build_review_dashboard(self.review_dir, repo_root=self.repo)["changes"], [])
+
     def test_builds_calibration_taxonomy_and_owned_observability_summary(self):
         self.packet("mixed-interpretation-calibration-round1",
                     rubric="interpretation_grounding", version=1,
@@ -200,7 +348,7 @@ class ReviewDashboardTests(unittest.TestCase):
                          recommendations["P5"]["decision"])
         self.assertIn("fixed task protocol",
                       recommendations["P5"]["revisit_when"])
-        self.assertEqual("adopt_scoped",
+        self.assertEqual("retired",
                          recommendations["P7"]["decision"])
         self.assertEqual({"accurate": 1, "partly_accurate": 1, "wrong": 1,
                           "not_enough_context": 1},
@@ -214,6 +362,9 @@ class ReviewDashboardTests(unittest.TestCase):
         self.assertEqual("not_observable",
                          dashboard["proposals"]["P2"]["missed_trigger_rate"])
         self.assertEqual(2, dashboard["proposals"]["P3"]["resolved"])
+        self.assertFalse(recommendations["P7"]["decision_support"])
+        self.assertEqual("retired", dashboard["proposals"]["P7"]["state"])
+        self.assertTrue(dashboard["proposals"]["P7"]["historical_only"])
         self.assertEqual("repository_owned_wrapped_hooks_only",
                          dashboard["proposals"]["P7"]["coverage"])
         self.assertEqual("fixture-report", dashboard["run"]["dataset_id"])

@@ -272,32 +272,6 @@ class CliContractTests(unittest.TestCase):
             "--source", "standing_instructions=%s" % rules,
             "--version", "standing_instructions=v1"))
 
-    def test_hook_events_measures_owned_lifecycles_and_rejects_content(self):
-        events = self.base / "hooks" / "events.jsonl"
-        events.parent.mkdir()
-        common = {"schema_version": 1, "source": "polstools.format",
-                  "hook_id": "format.session-start", "hook_version": "1",
-                  "trigger_kind": "session_start", "invocation_id": "i1"}
-        rows = [dict(common, event="opportunity", observed_at_ns=1),
-                dict(common, event="start", observed_at_ns=2),
-                dict(common, event="end", observed_at_ns=3, status="ok",
-                     latency_ms=1, injected_bytes=10, content_sha256="a" * 64)]
-        events.write_text("".join(json.dumps(row) + "\n" for row in rows),
-                          encoding="utf-8")
-        completed = run_cli("retro-eval-hook-events", "--events", events,
-                            "--expected-invocations", "1",
-                            "--baseline-normalized-bytes", "1000",
-                            "--output", self.base / "hooks" / "report.json")
-        self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual(1.0, json.loads(completed.stdout)["capture_recall"])
-        rows[0]["message"] = "content must never be captured"
-        events.write_text("".join(json.dumps(row) + "\n" for row in rows),
-                          encoding="utf-8")
-        self.assertCannotRun(run_cli(
-            "retro-eval-hook-events", "--events", events,
-            "--expected-invocations", "1", "--baseline-normalized-bytes", "1000",
-            "--output", self.base / "hooks" / "report2.json"))
-
     def test_interpretations_reject_unreadable_cards(self):
         self.assertCannotRun(run_cli(
             "retro-eval-interpretations", "build",

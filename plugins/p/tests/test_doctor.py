@@ -106,139 +106,6 @@ class HarnessEvaluationTests(unittest.TestCase):
         self.assertEqual(0, self.doctor.exit_code(checks))
 
 
-class HookProbeTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.doctor = load_doctor()
-
-    def _plugin(self, root):
-        plugin = root / "plugin"
-        (plugin / "hooks").mkdir(parents=True)
-        (plugin / "style").mkdir()
-        (plugin / "style" / "full.md").write_text("full payload\n", "utf-8")
-        (plugin / "style" / "turn.md").write_text("turn payload\n", "utf-8")
-        hooks = {
-            "hooks": {
-                "SessionStart": [{"hooks": [{
-                    "type": "command",
-                    "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\" "
-                    "\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate "
-                    "\"${CLAUDE_PLUGIN_ROOT}/style/full.md\"",
-                }]}],
-                "UserPromptSubmit": [{"hooks": [{
-                    "type": "command",
-                    "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\" "
-                    "\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate "
-                    "\"${CLAUDE_PLUGIN_ROOT}/style/turn.md\"",
-                }]}],
-            }
-        }
-        (plugin / "hooks" / "hooks.json").write_text(
-            json.dumps(hooks), encoding="utf-8"
-        )
-        return plugin
-
-    def test_missing_python_is_reported_without_raw_stderr(self):
-        class Result:
-            returncode = 2
-            stdout = ""
-            stderr = "python-launcher: Python 3 not found at private-path"
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plugin = self._plugin(Path(tmp))
-            checks = self.doctor.probe_plugin_hooks(
-                "codex", plugin, runner=lambda *args, **kwargs: Result()
-            )
-        self.assertTrue(all(check.status == "FAIL" for check in checks))
-        self.assertTrue(all("Python 3 is unavailable" in check.summary for check in checks))
-        rendered = self.doctor.render(checks, expected_version="1.5.14")
-        self.assertNotIn("private-path", rendered)
-
-    def test_generic_hook_failure_is_distinct_from_missing_python(self):
-        class Result:
-            returncode = 1
-            stdout = ""
-            stderr = "internal failure at private-path"
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plugin = self._plugin(Path(tmp))
-            checks = self.doctor.probe_plugin_hooks(
-                "claude", plugin, runner=lambda *args, **kwargs: Result()
-            )
-        self.assertTrue(all(check.status == "FAIL" for check in checks))
-        self.assertTrue(all("exited 1" in check.summary for check in checks))
-        rendered = self.doctor.render(checks, expected_version="1.5.14")
-        self.assertNotIn("private-path", rendered)
-
-    def test_format_gate_entry_with_missing_python_is_reported_as_such(self):
-        class Result:
-            returncode = 1
-            stdout = ""
-            stderr = "python-launcher: Python 3 not found at private-path"
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plugin = self._plugin(Path(tmp))
-            path = plugin / "hooks" / "hooks.json"
-            path.write_text(path.read_text("utf-8").replace(
-                '\\"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\\" '
-                '\\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\\" gate',
-                '\\"${CLAUDE_PLUGIN_ROOT}/bin/format-gate\\" gate',
-            ), encoding="utf-8")
-            self.assertIn("format-gate", path.read_text("utf-8"))
-            checks = self.doctor.probe_plugin_hooks(
-                "claude", plugin, runner=lambda *args, **kwargs: Result()
-            )
-        self.assertEqual(["FAIL", "FAIL"], [check.status for check in checks])
-        self.assertTrue(all("Python 3 is unavailable" in check.summary for check in checks))
-
-    def test_success_requires_byte_exact_payload(self):
-        class Result:
-            returncode = 0
-            stderr = ""
-
-            def __init__(self, stdout):
-                self.stdout = stdout
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plugin = self._plugin(Path(tmp))
-
-            def runner(argv, **kwargs):
-                payload = Path(argv[argv.index("gate") + 1]).read_text("utf-8")
-                return Result(payload)
-
-            checks = self.doctor.probe_plugin_hooks("claude", plugin, runner=runner)
-        self.assertEqual(["PASS", "PASS"], [check.status for check in checks])
-
-    def test_probe_forces_the_format_default_on(self):
-        captured = []
-
-        class Result:
-            returncode = 0
-            stderr = ""
-
-            def __init__(self, stdout):
-                self.stdout = stdout
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plugin = self._plugin(Path(tmp))
-
-            def runner(argv, **kwargs):
-                captured.append(kwargs["env"])
-                payload = Path(argv[argv.index("gate") + 1]).read_text("utf-8")
-                return Result(payload)
-
-            checks = self.doctor.probe_plugin_hooks(
-                "codex", plugin, runner=runner
-            )
-        self.assertEqual(["PASS", "PASS"], [check.status for check in checks])
-        for env in captured:
-            self.assertEqual("on", env["P_FORMAT_DEFAULT"])
-            self.assertIn("P_FORMAT_STATE_DIR", env)
-            self.assertIn("P_FORMAT_CONFIG_FILE", env)
-            self.assertNotIn("CLAUDE_CODE_SESSION_ID", env)
-            self.assertEqual("p-doctor-check", env["CODEX_SESSION_ID"])
-
-
 class SchemaAndPackagingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -335,19 +202,10 @@ class FakeHarnessDoctorTests(unittest.TestCase):
         return {check.key: check for check in checks}, self.doctor.exit_code(checks)
 
     def _agy_imports_p(self, version):
-        # The installed copy carries the files its PreInvocation hook runs.
-        hook_files = (
-            "hooks.json", "bin/agy-format-hook", "bin/format-gate", "bin/format-ctl",
-            "bin/python-launcher", "style/response-format.md", "style/turn-reminder.md",
-            "style/antigravity/response-format.json", "style/antigravity/turn-reminder.json",
-        )
-        write_plugin(
-            self.fake.home / ".gemini" / "config" / "plugins" / "p", version,
-            {name: (PLUGIN_ROOT / name).read_text(encoding="utf-8") for name in hook_files},
-        )
+        write_plugin(self.fake.home / ".gemini" / "config" / "plugins" / "p", version)
         self.fake.on("agy", ["plugin", "list"], (0, {"imports": [{
             "name": "p", "source": "antigravity",
-            "importedAt": "2026-01-01T00:00:00Z", "components": ["skills", "hooks"],
+            "importedAt": "2026-01-01T00:00:00Z", "components": ["skills"],
         }]}))
 
     def test_failing_agy_list_is_unavailable_not_uninstalled(self):
@@ -368,41 +226,13 @@ class FakeHarnessDoctorTests(unittest.TestCase):
         self.assertEqual("FAIL", found["install.any"].status)
         self.assertEqual(1, code)
 
-    def test_antigravity_reports_installed_version_and_an_explicit_hook_line(self):
+    def test_antigravity_install_is_healthy_without_hooks(self):
         version = self.doctor._manifest_version()
         self._agy_imports_p(version)
         found, code = self._collect(["agy"])
         self.assertEqual("PASS", found["agy.version"].status)
-        self.assertEqual("PASS", found["agy.hooks.registered"].status)
-        for case in ("off", "first", "later"):
-            self.assertEqual("PASS", found["agy.hook.pre_invocation_" + case].status)
+        self.assertFalse(any(".hook" in key for key in found))
         self.assertEqual(0, code)
-
-    def test_antigravity_hook_probe_fails_when_the_installed_hook_is_missing(self):
-        self._agy_imports_p(self.doctor._manifest_version())
-        installed = self.fake.home / ".gemini" / "config" / "plugins" / "p"
-        (installed / "bin" / "agy-format-hook").unlink()
-        found, code = self._collect(["agy"])
-        for case in ("off", "first", "later"):
-            self.assertEqual("FAIL", found["agy.hook.pre_invocation_" + case].status)
-        self.assertEqual(1, code)
-
-    def test_antigravity_hook_is_not_probed_when_agy_is_absent(self):
-        self._agy_imports_p(self.doctor._manifest_version())
-        found, code = self._collect([])
-        self.assertFalse([key for key in found if key.startswith("agy.hook")])
-        self.assertNotIn("agy.hooks.registered", found)
-
-    def test_antigravity_import_without_hooks_component_fails_registration(self):
-        self._agy_imports_p(self.doctor._manifest_version())
-        self.fake.on("agy", ["plugin", "list"], (0, {"imports": [{
-            "name": "p", "source": "antigravity",
-            "importedAt": "2026-01-01T00:00:00Z", "components": ["skills"],
-        }]}))
-        found, code = self._collect(["agy"])
-        self.assertEqual("FAIL", found["agy.hooks.registered"].status)
-        self.assertEqual("PASS", found["agy.hook.pre_invocation_first"].status)
-        self.assertEqual(1, code)
 
     def test_antigravity_copy_without_a_manifest_is_not_a_version_match(self):
         self._agy_imports_p(self.doctor._manifest_version())
@@ -434,14 +264,8 @@ class FakeHarnessDoctorTests(unittest.TestCase):
 class CodexInstalledRootTests(unittest.TestCase):
     """Codex's installed copy is its versioned cache directory, not the source."""
 
-    HOOKS = json.dumps({"hooks": {event: [{"hooks": [{
-        "type": "command",
-        "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/format-gate\" gate "
-                   "\"${CLAUDE_PLUGIN_ROOT}/style/%s.md\"" % name,
-    }]}] for event, name in (("SessionStart", "start"), ("UserPromptSubmit", "prompt"))}})
-
-    GATE_OK = 'cat "$2"\n'
-    GATE_SOURCE = 'echo "source gate ran"\n'
+    CONTENT_CACHE = "cache content\n"
+    CONTENT_SOURCE = "source content\n"
 
     def setUp(self):
         self.doctor = load_doctor()
@@ -453,20 +277,15 @@ class CodexInstalledRootTests(unittest.TestCase):
         self.doctor.python_checks = lambda *a, **k: []
         self.version = self.doctor._manifest_version()
         self.source = Path(self._tmp.name) / "source" / "p"
-        self._tree(self.source, "payload\n", self.GATE_SOURCE)
+        self._tree(self.source, self.CONTENT_SOURCE)
         self.fake.codex_installs_p(self.version, self.source)
         self.cache = self.fake.codex_cache_dir(self.version)
 
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _tree(self, root, payload, gate):
-        write_plugin(root, self.version, {
-            "hooks/hooks.json": self.HOOKS,
-            "style/start.md": payload,
-            "style/prompt.md": payload,
-            "bin/format-gate": gate,
-        })
+    def _tree(self, root, content):
+        write_plugin(root, self.version, {"example.txt": content})
 
     def _collect(self, repo_root=None):
         with patched_env(self.fake.env("P_DOCTOR_", ["codex"])):
@@ -483,33 +302,18 @@ class CodexInstalledRootTests(unittest.TestCase):
         return repo
 
     def test_cache_copy_that_differs_from_the_source_fails_the_content_check(self):
-        self._tree(self.cache, "payload\n", self.GATE_OK)
+        self._tree(self.cache, self.CONTENT_CACHE)
         found = self._collect(self._repo())
         self.assertEqual("FAIL", found["codex.content"].status)
         self.assertIn("differ from the --repo-root checkout in 1 files", found["codex.content"].summary)
-
-    def test_hook_probe_runs_the_cache_copy_not_the_source(self):
-        # Only the cache copy's gate echoes its payload; the source copy's gate
-        # prints something else, so a pass means the cache copy was executed.
-        self._tree(self.cache, "payload\n", self.GATE_OK)
-        found = self._collect()
-        self.assertEqual("PASS", found["codex.hook.session_start"].status)
-        self.assertEqual("PASS", found["codex.hook.user_prompt_submit"].status)
-
-    def test_a_source_only_gate_is_not_what_the_probe_runs(self):
-        self._tree(self.cache, "payload\n", self.GATE_SOURCE)
-        self._tree(self.source, "payload\n", self.GATE_OK)
-        found = self._collect()
-        self.assertEqual("FAIL", found["codex.hook.session_start"].status)
 
     def test_missing_cache_directory_is_an_explicit_non_pass(self):
         found = self._collect()
         self.assertEqual("FAIL", found["codex.content"].status)
         self.assertIn("missing or unreadable", found["codex.content"].summary)
-        self.assertNotIn("codex.hook.session_start", found)
 
     def test_identical_cache_copy_passes(self):
-        self._tree(self.cache, "payload\n", self.GATE_SOURCE)
+        self._tree(self.cache, self.CONTENT_SOURCE)
         found = self._collect(self._repo())
         self.assertEqual("PASS", found["codex.content"].status)
 
@@ -649,40 +453,6 @@ class ContentAndConfigTests(unittest.TestCase):
             checks = self.doctor.python_checks(roots)
         found = {check.key: check.status for check in checks}
         self.assertEqual({"claude.python": "PASS", "codex.python": "FAIL"}, found)
-
-    def test_a_third_harness_hook_contract_plugs_into_the_probe(self):
-        captured = []
-
-        class Result:
-            returncode = 0
-            stderr = ""
-
-            def __init__(self, stdout):
-                self.stdout = stdout
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plugin = Path(tmp)
-            (plugin / "style").mkdir()
-            (plugin / "style" / "stop.md").write_text("stop payload\n", "utf-8")
-            (plugin / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{
-                "type": "command",
-                "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\" "
-                "\"${CLAUDE_PLUGIN_ROOT}/bin/format-ctl\" gate "
-                "\"${CLAUDE_PLUGIN_ROOT}/style/stop.md\"",
-            }]}]}}), encoding="utf-8")
-
-            def runner(argv, **kwargs):
-                captured.append(kwargs["env"])
-                return Result(Path(argv[argv.index("gate") + 1]).read_text("utf-8"))
-
-            checks = self.doctor.probe_plugin_hooks(
-                "agy", plugin, runner=runner,
-                contract={"catalog": ("hooks.json",), "events": ("Stop",),
-                          "session_env": "FIXTURE_SESSION_ID"},
-            )
-        self.assertEqual(["agy.hook.stop"], [check.key for check in checks])
-        self.assertEqual(["PASS"], [check.status for check in checks])
-        self.assertEqual("p-doctor-check", captured[0]["FIXTURE_SESSION_ID"])
 
 
 if __name__ == "__main__":

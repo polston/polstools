@@ -19,6 +19,18 @@ FIELDS = ("case_id", "source", "split", "context_chars", "user_turn_chars",
 MUTABLE_FIELDS = frozenset({"human_label", "notes", "assessment"})
 
 
+def _assessment_values(rubric_id):
+    if rubric_id == "interpretation_grounding":
+        return {"", "accurate", "partly_accurate", "wrong", "not_enough_context"}
+    return {"", "correct", "incorrect", "unsure"}
+
+
+def _validate_assessments(rows, rubric_id):
+    allowed = _assessment_values(rubric_id)
+    if any(str(row.get("assessment") or "").strip() not in allowed for row in rows):
+        raise ValueError("annotation packet has unsupported assessment")
+
+
 def _protocol_value(protocol, field):
     if isinstance(protocol, dict):
         return protocol[field]
@@ -75,6 +87,8 @@ def _salt(directory: Path, *, persist=True):
 def _store_salt(directory: Path, value: bytes):
     path = directory / ".annotation-salt"
     if path.exists():
+        if path.read_bytes() != value:
+            raise ValueError("annotation salt changed during sampling; retry with the retained salt")
         return
     directory.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -88,21 +102,35 @@ def _digest(path: Path):
 
 def _packet_fingerprint(path: Path):
     """Fingerprint sample identity while allowing human label and note edits."""
+    fields, rows = _read_packet_rows(path)
+    return _rows_fingerprint(fields, rows)
+
+
+def _read_packet_rows(path: Path):
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
-            immutable = tuple(field for field in (reader.fieldnames or ())
-                              if field not in MUTABLE_FIELDS)
-            rows = [{field: str(row.get(field) or "") for field in immutable}
-                    for row in reader]
+            fields = tuple(reader.fieldnames or ())
+            return fields, list(reader)
     except OSError as exc:
         raise ValueError("annotation packet is unreadable") from exc
+
+
+def _rows_fingerprint(fields, captured_rows):
+    immutable = tuple(field for field in fields if field not in MUTABLE_FIELDS)
+    rows = [{field: str(row.get(field) or "") for field in immutable}
+            for row in captured_rows]
     canonical = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _load_packet_manifest(source: Path, manifest_path: Path, *, rubric_id,
                           rubric_version):
+    return _load_packet(source, manifest_path, rubric_id=rubric_id,
+                        rubric_version=rubric_version)[0]
+
+
+def _load_packet(source: Path, manifest_path: Path, *, rubric_id, rubric_version):
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -114,18 +142,43 @@ def _load_packet_manifest(source: Path, manifest_path: Path, *, rubric_id,
     if (manifest.get("rubric_id") != rubric_id
             or int(manifest.get("rubric_version") or 0) != rubric_version):
         raise ValueError("annotation manifest rubric mismatch")
-    if manifest.get("sample_sha256") != _packet_fingerprint(source):
+    fields, rows = _read_packet_rows(source)
+    if manifest.get("sample_sha256") != _rows_fingerprint(fields, rows):
         raise ValueError("annotation packet fingerprint mismatch")
-    return manifest
+    _validate_assessments(rows, rubric_id)
+    return manifest, rows
 
 
 def _check_packet_request(output, manifest_path, per_source, split):
-    _external(output)
-    _external(manifest_path)
-    if per_source < 1:
-        raise ValueError("per_source must be positive")
+    if type(per_source) is not int or per_source < 1:
+        raise ValueError("per_source must be a positive integer")
     if split not in {"calibration", "test"}:
         raise ValueError("annotation split must be calibration or test")
+    _check_packet_destinations(output, manifest_path)
+
+
+def _check_packet_destinations(output, manifest_path):
+    _external(output)
+    _external(manifest_path)
+    if output.resolve() == manifest_path.resolve():
+        raise ValueError("annotation CSV and manifest require distinct destinations")
+    if any(path.name == ".annotation-salt" for path in (output, manifest_path)):
+        raise ValueError("annotation destinations cannot replace the sampling salt")
+    if any(path.exists() or path.is_symlink() for path in (output, manifest_path)):
+        raise ValueError("annotation destination already exists; use fresh packet paths")
+
+
+def _create_packet_csv(path, fields, rows):
+    """Create one packet exclusively and fingerprint the selected serialized rows."""
+    _external(path)
+    serialized = [{field: "" if row.get(field) is None else str(row[field])
+                   for field in fields} for row in rows]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(serialized)
+    return _rows_fingerprint(fields, serialized)
 
 
 def _refuse_empty(pools):
@@ -151,18 +204,14 @@ def _write_packet(pools, output: Path, manifest_path: Path, *, per_source,
                 [:per_source]]
         selected.extend(rows)
         source_counts[source] = len(rows)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS)
-        writer.writeheader()
-        writer.writerows(selected)
+    sample_sha256 = _create_packet_csv(output, FIELDS, selected)
     manifest = {
         "schema_version": 1, "annotation_packet_version": 2,
         "dataset_id": dataset_id,
         "rubric_id": rubric_id, "rubric_version": rubric_version,
         "split": split, "selection": "keyed deterministic rank by source",
         "per_source": per_source, "source_counts": source_counts,
-        "sample_sha256": _packet_fingerprint(output),
+        "sample_sha256": sample_sha256,
         **provenance,
     }
     if annotation_protocol is not None:
@@ -172,8 +221,8 @@ def _write_packet(pools, output: Path, manifest_path: Path, *, per_source,
             "annotation_protocol_sha256": str(_protocol_value(annotation_protocol, "sha256")),
         })
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                             encoding="utf-8")
+    with manifest_path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest
 
 
@@ -192,7 +241,7 @@ def sample_trace_annotations(traces_path: Path, prompt_evidence, output: Path,
     records is refused, never dropped.
     """
     _check_packet_request(output, manifest_path, per_source, split)
-    records = JsonlTraceStore(traces_path).read()
+    records, trace_sha256 = JsonlTraceStore(traces_path).read_with_digest()
     pools = {record.source: [] for record in records}
     for source in requested_sources:
         pools.setdefault(str(source), [])
@@ -223,7 +272,7 @@ def sample_trace_annotations(traces_path: Path, prompt_evidence, output: Path,
         split=split, annotation_protocol=annotation_protocol,
         provenance={"input_kind": "normalized_traces",
                     "requested_sources": sorted(str(s) for s in requested_sources),
-                    "trace_sha256": _digest(traces_path)})
+                    "trace_sha256": trace_sha256})
 
 
 def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_source=20,
@@ -240,10 +289,13 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
     _check_packet_request(output, manifest_path, per_source, split)
     salt = _salt(output.parent, persist=False)
     pools = {}
-    input_fingerprints = {}
+    input_artifacts = []
+    source_fingerprints = {}
+    cases = {}
     for extract_path in extract_paths:
         try:
-            payload = json.loads(extract_path.read_text(encoding="utf-8"))
+            raw = extract_path.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError("annotation extract is not one JSON object: %s"
                              % extract_path.name) from exc
@@ -251,7 +303,9 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
             raise ValueError("annotation extract lacks a sessions list: %s"
                              % extract_path.name)
         source = str(payload.get("source_system") or extract_path.stem)
-        input_fingerprints[source] = _digest(extract_path)
+        digest = hashlib.sha256(raw).hexdigest()
+        input_artifacts.append({"source": source, "sha256": digest})
+        source_fingerprints.setdefault(source, []).append(digest)
         candidates = pools.setdefault(source, [])
         for session in payload["sessions"]:
             previous_assistant = ""
@@ -263,17 +317,29 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
                     previous_assistant = excerpt
                     previous_assistant_chars = int(message.get("chars") or len(excerpt))
                 elif role == "user" and excerpt:
-                    raw_id = "%s|%s|%s" % (
-                        source, session.get("session_id"), message.get("line"))
+                    session_id, line = session.get("session_id"), message.get("line")
+                    if session_id is None or line is None or not str(session_id) or not str(line):
+                        raise ValueError("annotation case identity requires session_id and line")
+                    identity = (source, str(session_id), str(line))
+                    raw_id = "%s|%s|%s" % identity
                     case_id = hmac.new(salt, raw_id.encode(), hashlib.sha256).hexdigest()[:24]
                     rank = hmac.new(salt, ("rank|" + raw_id).encode(), hashlib.sha256).hexdigest()
-                    candidates.append((rank, {
+                    row = {
                         "case_id": case_id, "source": source, "split": split,
                         "context_chars": previous_assistant_chars,
                         "user_turn_chars": int(message.get("chars") or len(excerpt)),
                         "context": previous_assistant, "user_turn": excerpt,
                         "human_label": "", "notes": "",
-                    }))
+                    }
+                    previous = cases.get(case_id)
+                    if previous is not None:
+                        if previous[0] != identity:
+                            raise ValueError("ambiguous annotation case identity in external extracts")
+                        if previous[1] != row:
+                            raise ValueError("conflicting annotation case in external extracts")
+                        continue
+                    cases[case_id] = (identity, row)
+                    candidates.append((rank, row))
     # Refuse before the salt file or any output directory is created.
     _refuse_empty(pools)
     _store_salt(output.parent, salt)
@@ -281,41 +347,43 @@ def sample_annotations(extract_paths, output: Path, manifest_path: Path, *, per_
         pools, output, manifest_path, per_source=per_source,
         dataset_id=dataset_id, rubric_id=rubric_id, rubric_version=rubric_version,
         split=split, annotation_protocol=annotation_protocol,
-        provenance={"input_fingerprints": dict(sorted(input_fingerprints.items()))})
+        provenance={
+            "input_artifacts": input_artifacts,
+            "input_fingerprints": {source: hashes[0]
+                                   for source, hashes in sorted(source_fingerprints.items())
+                                   if len(hashes) == 1},
+        })
 
 
 def import_annotations(source: Path, target: Path, *, manifest_path: Path, rubric_id,
                        rubric_version, allowed_labels,
                        annotator_id="human-rater-v1"):
-    manifest = _load_packet_manifest(
+    manifest, rows = _load_packet(
         source, manifest_path, rubric_id=rubric_id, rubric_version=rubric_version)
     allowed = frozenset(allowed_labels)
     labels = []
     seen = set()
-    with source.open("r", encoding="utf-8", newline="") as handle:
-        for row in csv.DictReader(handle):
-            label = str(row.get("human_label") or "").strip()
-            if not label:
-                continue
-            if label not in allowed:
-                raise ValueError("annotation contains an unsupported label")
-            case_id = str(row["case_id"])
-            if case_id in seen:
-                raise ValueError("annotation packet contains duplicate case id")
-            seen.add(case_id)
-            if str(row.get("split") or "") != manifest["split"]:
-                raise ValueError("annotation row split differs from manifest")
-            labels.append(LabelRecord(
-                schema_version=1, dataset_id=str(manifest["dataset_id"]),
-                case_id=case_id, rubric_id=rubric_id, rubric_version=rubric_version,
-                split=str(row["split"]), label=label, annotator_kind="human",
-                annotator_id=annotator_id, evidence_refs=("annotation:" + case_id,),
-                created_at="human-import",
-            ))
+    for row in rows:
+        label = str(row.get("human_label") or "").strip()
+        if not label:
+            continue
+        if label not in allowed:
+            raise ValueError("annotation contains an unsupported label")
+        case_id = str(row["case_id"])
+        if case_id in seen:
+            raise ValueError("annotation packet contains duplicate case id")
+        seen.add(case_id)
+        if str(row.get("split") or "") != manifest["split"]:
+            raise ValueError("annotation row split differs from manifest")
+        labels.append(LabelRecord(
+            schema_version=1, dataset_id=str(manifest["dataset_id"]),
+            case_id=case_id, rubric_id=rubric_id, rubric_version=rubric_version,
+            split=str(row["split"]), label=label, annotator_kind="human",
+            annotator_id=annotator_id, evidence_refs=("annotation:" + case_id,),
+            created_at="human-import",
+        ))
     LabelStore(target).write(labels)
-    with source.open("r", encoding="utf-8") as handle:
-        available_rows = sum(1 for _ in handle) - 1
-    return {"imported": len(labels), "available_rows": available_rows}
+    return {"imported": len(labels), "available_rows": len(rows)}
 
 
 def predict_annotations(source: Path, target: Path, *, manifest_path: Path,
@@ -329,7 +397,7 @@ def predict_annotations(source: Path, target: Path, *, manifest_path: Path,
         rubric_version = int(raw_manifest["rubric_version"])
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("invalid annotation manifest") from exc
-    manifest = _load_packet_manifest(
+    manifest, rows = _load_packet(
         source, manifest_path, rubric_id=rubric_id, rubric_version=rubric_version)
     commit = str(created_commit).lower()
     if len(commit) not in {40, 64} or any(character not in "0123456789abcdef"
@@ -339,26 +407,27 @@ def predict_annotations(source: Path, target: Path, *, manifest_path: Path,
     allowed = frozenset(allowed_labels)
     records = []
     seen = set()
-    with source.open("r", encoding="utf-8", newline="") as handle:
-        for row in csv.DictReader(handle):
-            case_id = str(row.get("case_id") or "")
-            if not case_id or case_id in seen:
-                raise ValueError("prediction packet requires unique case ids")
-            seen.add(case_id)
-            label = str(predictor(row) or "")
-            if label not in allowed:
-                raise ValueError("predictor returned an unsupported label")
-            if str(row.get("split") or "") != manifest["split"]:
-                raise ValueError("annotation row split differs from manifest")
-            records.append(LabelRecord(
-                schema_version=1, dataset_id=str(manifest["dataset_id"]),
-                case_id=case_id, rubric_id=rubric_id,
-                rubric_version=rubric_version, split=str(manifest["split"]),
-                label=label, annotator_kind="deterministic",
-                annotator_id=predictor_id,
-                evidence_refs=("annotation:" + case_id,),
-                created_at="frozen-prediction",
-            ))
+    for row in rows:
+        case_id = str(row.get("case_id") or "")
+        if not case_id or case_id in seen:
+            raise ValueError("prediction packet requires unique case ids")
+        seen.add(case_id)
+        predictor_input = {key: value for key, value in row.items()
+                           if key not in MUTABLE_FIELDS}
+        label = str(predictor(predictor_input) or "")
+        if label not in allowed:
+            raise ValueError("predictor returned an unsupported label")
+        if str(row.get("split") or "") != manifest["split"]:
+            raise ValueError("annotation row split differs from manifest")
+        records.append(LabelRecord(
+            schema_version=1, dataset_id=str(manifest["dataset_id"]),
+            case_id=case_id, rubric_id=rubric_id,
+            rubric_version=rubric_version, split=str(manifest["split"]),
+            label=label, annotator_kind="deterministic",
+            annotator_id=predictor_id,
+            evidence_refs=("annotation:" + case_id,),
+            created_at="frozen-prediction",
+        ))
     LabelStore(target).write(records)
     prediction_manifest = {
         "schema_version": 1, "dataset_id": manifest["dataset_id"],
@@ -387,6 +456,13 @@ def predict_annotations(source: Path, target: Path, *, manifest_path: Path,
 
 def validate_prediction_artifact(predictions_path: Path, manifest_path: Path, *,
                                  sample_manifest_path: Path):
+    return load_prediction_artifact(
+        predictions_path, manifest_path,
+        sample_manifest_path=sample_manifest_path)[0]
+
+
+def load_prediction_artifact(predictions_path: Path, manifest_path: Path, *,
+                             sample_manifest_path: Path):
     """Resolve a prediction manifest to its exact packet and content-free records."""
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -395,8 +471,8 @@ def validate_prediction_artifact(predictions_path: Path, manifest_path: Path, *,
         raise ValueError("invalid prediction or sample manifest") from exc
     if manifest.get("schema_version") != 1 or sample.get("schema_version") != 1:
         raise ValueError("unsupported prediction manifest schema")
-    if manifest.get("predictions_sha256") != _digest(predictions_path):
-        raise ValueError("prediction artifact fingerprint mismatch")
+    records, _ = LabelStore(predictions_path).read_with_digest(
+        expected_digest=manifest.get("predictions_sha256") or "")
     if manifest.get("human_truth_used") is not False:
         raise ValueError("prediction artifact is not truth-blind")
     annotator_kind = manifest.get("annotator_kind")
@@ -421,7 +497,6 @@ def validate_prediction_artifact(predictions_path: Path, manifest_path: Path, *,
             raise ValueError("prediction artifact annotation protocol mismatch")
     if any(manifest.get(field) != sample.get(field) for field in identity):
         raise ValueError("prediction artifact metadata differs from sample")
-    records = LabelStore(predictions_path).read()
     if int(manifest.get("population") or -1) != len(records):
         raise ValueError("prediction artifact population mismatch")
     for record in records:
@@ -432,4 +507,4 @@ def validate_prediction_artifact(predictions_path: Path, manifest_path: Path, *,
         expected_annotator = manifest.get("predictor_id") or manifest.get("annotator_id")
         if expected_annotator and record.annotator_id != expected_annotator:
             raise ValueError("prediction record annotator id differs from manifest")
-    return manifest
+    return manifest, records

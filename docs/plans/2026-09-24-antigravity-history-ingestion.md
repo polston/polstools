@@ -1,5 +1,8 @@
 # Antigravity history ingestion
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 Extend the Retro measurement and evidence-pack pipeline to read Antigravity
 CLI conversation exports alongside Claude and Codex. Preserve the Codex PR's
 population boundaries and main's restrictions on unvalidated behavioral labels.

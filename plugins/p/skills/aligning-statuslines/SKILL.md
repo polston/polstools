@@ -53,9 +53,8 @@ either settings file and reports the reason.
   fields and do not apply over it without a separate explicit replacement
   decision.
 
-Before proposing a mutation, state what it adds, changes, removes, and
-preserves. A missing category is `None`; do not make the user infer scope from
-the command name.
+Before changing settings, explain which fields and renderer behavior will
+change.
 
 ## Commands
 

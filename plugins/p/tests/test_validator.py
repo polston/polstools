@@ -3,7 +3,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
@@ -97,9 +96,9 @@ class MutatedPackageTests(unittest.TestCase):
         )
 
     def test_bare_skill_relative_references_are_checked_against_the_skill(self):
-        (self.plugin / "skills" / "fmt-on" / "scripts" / "toggle.py").unlink()
+        (self.plugin / "skills" / "home" / "scripts" / "toggle.py").unlink()
         self.assertEqual(
-            ["skills/fmt-on/SKILL.md references missing plugin file scripts/toggle.py"],
+            ["skills/home/SKILL.md references missing plugin file scripts/toggle.py"],
             self._errors(),
         )
 
@@ -108,39 +107,6 @@ class MutatedPackageTests(unittest.TestCase):
         errors = self._errors()
         self.assertTrue(errors)
         self.assertTrue(all(error.endswith("bin/skill-profile-ctl") for error in errors), errors)
-
-    def test_hook_command_pointing_at_a_missing_script_is_flagged(self):
-        path = self.plugin / "hooks" / "hooks.json"
-        text = path.read_text(encoding="utf-8")
-        entry = re.search(r"\$\{CLAUDE_PLUGIN_ROOT\}/(bin/[A-Za-z0-9_.-]+)", text).group(1)
-        path.write_text(text.replace(entry, entry + "-absent"), encoding="utf-8")
-        errors = self._errors()
-        self.assertEqual(2, len(errors), errors)
-        self.assertTrue(all(error.endswith(entry + "-absent") for error in errors))
-
-    def test_non_object_hook_events_are_a_finding_not_a_crash(self):
-        (self.plugin / "hooks" / "hooks.json").write_text('{"hooks": null}', encoding="utf-8")
-        errors = self._errors()
-        self.assertEqual(1, len(errors), errors)
-
-    def test_a_second_hook_contract_is_validated_independently(self):
-        contract = {
-            "label": "fixture harness hook manifest",
-            "path": ("fixture-hooks.json",),
-            "events": frozenset({"Stop"}),
-        }
-        original = self.validator.HOOK_CONTRACTS
-        self.validator.HOOK_CONTRACTS = original + (contract,)
-        try:
-            self.assertEqual(["fixture harness hook manifest is missing or malformed"],
-                             self._errors())
-            (self.plugin / "fixture-hooks.json").write_text(json.dumps({"hooks": {"Stop": [
-                {"hooks": [{"type": "command",
-                            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/python-launcher\""}]}
-            ]}}), encoding="utf-8")
-            self.assertEqual([], self._errors())
-        finally:
-            self.validator.HOOK_CONTRACTS = original
 
     def test_keywords_must_agree_across_all_three_manifests(self):
         path = self.plugin / "plugin.json"

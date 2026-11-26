@@ -33,6 +33,61 @@ def card(kind="user_understanding", **overrides):
 
 
 class InterpretationCardTests(unittest.TestCase):
+    def test_snapshot_rejects_taxonomy_assessments_after_external_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, manifest = root / "cards.csv", root / "cards-manifest.json"
+            write_interpretation_review([card()], source, manifest)
+            workspace = AnnotationWorkspace(
+                source=source, manifest_path=manifest,
+                rubrics_path=PLUGIN_ROOT / "rubrics" / "rubrics.json",
+                protocols_path=PLUGIN_ROOT / "rubrics" / "annotation-protocols.json")
+            with source.open(newline="") as handle:
+                reader = csv.DictReader(handle)
+                fields, rows = reader.fieldnames, list(reader)
+            for assessment in ("correct", "incorrect", "unsupported"):
+                with self.subTest(assessment=assessment):
+                    rows[0]["assessment"] = assessment
+                    with source.open("w", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=fields)
+                        writer.writeheader(); writer.writerows(rows)
+                    before = source.read_bytes()
+                    with self.assertRaisesRegex(ValueError, "assessment"):
+                        workspace.snapshot()
+                    self.assertEqual(before, source.read_bytes())
+
+    def test_regeneration_preserves_completed_assessments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output, manifest = root / "cards.csv", root / "cards-manifest.json"
+            write_interpretation_review([card(user_turn="Continue avec cette option.")],
+                                        output, manifest)
+            with output.open(newline="") as handle:
+                reader = csv.DictReader(handle)
+                fields, rows = reader.fieldnames, list(reader)
+            rows[0].update(assessment="accurate", human_label="accurate", notes="Retain review")
+            with output.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows)
+            before = output.read_bytes(), manifest.read_bytes()
+            with self.assertRaisesRegex(ValueError, "destination already exists"):
+                write_interpretation_review([card()], output, manifest)
+            self.assertEqual(before, (output.read_bytes(), manifest.read_bytes()))
+
+    def test_invalid_destinations_preserve_existing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output, manifest = root / "cards.csv", root / "manifest.json"
+            manifest.write_bytes(b"Existing manifest")
+            for source, target in ((output, manifest), (output, output),
+                                   (output, root / ".annotation-salt")):
+                with self.assertRaises(ValueError):
+                    write_interpretation_review([card()], source, target)
+            self.assertEqual(b"Existing manifest", manifest.read_bytes())
+            self.assertFalse(output.exists())
+            self.assertFalse((root / ".annotation-salt").exists())
+
     def test_cli_builds_external_packet_from_authored_json(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -98,6 +153,17 @@ class InterpretationCardTests(unittest.TestCase):
                 assessment="accurate", notes="",
                 expected_revision=state["revision"])
             self.assertEqual("accurate", updated["cases"][0]["assessment"])
+            before = source.read_bytes()
+            with self.assertRaisesRegex(ValueError, "assessment"):
+                workspace.update(
+                    case_id=state["cases"][0]["case_id"], label="wrong",
+                    notes="Changed", expected_revision=updated["revision"])
+            self.assertEqual(before, source.read_bytes())
+            noted = workspace.update(
+                case_id=state["cases"][0]["case_id"], label="accurate",
+                notes="Explanation", expected_revision=updated["revision"])
+            self.assertEqual("accurate", noted["cases"][0]["assessment"])
+            self.assertEqual("Explanation", noted["cases"][0]["notes"])
 
     def test_rejects_raw_tool_wrappers_in_plain_language_fields(self):
         with tempfile.TemporaryDirectory() as raw:

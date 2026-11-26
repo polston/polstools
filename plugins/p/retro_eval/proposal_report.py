@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,16 +30,21 @@ def _proposal(raw):
 
 
 def _json_pointer(payload, pointer: str):
+    if not isinstance(pointer, str):
+        raise ValueError('evidence JSON pointer must be a string')
     if pointer == "":
         return payload
     if not pointer.startswith("/"):
         raise ValueError("evidence JSON pointer must be absolute")
     current = payload
     for raw in pointer[1:].split("/"):
+        if re.search(r'~(?:[^01]|$)', raw):
+            raise ValueError('invalid evidence JSON pointer escape')
         token = raw.replace("~1", "/").replace("~0", "~")
         try:
             if isinstance(current, list):
-                if not token.isdigit():
+                if (not token.isascii() or not token.isdigit() or
+                        len(token) > 1 and token.startswith('0')):
                     raise ValueError
                 current = current[int(token)]
             else:
@@ -49,7 +55,9 @@ def _json_pointer(payload, pointer: str):
 
 
 def load_evidence(trace_path: Path | None = None,
-                  index_path: Path | None = None):
+                  index_path: Path | None = None, *, index_payload=None):
+    if index_payload is not None and index_path is None:
+        raise ValueError("captured evidence index requires an index path")
     refs = set()
     claims = {}
     if trace_path is not None:
@@ -65,7 +73,8 @@ def load_evidence(trace_path: Path | None = None,
             raise ValueError("invalid trace evidence index") from exc
     if index_path is not None:
         try:
-            payload = json.loads(index_path.read_text(encoding="utf-8"))
+            payload = (index_payload if index_payload is not None else
+                       json.loads(index_path.read_text(encoding="utf-8")))
             if payload.get("schema_version") != 1:
                 raise ValueError
             refs.update(str(value) for value in payload.get("evidence_refs") or ())
@@ -73,7 +82,8 @@ def load_evidence(trace_path: Path | None = None,
                 ref = str(item["ref"])
                 artifact = (index_path.parent / str(item["artifact"])).resolve()
                 expected = str(item["sha256"])
-                actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                captured = artifact.read_bytes()
+                actual = hashlib.sha256(captured).hexdigest()
                 if actual != expected:
                     raise ValueError("evidence artifact fingerprint mismatch")
                 if ref in refs:
@@ -81,7 +91,7 @@ def load_evidence(trace_path: Path | None = None,
                 refs.add(ref)
                 if "json_pointer" in item:
                     try:
-                        artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+                        artifact_payload = json.loads(captured.decode("utf-8"))
                     except (OSError, json.JSONDecodeError) as exc:
                         raise ValueError("evidence claim artifact is not JSON") from exc
                     claims[ref] = _json_pointer(
@@ -99,9 +109,18 @@ def load_evidence_refs(trace_path: Path | None = None,
 
 
 def _same_claim(expected, actual):
-    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
-        return math.isclose(float(expected), float(actual), rel_tol=1e-12, abs_tol=1e-12)
-    return expected == actual
+    if type(expected) in (int, float) and type(actual) in (int, float):
+        try:
+            return (math.isfinite(expected) and math.isfinite(actual)
+                    and math.isclose(expected, actual, rel_tol=1e-12, abs_tol=1e-12))
+        except OverflowError:
+            return False
+    # Canonical JSON retains boolean/number distinctions, including nested ones.
+    try:
+        return json.dumps(expected, sort_keys=True, allow_nan=False) == json.dumps(
+            actual, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
 
 
 def _validate_evidence_bindings(proposals, resolved: ResolvedEvidence):
@@ -129,7 +148,12 @@ def _validate_evidence_bindings(proposals, resolved: ResolvedEvidence):
             if ref not in proposal.evidence_refs or ref not in resolved.claims:
                 raise ValueError("proposal evidence binding cannot be resolved")
             actual = _json_pointer(resolved.claims[ref], pointer)
-            if not _same_claim(getattr(proposal, proposal_field), actual):
+            expected = getattr(proposal, proposal_field)
+            if proposal_field in {"population", "session_count", "independent_evidence_count"}:
+                matches = type(actual) is int and actual == expected
+            else:
+                matches = _same_claim(expected, actual)
+            if not matches:
                 raise ValueError("proposal evidence claim mismatch: %s" % proposal_field)
 
 
@@ -261,10 +285,10 @@ def main(argv=None):
     review, markdown = build_proposal_review(
         args.candidates, args.policy, resolved_evidence=resolved_evidence,
         rubrics_path=args.rubrics)
+    encoded_review = json.dumps(review, indent=2, sort_keys=True, allow_nan=False) + "\n"
     for path in (args.json_output, args.markdown_output):
         path.parent.mkdir(parents=True, exist_ok=True)
-    args.json_output.write_text(json.dumps(review, indent=2, sort_keys=True) + "\n",
-                                encoding="utf-8")
+    args.json_output.write_text(encoded_review, encoding="utf-8")
     args.markdown_output.write_text(markdown, encoding="utf-8")
     print(json.dumps({"ranked": len(review["ranked"]),
                       "resolved": len(review["resolved"]),

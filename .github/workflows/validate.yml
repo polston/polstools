@@ -39,9 +39,6 @@ jobs:
       - name: Unit tests
         run: sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
 
-      - name: Hook and manifest end-to-end checks
-        run: sh plugins/p/bin/python-launcher -B plugins/p/bin/format-e2e
-
       - name: Stopped-promises self-test
         run: sh plugins/p/bin/python-launcher -B plugins/p/bin/stopped-promises.py --selftest
 

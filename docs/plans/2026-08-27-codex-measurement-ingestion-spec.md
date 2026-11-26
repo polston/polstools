@@ -1,5 +1,8 @@
 # Codex measurement ingestion — spec
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 2026-08-27. Status: settled — round 1 (four concurrent lenses) and round 2
 (fold confirmation) both folded.
 

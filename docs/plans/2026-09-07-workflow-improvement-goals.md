@@ -1,5 +1,8 @@
 # Workflow improvement goals
 
+> Historical record: response formatting and its hooks, tools, and checks were
+> removed in v1.12.0. References to them below are not current instructions.
+
 Three sequential autonomous contracts. Each has one independently verifiable
 outcome. Complete and record one before activating the next; do not register
 the sequence as an open-ended goal. This document drafts the work and does not

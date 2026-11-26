@@ -11,25 +11,41 @@ rather than being inferred from prose, paths, or GENERIC steps.
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 from .base import (AdapterBase, AdapterResult, iter_jsonl, parse_timestamp,
                    prompt_evidence)
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
+from ..text_rules import evidence_excerpt
 
 FULL_EXPORT = "transcript_full.jsonl"
 SHORT_EXPORT = "transcript.jsonl"
 
 
-def discover(root: Path):
+def discover(root: Path, *, stopped=lambda: False, on_error=None):
     """One export per session: the full export when present, else the short one."""
-    for logs in sorted(Path(root).glob("*/.system_generated/logs")):
-        full = logs / FULL_EXPORT
-        short = logs / SHORT_EXPORT
-        if full.is_file():
-            yield full
-        elif short.is_file():
-            yield short
+    # glob/is_file can suppress permission errors, making inaccessible exports
+    # look like an empty corpus. Missing paths are ordinary; unreadable ones
+    # must reach the caller's coverage handling.
+    for session in sorted(Path(root).iterdir()):
+        if stopped():
+            return
+        logs = session / '.system_generated' / 'logs'
+        for filename in (FULL_EXPORT, SHORT_EXPORT):
+            path = logs / filename
+            try:
+                mode = path.stat().st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as exc:
+                if on_error is None:
+                    raise
+                on_error(exc)
+                break
+            if stat.S_ISREG(mode):
+                yield path
+                break
 
 
 def _valid_step(record) -> bool:
@@ -54,7 +70,7 @@ def _text(record) -> str:
 
 class AntigravityAdapter(AdapterBase):
     source = "antigravity"
-    adapter_version = 1
+    adapter_version = 5
 
     def __init__(self, id_salt: bytes, excluded_session_ids=None, capabilities=None):
         super().__init__(id_salt)
@@ -85,6 +101,7 @@ class AntigravityAdapter(AdapterBase):
         human_prompts = tool_calls = 0
         first_at = last_at = None
         last_model_text = ""
+        tool_sequence = -1
         for step in latest_steps(path):
             stamp = parse_timestamp(step.get("created_at"))
             if stamp is not None:
@@ -95,6 +112,7 @@ class AntigravityAdapter(AdapterBase):
             if kind == "USER_INPUT" and source == "USER_EXPLICIT" \
                     and _text(step).strip():
                 human_prompts += 1
+                last_model_text = ""
                 records.append(self._span(trace_id, sequence, SpanKind.PROMPT,
                                           step, "human"))
             elif kind == "PLANNER_RESPONSE" and source == "MODEL":
@@ -109,11 +127,14 @@ class AntigravityAdapter(AdapterBase):
                     if not isinstance(call, dict) or not isinstance(call.get("name"), str):
                         continue
                     tool_calls += 1
-                    signature = self.ids.make(call["name"], json.dumps(
-                        call.get("args"), sort_keys=True, default=str))
+                    signature = (self.ids.make(call["name"], json.dumps(
+                        call["args"], sort_keys=True, default=str))
+                        if call["name"].strip() and call.get("args") is not None else "")
+                    tool_sequence = self.indexed_sequence(tool_sequence, sequence, index)
                     records.append(self._span(
-                        trace_id, sequence * 1000 + index, SpanKind.TOOL, step,
-                        "agent", call["name"], signature))
+                        trace_id, tool_sequence, SpanKind.TOOL, step,
+                        "agent", call["name"], signature,
+                        span_id=self.indexed_span_id(trace_id, sequence, index, SpanKind.TOOL)))
             elif kind == "ERROR_MESSAGE":
                 # A source-level error step, not attributable to any one call.
                 records.append(self._span(
@@ -163,12 +184,48 @@ class AntigravityAdapter(AdapterBase):
                 context = []
         return evidence
 
+    def private_tool_evidence(self, path: Path, root: Path, redactor):
+        """Observable call context only; exports do not bind results to calls."""
+        if self.session_id(path, root).lower() in self.excluded_session_ids:
+            return {}
+        trace_id = self.trace_id(path, root)
+        evidence = {}
+        recent_text = ""
+        for step in latest_steps(path):
+            if step["type"] == "USER_INPUT":
+                recent_text = ""
+            if step["type"] != "PLANNER_RESPONSE" or step["source"] != "MODEL":
+                continue
+            text = _text(step).strip()
+            context = evidence_excerpt(redactor(text), 1200, tail_only=True) if text else ""
+            calls = step.get("tool_calls")
+            calls = calls if isinstance(calls, list) else []
+            for index, call in enumerate(calls):
+                if not isinstance(call, dict) or not isinstance(call.get("name"), str):
+                    continue
+                details = {"tool_kind": call["name"]}
+                if call.get("args") is not None:
+                    details["tool_input"] = evidence_excerpt(redactor(json.dumps(
+                        call["args"], sort_keys=True, default=str)), 1200)
+                if context:
+                    details["intent_context"] = "Assistant text from same step: " + context
+                elif recent_text:
+                    details["intent_context"] = (
+                        "Text from previous assistant step; call purpose not established: "
+                        + recent_text)
+                span_id = self.indexed_span_id(trace_id, step["step_index"], index,
+                                               SpanKind.TOOL)
+                evidence[span_id] = details
+            if context:
+                recent_text = context
+        return evidence
+
     def _span(self, trace_id, sequence, kind, step, actor, tool="", signature="",
-              status="ok"):
+              status="ok", span_id=None):
         kind_value = kind.value if isinstance(kind, SpanKind) else str(kind)
         return TraceRecord(
             schema_version=SCHEMA_VERSION, trace_id=trace_id,
-            span_id=self.ids.make(trace_id, sequence, kind_value),
+            span_id=span_id or self.ids.make(trace_id, sequence, kind_value),
             parent_span_id=self.ids.make(trace_id, "root"),
             source=self.source, adapter_version=self.adapter_version,
             source_version="", span_kind=kind,

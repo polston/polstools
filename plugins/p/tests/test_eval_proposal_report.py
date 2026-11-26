@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -180,6 +181,35 @@ class ProposalReportTests(unittest.TestCase):
             resolved = load_evidence(index_path=index)
         self.assertEqual(.25, resolved.claims["metric:one:rate"]["value"])
 
+    def test_evidence_claim_uses_the_bytes_whose_hash_was_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            artifact = root / "report.json"
+            original = b'{"value":0.25}\n'
+            artifact.write_bytes(original)
+            index = root / "index.json"
+            index.write_text(json.dumps({"schema_version": 1, "evidence": [{
+                "ref": "metric:rate", "artifact": "report.json",
+                "sha256": hashlib.sha256(original).hexdigest(), "json_pointer": "",
+            }]}))
+            read_bytes = Path.read_bytes
+            fired = []
+
+            def replace_after_capture(path):
+                captured = read_bytes(path)
+                if path == artifact and not fired:
+                    replacement = root / "replacement.json"
+                    replacement.write_text('{"value":0.9}\n')
+                    replacement.replace(artifact)
+                    fired.append(True)
+                return captured
+
+            with patch.object(Path, "read_bytes", replace_after_capture):
+                result = load_evidence(index_path=index)
+            self.assertEqual(fired, [True])
+            self.assertEqual(result.claims["metric:rate"]["value"], .25)
+            self.assertEqual(json.loads(artifact.read_text())["value"], .9)
+
     def test_strict_observed_proposal_requires_matching_claim_binding(self):
         candidate = {
             "proposal_id": "P5", "target_kind": "metric", "target_ref": "rate",
@@ -209,6 +239,19 @@ class ProposalReportTests(unittest.TestCase):
             }
             path.write_text(json.dumps({"proposals": [candidate]}), encoding="utf-8")
             review, _ = build_proposal_review(path, resolved_evidence=resolved)
+            for value in (True, False):
+                candidate["observed_rate"] = float(value)
+                path.write_text(json.dumps({"proposals": [candidate]}))
+                forged = ResolvedEvidence(resolved.refs, {"metric:one:rate": {
+                    "value": value, "eligible_population": 20}})
+                with self.assertRaisesRegex(ValueError, "claim mismatch"):
+                    build_proposal_review(path, resolved_evidence=forged)
+            candidate["observed_rate"] = .25
+            path.write_text(json.dumps({"proposals": [candidate]}))
+            rounded = ResolvedEvidence(resolved.refs, {"metric:one:rate": {
+                "value": .25, "eligible_population": 20.000000000001}})
+            with self.assertRaisesRegex(ValueError, "claim mismatch"):
+                build_proposal_review(path, resolved_evidence=rounded)
             candidate["population"] = 21
             path.write_text(json.dumps({"proposals": [candidate]}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "claim mismatch"):

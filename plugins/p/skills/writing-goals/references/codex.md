@@ -38,6 +38,22 @@ revise the objective and `/goal pause`, `/goal resume`, and `/goal clear` to
 pause, resume, and clear it. Do not replace a matching active goal merely to
 rewrite its wording; reconcile the work with the existing objective.
 
+Inspect the currently exposed goal tools and latest observed state before asking
+the operator to use those controls. Documented user commands are not necessarily
+callable agent tools. Do not claim a resume or objective edit that did not occur,
+or mark unfinished work complete merely to create a replacement goal.
+
+An explicit new user grant can authorize continuation beyond an earlier bound.
+Record its new start/deadline separately and preserve the expired run's evidence;
+neither a resume alone nor a stale objective silently renews a bound. Reconcile
+stale objective wording with the latest explicit instruction. If the matching goal
+is already active, an unavailable objective-edit tool need not block authorized
+work. If native execution remains blocked or paused and no exposed tool can
+resume it, explain the exact user control needed for unattended continuation.
+Continue independently authorized current-turn work while awaiting that action,
+but honor an explicit user pause. Recheck state when a resume notification or
+reply arrives so an obsolete request does not become a repeated approval gate.
+
 ## Equivalent outcome
 
 The run continues toward one bounded objective and stops only at verified

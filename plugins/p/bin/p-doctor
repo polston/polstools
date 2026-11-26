@@ -3,9 +3,8 @@
 
 Checks package metadata, installed versions, enabled state, obsolete polstools
 plugin IDs in each harness's plugin list and Codex's config, installed file
-content, the skill-activation policy, the statusline bundle, and the exact
-hook commands of every harness with a p hook contract. Output never includes
-installation paths or raw command stderr.
+content, the skill-activation policy, the statusline bundle, and Python
+discovery. Output never includes installation paths or raw command stderr.
 
 Exit: 0 ran clean and flagged nothing, 1 ran clean and flagged drift, 2 could
 not complete an available harness check.
@@ -19,11 +18,9 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 from typing import NamedTuple
 
 
@@ -63,29 +60,7 @@ PLUGIN_ID = "p@polstools"
 # are earlier polstools plugins; every other import belongs to someone else.
 FORMER_PLUGIN_NAMES = frozenset({"statusline"})
 POLSTOOLS_SOURCE_RE = re.compile(r"polston/polstools|/polstools/")
-HOOK_EVENTS = ("SessionStart", "UserPromptSubmit")
 HARNESS_LABELS = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity"}
-# The hook contract each harness loads from an installed p. A harness mapped to
-# None has no p hook yet; the doctor says so explicitly instead of staying
-# silent. Adding a harness's contract here is the only change the probe needs.
-HOOK_CONTRACTS = {
-    "claude": {
-        "catalog": ("hooks", "hooks.json"),
-        "events": HOOK_EVENTS,
-        "session_env": "CLAUDE_CODE_SESSION_ID",
-    },
-    "codex": {
-        "catalog": ("hooks", "hooks.json"),
-        "events": HOOK_EVENTS,
-        "session_env": "CODEX_SESSION_ID",
-    },
-    "agy": {
-        "catalog": ("hooks.json",),
-        "events": ("PreInvocation",),
-        "session_env": None,
-        "shape": "antigravity",
-    },
-}
 CONTENT_IGNORED_PARTS = {"__pycache__", ".in_use", ".git", ".DS_Store"}
 CODEX_CONFIG_TABLE_RE = re.compile(
     r"""^\s*\[\s*(plugins|hooks\s*\.\s*state)\s*\.\s*(?:"([^"]+)"|'([^']+)')\s*\]"""
@@ -267,12 +242,19 @@ def agy_config_root():
 
 
 def normalize_agy_plugins(payload):
-    """Normalize `agy plugin list`; version and root come from the imported copy.
+    """Normalize `agy plugin list [--json]` across legacy and current CLI shapes.
 
-    The list itself carries only name, source, importedAt, and components.
+    Legacy Antigravity returns `{"imports": [{name, source, components, ...}]}`
+    and current Antigravity `--json` returns a JSON array of plugin objects
+    `[{name, enabled, version, source, path, skills, ...}]`. Version is always
+    verified from the installed copy's `plugin.json` when present.
     """
-    if not isinstance(payload, dict) or not isinstance(payload.get("imports"), list):
-        raise ValueError("Antigravity plugin list JSON must contain imports[]")
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("imports"), list):
+        items = payload["imports"]
+    else:
+        raise ValueError("Antigravity plugin list JSON must be a list or contain imports[]")
     result = []
     config_path = agy_config_root() / "config.json"
     enabled_map = {}
@@ -287,11 +269,14 @@ def normalize_agy_plugins(payload):
                 enabled_map = {}
         except (OSError, ValueError):
             pass
-    for item in payload["imports"]:
+    for item in items:
         if not isinstance(item, dict):
             continue
         name = item.get("name") or ""
-        root = agy_config_root() / "plugins" / name
+        raw_path = item.get("path")
+        root = Path(raw_path) if isinstance(raw_path, str) and raw_path else (
+            agy_config_root() / "plugins" / name
+        )
         version = ""
         manifest_path = root / "plugin.json"
         if manifest_path.is_file():
@@ -305,9 +290,12 @@ def normalize_agy_plugins(payload):
                     version = ""
             except (OSError, ValueError):
                 pass
-        enabled = True
-        if name in enabled_map and isinstance(enabled_map[name], dict):
-            enabled = enabled_map[name].get("enabled", True)
+        if isinstance(item.get("enabled"), bool):
+            enabled = item["enabled"]
+        else:
+            enabled = True
+            if name in enabled_map and isinstance(enabled_map[name], dict):
+                enabled = enabled_map[name].get("enabled", True)
         source = item.get("source")
         ours = name in FORMER_PLUGIN_NAMES or (
             isinstance(source, str) and bool(POLSTOOLS_SOURCE_RE.search(source)))
@@ -317,13 +305,16 @@ def normalize_agy_plugins(payload):
             plugin_id = name + "@polstools"
         else:
             plugin_id = "agy:" + name
+        components = item.get("components")
+        if components is None and isinstance(item.get("skills"), list):
+            components = ["skills"]
         result.append({
             "id": plugin_id,
             "version": version,
             "enabled": enabled,
             "root": str(root) if root.is_dir() else "",
             "scope": "user",
-            "components": item.get("components"),
+            "components": components,
         })
     return result
 
@@ -417,263 +408,7 @@ def evaluate_harness(harness, plugins, expected_version):
     return checks
 
 
-def _hook_command(raw, plugin_root):
-    replaced = raw.replace(
-        "${CLAUDE_PLUGIN_ROOT}", Path(plugin_root).resolve().as_posix()
-    )
-    return shlex.split(replaced, posix=True)
-
-
-def _event_key(event):
-    result = []
-    for char in event:
-        if char.isupper() and result:
-            result.append("_")
-        result.append(char.lower())
-    return "".join(result)
-
-
-HOOK_TIMEOUT = 10   # seconds; the hook manifests declare the same limit
 QUERY_TIMEOUT = 60   # seconds for a harness CLI query
-_SCRATCH_DIRS = []
-
-
-def _new_scratch(prefix):
-    path = tempfile.mkdtemp(prefix=prefix)
-    _SCRATCH_DIRS.append(path)
-    return path
-
-
-def _remove_scratch():
-    while _SCRATCH_DIRS:
-        shutil.rmtree(_SCRATCH_DIRS.pop(), ignore_errors=True)
-
-
-def probe_plugin_hooks(harness, plugin_root, runner=run_utf8, contract=None):
-    try:
-        return _probe_plugin_hooks(harness, plugin_root, runner, contract)
-    finally:
-        _remove_scratch()
-
-
-def probe_antigravity_hook(plugin_root, runner=run_utf8, contract=None):
-    try:
-        return _probe_antigravity_hook(plugin_root, runner, contract)
-    finally:
-        _remove_scratch()
-
-
-def _probe_plugin_hooks(harness, plugin_root, runner=run_utf8, contract=None):
-    contract = contract or HOOK_CONTRACTS.get(harness)
-    if contract is None:
-        return [Check(
-            harness + ".hooks", "SKIP",
-            "%s has no p hook contract; p's format hooks do not run there"
-            % HARNESS_LABELS.get(harness, harness.capitalize()),
-        )]
-    if contract.get("shape") == "antigravity":
-        return probe_antigravity_hook(plugin_root, runner, contract)
-    plugin_root = Path(plugin_root)
-    events = tuple(contract["events"])
-    try:
-        with plugin_root.joinpath(*contract["catalog"]).open(encoding="utf-8") as handle:
-            hooks = json.load(handle).get("hooks")
-        if not isinstance(hooks, dict) or set(hooks) != set(events):
-            raise ValueError("hook catalog does not contain the expected events")
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return [Check(
-            harness + ".hooks", "ERROR",
-            "%s installed hook catalog cannot be read" % harness.capitalize(),
-            _version_fix(harness),
-        )]
-
-    checks = []
-    scratch = _new_scratch("p-doctor-format-")
-    for event in events:
-        key = "%s.hook.%s" % (harness, _event_key(event))
-        try:
-            raw = hooks[event][0]["hooks"][0]["command"]
-            argv = _hook_command(raw, plugin_root)
-            gate_at = argv.index("gate")
-            payload = Path(argv[gate_at + 1])
-            expected = payload.read_text(encoding="utf-8")
-        except (IndexError, KeyError, OSError, TypeError, ValueError):
-            checks.append(Check(
-                key, "ERROR", "%s %s hook definition is unreadable"
-                % (harness.capitalize(), event), _version_fix(harness),
-            ))
-            continue
-
-        env = dict(os.environ)
-        for name in ("RETRO_HOME", "P_FORMAT_HARNESS", "P_FORMAT_DEFAULT",
-                     "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID",
-                     "CODEX_THREAD_ID"):
-            env.pop(name, None)
-        env[contract["session_env"]] = "p-doctor-check"
-        # The probe verifies wiring, not the operator's preference: force
-        # the default on and isolate session flags so an off default or a
-        # stale fmt-off toggle cannot make a healthy gate look broken.
-        env["P_FORMAT_DEFAULT"] = "on"
-        env["P_FORMAT_STATE_DIR"] = scratch
-        env["P_FORMAT_CONFIG_FILE"] = os.path.join(scratch, "format.json")
-        try:
-            completed = runner(
-                argv,
-                input=json.dumps({
-                    "session_id": "p-doctor-check",
-                    "hook_event_name": event,
-                }),
-                text=True,
-                encoding="utf-8",
-                capture_output=True,
-                env=env,
-                timeout=HOOK_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            checks.append(Check(
-                key, "FAIL", "%s %s hook did not finish within %d seconds"
-                % (harness.capitalize(), event, HOOK_TIMEOUT), _version_fix(harness),
-            ))
-            continue
-        except UnicodeError:
-            checks.append(Check(
-                key, "FAIL", "%s %s hook output is not valid UTF-8"
-                % (harness.capitalize(), event), _version_fix(harness),
-            ))
-            continue
-        except OSError:
-            checks.append(Check(
-                key, "ERROR", "%s %s hook command could not start"
-                % (harness.capitalize(), event),
-                "Install a POSIX sh and Python 3, then rerun p doctor.",
-            ))
-            continue
-
-        stderr = str(getattr(completed, "stderr", "") or "")
-        code = int(getattr(completed, "returncode", 2))
-        if code != 0 and "python-launcher: Python 3 not found" in stderr:
-            checks.append(Check(
-                key, "FAIL", "%s %s hook failed because Python 3 is unavailable"
-                % (harness.capitalize(), event),
-                "Install Python 3 or set POLSTOOLS_PYTHON to one executable path, then rerun p doctor.",
-            ))
-        elif code != 0:
-            checks.append(Check(
-                key, "FAIL", "%s %s hook exited %d"
-                % (harness.capitalize(), event, code), _version_fix(harness),
-            ))
-        elif getattr(completed, "stdout", "") != expected:
-            checks.append(Check(
-                key, "FAIL", "%s %s hook output differs from its payload"
-                % (harness.capitalize(), event), _version_fix(harness),
-            ))
-        else:
-            checks.append(Check(
-                key, "PASS", "%s %s hook exits 0 with byte-exact output"
-                % (harness.capitalize(), event),
-            ))
-    return checks
-
-
-def _probe_antigravity_hook(plugin_root, runner=run_utf8, contract=None):
-    """Run the installed Antigravity hook exactly as agy does - its argv from
-    <root>/hooks.json, cwd = the plugin root, camelCase JSON on stdin - and
-    compare the parsed stdout with the off and on envelopes."""
-    contract = contract or HOOK_CONTRACTS["agy"]
-    plugin_root = Path(plugin_root)
-    try:
-        with plugin_root.joinpath(*contract["catalog"]).open(encoding="utf-8") as handle:
-            manifest = json.load(handle)
-        raw = manifest["p-format"][contract["events"][0]][0]["command"]
-        argv = shlex.split(raw, posix=True)
-        spec = (plugin_root / "style" / "response-format.md").read_text(encoding="utf-8")
-        reminder = (plugin_root / "style" / "turn-reminder.md").read_text(encoding="utf-8")
-    except (OSError, ValueError, KeyError, IndexError, TypeError):
-        return [Check(
-            "agy.hooks", "ERROR", "Antigravity installed hook manifest cannot be read",
-            _version_fix("agy"),
-        )]
-    scratch = _new_scratch("p-doctor-agy-")
-    env = dict(os.environ)
-    for name in ("RETRO_HOME", "P_FORMAT_HARNESS", "P_FORMAT_DEFAULT",
-                 "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID",
-                 "ANTIGRAVITY_CONVERSATION_ID"):
-        env.pop(name, None)
-    env.update({
-        "P_FORMAT_STATE_DIR": os.path.join(scratch, "state"),
-        "P_FORMAT_CONFIG_FILE": os.path.join(scratch, "format.json"),
-    })
-    cases = (
-        ("agy.hook.pre_invocation_off", "off", None, {}),
-        ("agy.hook.pre_invocation_first", "on", None,
-         {"injectSteps": [{"ephemeralMessage": spec}]}),
-        ("agy.hook.pre_invocation_later", "on", 1,
-         {"injectSteps": [{"ephemeralMessage": reminder}]}),
-    )
-    checks = []
-    for key, state, invocation, expected in cases:
-        event = {"conversationId": "p-doctor-check", "initialNumSteps": 0}
-        if invocation is not None:
-            event["invocationNum"] = invocation
-        try:
-            completed = runner(
-                argv, cwd=str(plugin_root), input=json.dumps(event), text=True,
-                encoding="utf-8", capture_output=True,
-                env=dict(env, P_FORMAT_DEFAULT=state), timeout=HOOK_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            checks.append(Check(
-                key, "FAIL", "Antigravity PreInvocation hook did not finish within %d seconds"
-                % HOOK_TIMEOUT, _version_fix("agy"),
-            ))
-            continue
-        except UnicodeError:
-            checks.append(Check(
-                key, "FAIL", "Antigravity PreInvocation hook output is not valid UTF-8",
-                _version_fix("agy"),
-            ))
-            continue
-        except OSError:
-            checks.append(Check(
-                key, "ERROR", "Antigravity PreInvocation hook command could not start",
-                "Install a POSIX sh and Python 3, then rerun p doctor.",
-            ))
-            continue
-        try:
-            output = json.loads(getattr(completed, "stdout", "") or "")
-        except ValueError:
-            output = None
-        if int(getattr(completed, "returncode", 2)) != 0:
-            checks.append(Check(
-                key, "FAIL", "Antigravity PreInvocation hook exited %d" % completed.returncode,
-                _version_fix("agy"),
-            ))
-        elif output != expected:
-            checks.append(Check(
-                key, "FAIL",
-                "Antigravity PreInvocation hook output differs for format %s" % state,
-                _version_fix("agy"),
-            ))
-        else:
-            checks.append(Check(
-                key, "PASS", "Antigravity PreInvocation hook returns the %s envelope" % state,
-            ))
-    return checks
-
-
-def antigravity_hook_registration(installed):
-    components = installed.get("components")
-    if not isinstance(components, list):
-        return Check(
-            "agy.hooks.registered", "SKIP",
-            "Antigravity did not report imported plugin components",
-        )
-    if "hooks" in components:
-        return Check("agy.hooks.registered", "PASS", "Antigravity imported p with its hooks")
-    return Check(
-        "agy.hooks.registered", "FAIL", "Antigravity imported p without its hooks",
-        _version_fix("agy"),
-    )
 
 
 def _find_executable(name, prefix="P_DOCTOR_"):
@@ -899,8 +634,8 @@ def python_checks(roots, runner=run_utf8):
     """Ask each installed copy's launcher whether it finds an adequate Python.
 
     The launcher exits 0 when an interpreter at or above its floor is found and
-    2 otherwise. This runs from the doctor's own environment; a hook started by
-    a harness may see a different PATH.
+    2 otherwise. This runs from the doctor's own environment; an agent shell
+    may see a different PATH.
     """
     checks = []
     for harness, (_, root) in sorted(roots.items()):
@@ -964,10 +699,10 @@ def render(checks, expected_version):
     return "\n".join(lines) + "\n"
 
 
-def query_agy(executable, runner=None):
+def _run_agy_list(executable, args, runner):
     try:
-        completed = (runner or RUN)(
-            [executable, "plugin", "list"],
+        return (runner or RUN)(
+            [executable, *args],
             text=True, encoding="utf-8", capture_output=True, check=False,
             timeout=QUERY_TIMEOUT,
         )
@@ -976,10 +711,16 @@ def query_agy(executable, runner=None):
                            % QUERY_TIMEOUT) from error
     except UnicodeError as error:
         raise RuntimeError("agy plugin list output is not valid UTF-8") from error
+
+
+def query_agy(executable, runner=None):
+    completed = _run_agy_list(executable, ["plugin", "list", "--json"], runner)
+    if completed.returncode != 0 or not (completed.stdout or "").strip():
+        completed = _run_agy_list(executable, ["plugin", "list"], runner)
     if completed.returncode != 0:
         raise RuntimeError("agy plugin list exited %d" % completed.returncode)
     out = (completed.stdout or "").strip()
-    if out == "No imported plugins.":
+    if out in {"No imported plugins.", "No installed plugins."}:
         return {"imports": []}
     return json.loads(out)
 
@@ -1040,22 +781,16 @@ def collect(repo_root=None):
         installed_by_harness[harness] = installed
         if len(installed) == 1 and installed[0].get("enabled"):
             root = installed[0].get("root")
-            if harness == "agy":
-                checks.append(antigravity_hook_registration(installed[0]))
             if root and not Path(root).is_dir():
                 checks.append(Check(
                     harness + ".content", "FAIL",
-                    "%s installed copy of p %s is missing or unreadable, so its files and hooks were not checked"
+                    "%s installed copy of p %s is missing or unreadable, so its files were not checked"
                     % (harness_label, installed[0].get("version") or "(unknown)"),
                     _version_fix(harness, installed[0].get("scope", "user")),
                 ))
-            elif HOOK_CONTRACTS.get(harness) is None:
-                checks.extend(probe_plugin_hooks(harness, root or ""))
-            elif root:
-                checks.extend(probe_plugin_hooks(harness, root))
-            else:
+            elif not root:
                 checks.append(Check(
-                    harness + ".hooks", "ERROR",
+                    harness + ".content", "ERROR",
                     "%s did not report the installed plugin root" % harness_label,
                     _version_fix(harness, installed[0].get("scope", "user")),
                 ))

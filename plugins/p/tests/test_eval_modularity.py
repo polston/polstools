@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -9,12 +10,13 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
 from retro_eval.adapters.base import AdapterBase, AdapterResult
-from retro_eval.adapters.registry import AdapterRegistration, AdapterRegistry
+from retro_eval.adapters.registry import AdapterRegistration, AdapterRegistry, default_registry
 from retro_eval.dataset import DatasetPolicy, stable_split
 from retro_eval.pipeline import EvaluationPipeline
 from retro_eval.proposals import (Proposal, ProposalPolicy, proposal_review,
                                   rank_proposals)
 from retro_eval.schema import SCHEMA_VERSION, TraceRecord
+from test_eval_workflow_sources import source_fixture
 
 
 class FakeAdapter(AdapterBase):
@@ -56,6 +58,46 @@ def proposal(proposal_id, *, sessions=2, evidence=("a", "b"), confidence=.5,
 
 
 class ModularityTests(unittest.TestCase):
+    def test_exclusions_are_additive_without_changing_other_option_precedence(self):
+        registration = AdapterRegistration('fixture', lambda root: (),
+            factory=lambda salt, options: options,
+            options={'excluded_session_ids': ['configured'], 'other': 'original'})
+        for runtime in ([], None, ['reporting']):
+            result = registration.create(b'salt', {'excluded_session_ids': runtime, 'other': 'current'})
+            self.assertEqual(set(result['excluded_session_ids']),
+                             {'configured', *(runtime or ())})
+            self.assertEqual(result['other'], 'current')
+        self.assertEqual(registration.options,
+                         {'excluded_session_ids': ['configured'], 'other': 'original'})
+
+    def test_extraction_preserves_profile_local_and_reporting_exclusions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            for source in ('claude', 'codex', 'antigravity'):
+                root = base / source
+                for identity in ('configured', 'local', 'reporting', 'ordinary'):
+                    relative = (identity + '/.system_generated/logs/transcript_full.jsonl'
+                        if source == 'antigravity' else 'rollout-' + identity + '.jsonl'
+                        if source == 'codex' else identity + '.jsonl')
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    raw = source_fixture(source)
+                    if source == 'codex':
+                        raw = raw.replace(b'"thread_source":"user"',
+                            ('"thread_source":"user","id":"%s"' % identity).encode())
+                    path.write_bytes(raw)
+                original = default_registry().get(source)
+                registration = replace(original, options={**original.options,
+                    'excluded_session_ids': ['configured']})
+                summary = EvaluationPipeline(base / (source + '-work'),
+                    registry=AdapterRegistry([registration])).extract(roots={source: root},
+                    exclude_session_ids=['reporting'],
+                    adapter_options={source: {'excluded_session_ids': ['local']}})
+                with self.subTest(source=source):
+                    self.assertEqual(summary.included_traces, 1)
+                    self.assertEqual(summary.excluded_traces, 3)
+                    self.assertEqual(summary.exclusion_reasons, {'active_or_explicitly_excluded': 3})
+
     def test_pipeline_accepts_registered_adapter_and_store_without_callsite_edit(self):
         with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as work:
             source = Path(raw)

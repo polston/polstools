@@ -54,6 +54,13 @@ separate populations when inclusion rules differ. Use an isolated external
 
 ## The procedure
 
+For periodic diagnosis and follow-up, first use the automatic procedure in
+`<plugin-root>/WORKFLOW.md`. It chooses source coverage, inspection contrasts,
+and due actions, and retains local dismissals and retirement reasons. Use the
+ledger procedure below only for the specific attribution counters needed by
+this rules audit. Do not treat an unobserved firing as proof of a useless rule,
+or a new instruction as the required answer to every finding.
+
 **1. Measure and list skill firing.**
 
 ```bash

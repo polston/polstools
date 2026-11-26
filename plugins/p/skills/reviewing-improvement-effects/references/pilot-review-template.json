@@ -1,0 +1,36 @@
+{
+  "review_format": 1,
+  "pilot_ref": null,
+  "expected_revision": 0,
+  "analysis": {
+    "reviewer_type": "agent",
+    "method": null,
+    "method_version": null,
+    "code_version": null,
+    "seed": 0,
+    "input_refs": [],
+    "assignment_refs": [],
+    "exposure_refs": [],
+    "outcome_refs": [],
+    "evidence_refs": [],
+    "exclusions": [],
+    "estimates": {},
+    "intervals": [],
+    "limitations": [],
+    "results": [],
+    "activation": {"status": "unknown", "reason": null, "evidence_refs": []},
+    "comparison": {"status": "unknown", "reason": null, "evidence_refs": []},
+    "benefit": {"status": "unknown", "reason": null, "evidence_refs": []},
+    "guardrails": []
+  },
+  "decision": {
+    "disposition": "insufficient_evidence",
+    "benefit_status": "unknown",
+    "quality_status": "unknown",
+    "evidence_refs": [],
+    "counterevidence_refs": [],
+    "rationale": null,
+    "due_at": null,
+    "next_action": {"owner": null, "action": null, "prerequisites": null, "acceptance": null}
+  }
+}

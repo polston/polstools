@@ -209,6 +209,8 @@ def command_check(args):
         raise activation.PolicyError("unknown component")
     try:
         resolved = activation.resolve(policy)
+    except activation.StateLocationError:
+        raise
     except activation.PolicyError as error:
         required = set(policy["components"][args.component]["requires"])
         if required <= {"control-plane", "core"}:
@@ -233,6 +235,8 @@ def command_check_capability(args):
         raise activation.PolicyError("unknown component")
     try:
         resolved = activation.resolve(policy)
+    except activation.StateLocationError:
+        raise
     except activation.PolicyError as error:
         if args.capability in {"control-plane", "core"}:
             print("warning: %s; core capability allowed" % error, file=sys.stderr)
@@ -320,7 +324,7 @@ def main(argv=None):
         print("skill-profile-ctl: " + str(error), file=sys.stderr)
         return 2
     except OSError as error:
-        print("skill-profile-ctl: cannot update activation state: " + str(error), file=sys.stderr)
+        print("skill-profile-ctl: cannot access activation state: " + str(error), file=sys.stderr)
         return 2
 
 

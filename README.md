@@ -2,7 +2,7 @@
 
 One `p` plugin for Claude Code, Codex, and Antigravity: home/work skill activation,
 repository safety, cross-harness diagnostics and goal design, workflow
-evidence, evaluation, response formatting, aligned status lines, and small
+evidence, evaluation, aligned status lines, and small
 platform fixes. Runtime scripts use only POSIX shell or Python's standard
 library.
 
@@ -11,6 +11,13 @@ library.
 Python 3.9 or newer and a POSIX `sh`. The scripts are started through `sh`; on
 Windows that is the one Git Bash provides. They find a suitable Python
 themselves through `plugins/p/bin/python-launcher`.
+
+**Windows verification pending:** the workflow's source-file capture currently
+refuses native Windows execution while its safe file-opening implementation is
+unfinished. Windows support must be verified before it is claimed. This is a
+platform-specific capture limitation, not a blocker for developing and testing
+the investigation, planning, evaluation and follow-up framework on macOS.
+See [workflow platform coverage](plugins/p/WORKFLOW.md#platform-coverage).
 
 ## Install
 
@@ -46,10 +53,8 @@ Antigravity, or `$p:<skill>` in Codex. Antigravity also accepts `/<skill>`, but
 seven names are both a command and a skill there and the short form is
 ambiguous for them, so use `/p:<skill>`.
 
-Antigravity reads a plugin's hooks from `<plugin-root>/hooks.json`, so its
-response-format hook is declared there, separately from `hooks/hooks.json`. On
-Windows, Antigravity runs hooks through `cmd /c`, so Git's `usr\bin` (which
-holds `sh.exe`) must be on the Windows `PATH`.
+The plugin installs no session or prompt hooks and does not prescribe a
+response format.
 
 ## Diagnose
 
@@ -61,9 +66,9 @@ sh plugins/p/bin/python-launcher plugins/p/bin/p-doctor --repo-root .
 ```
 
 The doctor reports package-metadata drift, installed-version drift, disabled or
-obsolete polstools plugins, Python discovery failures, and byte-exact execution
-of each harness's live format hook. It is read-only and omits installation paths and raw
-command errors.
+obsolete polstools plugins, Python discovery failures, installed-file drift,
+activation policy, and status line health. It is read-only and omits
+installation paths and raw command errors.
 Exit 0 is healthy, exit 1 found actionable drift, and exit 2 means an available
 harness could not be checked.
 
@@ -145,14 +150,14 @@ the one `agy plugin list` shows.
 
 | Area | Skills or commands | Purpose |
 |---|---|---|
-| Plugin health | `doctor`, `update` | Compare every harness's live install, execute each format hook, and update without breaking active sessions |
+| Plugin health | `doctor`, `update` | Compare every harness's live install and update without breaking active sessions |
 | Skill activation | `home`, `work`, `managing-skill-activation` | Switch session profiles and manage defaults or overrides |
 | Repository safety | `auditing-a-repo-for-private-data`, `checking-branch-base-before-a-pr`, `finding-what-a-change-made-false` | Catch private data, branch-base mistakes, and documentation drift |
 | Workflow evidence | `auditing-workflow-rules-against-behavior`, `counting-stopped-promises`, `deciding-the-prompt-cache-ttl`, `finding-friction-in-recent-sessions`, `scouting-tools-for-open-frictions` | Measure recurring friction before changing rules or tools |
 | Agent contracts | `auditing-agent-contracts` | Diagnose dispatch scope, missing inputs, unusable results, and parent rework before adding agent roles |
 | Improvement follow-up | `reviewing-improvement-effects` | Bind a reversible pilot to comparable evidence, quality constraints, and a keep/revise/revert or insufficient-evidence review |
-| Goals and decisions | `writing-goals`, `robust-over-simple` | Bound autonomous work and preserve expandable design seams |
-| Response format | `fmt-off`, `fmt-on`, `maintaining-the-format-plugin` | Toggle sessions, set global or per-harness defaults (off by default), and audit the structured response format |
+| Goals, plans and decisions | `writing-goals`, `writing-plans`, `robust-over-simple` | Bound autonomous work, plan executable dependencies and preserve expandable design seams |
+| Investigation and improvement | `investigating-and-improving` | Research competing explanations, test improvements and preserve evidence across bounded iterations; see [operation and limits](plugins/p/INVESTIGATION.md) |
 | Interface fixes | `aligning-statuslines`, `shift-enter-in-windows-terminal` | Align harness status information and repair multiline input |
 | Evaluation | `reviewing-evaluation-taxonomies` | Resume controlled local taxonomy review |
 | Review command | `adequacy-review` | Run portable blinded ensemble review from one versioned contract |
@@ -166,7 +171,7 @@ stopped-promises self-test. Run the same contract locally before integration:
 
 ```sh
 sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
-sh plugins/p/bin/python-launcher -B plugins/p/bin/format-e2e
+sh plugins/p/bin/python-launcher -B plugins/p/bin/stopped-promises.py --selftest
 sh plugins/p/bin/p-validate
 sh plugins/p/bin/repo-privacy-audit -C .
 git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
@@ -174,8 +179,8 @@ git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
 
 `p-validate` checks the three harness manifests and both marketplace entries,
 canonical skill adapters, the adequacy-review contract and native adapters,
-activation coverage, the root `hooks.json` hook contract, and one relocated copy
-of the plugin run from a path other than the checkout. When `agy` is installed
+activation coverage, and one relocated copy of the plugin run from a path
+other than the checkout. When `agy` is installed
 it also runs Antigravity's own validator on a temporary copy under a scratch
 home; without `agy` that check is skipped. It does not register, install,
 publish, or otherwise change any harness. `p-validate --base <revision>` also
@@ -211,6 +216,16 @@ The optional local evaluation layer is documented in
 [`plugins/p/EVALUATION.md`](plugins/p/EVALUATION.md). Transcripts, labels,
 manifests, telemetry, and generated reports remain outside Git under an
 operator-selected `RETRO_HOME`.
+
+The [automatic workflow evidence framework](plugins/p/WORKFLOW.md) adds bounded
+cross-harness discovery, evidence-linked inspection, case outcomes, replay
+comparisons, review/design evaluation, and recurring follow-up state. Run
+`sh plugins/p/bin/python-launcher plugins/p/bin/retro-eval-workflow run`;
+the agent chooses the study parameters and inspects the private output.
+No scheduler, provider call, global instruction change, or response format is
+installed. See [plugins/p/WORKFLOW.md](plugins/p/WORKFLOW.md) and
+[plugins/p/EVALUATION.md](plugins/p/EVALUATION.md) for the workflow contract,
+rubric boundaries, and executable coverage.
 
 ## Session history coverage
 

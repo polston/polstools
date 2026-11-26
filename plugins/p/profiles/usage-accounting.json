@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
-  "profile_version": 1,
+  "profile_version": 3,
   "status": "comparability_gate_only",
   "sources": {
     "claude": {
-      "accounting_version": "claude-v1",
+      "accounting_version": "claude-v2",
+      "aggregation": "final usage snapshot per message ID within a captured transcript; anonymous messages remain separate",
       "input_tokens": "source-reported non-cache-read input",
       "cached_input_tokens": "source-reported cache-read input",
       "cache_write_input_tokens": "not separately normalized",
@@ -26,5 +27,9 @@
     "accounting_profile_version",
     "paired_case_id"
   ],
-  "comparison_rule": "Compare separate token dimensions only within complete pairs whose task family, difficulty, cache treatment, profile version, and paired identity match."
+  "comparison_rule": "Only explicitly requested comparable_dimensions may be compared within complete matched pairs. Raw input_tokens have different source meanings and are not comparable. Source token counts do not establish billing, equal work, or task success.",
+  "comparable_dimensions": [
+    "cached_input_tokens",
+    "output_tokens"
+  ]
 }

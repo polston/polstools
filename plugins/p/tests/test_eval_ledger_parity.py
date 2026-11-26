@@ -179,7 +179,7 @@ class ClaudeAnsweredParity(_Corpus):
 
 class CodexHumanPromptParity(_Corpus):
     def test_profile_openers_equal_ledger_openers(self):
-        self.assertEqual(retro.MACHINE_PROMPT_OPENERS,
+        self.assertEqual(retro.CODEX_MACHINE_PROMPT_OPENERS,
                          tuple(_profile_options("codex")["machine_prompt_openers"]))
 
     def test_wrapper_and_empty_user_messages_are_not_human_prompts(self):

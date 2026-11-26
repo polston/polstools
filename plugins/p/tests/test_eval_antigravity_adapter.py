@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +51,38 @@ class AntigravityAdapterTests(unittest.TestCase):
     def adapter(self, **options):
         return self.registration.create(b"local-salt", options)
 
+    def test_private_call_evidence_uses_latest_snapshot_without_inventing_results(self):
+        path = write_export(self.root, "example", [
+            step(0, "USER_INPUT", "inspect"),
+            step(1, "PLANNER_RESPONSE", "old private context", tool_calls=[CALL]),
+            step(1, "PLANNER_RESPONSE", "current private context", tool_calls=[
+                {"name": "read_file", "args": {"path": "private-target"}},
+                {"name": "run_command", "args": "start " + "x" * 2000 + " end"}]),
+            step(2, "GENERIC", "unattributed output", source="SYSTEM"),
+            step(3, "PLANNER_RESPONSE", tool_calls=[CALL]),
+            step(4, "USER_INPUT", "new request"),
+            step(5, "PLANNER_RESPONSE", tool_calls=[{"name": "read_file"}]),
+        ])
+        adapter = self.adapter()
+        normalized = adapter.read(path, self.root).records
+        evidence = adapter.private_tool_evidence(
+            path, self.root, lambda text: text.replace("private", "<removed>"))
+        calls = [r for r in normalized if r.span_kind == SpanKind.TOOL]
+        self.assertEqual({r.span_id for r in calls}, set(evidence))
+        self.assertEqual(4, len(evidence))
+        self.assertNotIn("private", repr(evidence))
+        self.assertNotIn("old", repr(evidence))
+        self.assertNotIn("unattributed output", repr(evidence))
+        self.assertTrue(all("tool_result" not in e for e in evidence.values()))
+        self.assertIn("same step", evidence[calls[0].span_id]["intent_context"])
+        self.assertIn("current <removed> context", evidence[calls[0].span_id]["intent_context"])
+        self.assertIn("excerpt truncated", evidence[calls[1].span_id]["tool_input"])
+        self.assertIn("previous assistant step", evidence[calls[2].span_id]["intent_context"])
+        self.assertNotIn("intent_context", evidence[calls[3].span_id])
+        self.assertNotIn("tool_input", evidence[calls[3].span_id])
+        self.assertEqual({}, self.adapter(excluded_session_ids=["example"]).private_tool_evidence(
+            path, self.root, lambda text: text))
+
     def test_discovery_prefers_full_export_and_skips_history_files(self):
         write_export(self.root, "one", [step(0, "USER_INPUT", "a")])
         full = write_export(self.root, "one", [step(0, "USER_INPUT", "a")],
@@ -59,6 +92,27 @@ class AntigravityAdapterTests(unittest.TestCase):
         (self.root / "one" / "transcript.jsonl").write_text("{}\n", encoding="utf-8")
         found = sorted(self.registration.discover(self.root))
         self.assertEqual(sorted([full, short_only]), found)
+
+    def test_discovery_can_report_one_unreadable_session_and_continue(self):
+        first = write_export(self.root, 'a-readable', [step(0, 'USER_INPUT', 'a')])
+        denied = write_export(self.root, 'b-denied', [step(0, 'USER_INPUT', 'b')],
+                              'transcript_full.jsonl')
+        write_export(self.root, 'b-denied', [step(0, 'USER_INPUT', 'short')])
+        last = write_export(self.root, 'c-readable', [step(0, 'USER_INPUT', 'c')])
+        original = Path.stat
+        def checked(path, *args, **kwargs):
+            if path == denied:
+                raise PermissionError('authored denied full export')
+            return original(path, *args, **kwargs)
+        errors = []
+        with patch.object(Path, 'stat', checked):
+            with self.assertRaises(PermissionError):
+                list(self.registration.discover(self.root))
+            found = list(self.registration.discover(self.root, on_error=errors.append))
+            self.assertEqual(list(self.registration.discover(self.root,
+                stopped=lambda: True, on_error=errors.append)), [])
+        self.assertEqual(found, [first, last])
+        self.assertEqual(len(errors), 1)
 
     def test_steps_normalize_to_prompt_llm_and_tool_spans(self):
         path = write_export(self.root, "one", [

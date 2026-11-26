@@ -8,8 +8,9 @@ from pathlib import Path
 from .base import (AdapterBase, AdapterResult, iter_jsonl, parse_timestamp,
                    prompt_evidence)
 from ..schema import SCHEMA_VERSION, SpanKind, TraceRecord
+from ..claude_usage import ClaudeMessageUsage
 from ..taxonomies import classify_failure_evidence
-from ..text_rules import content_text, prose_of, text_of
+from ..text_rules import content_text, prose_of, text_of, evidence_excerpt
 
 
 def _direct_human(record, message, direct_prompt_sources) -> bool:
@@ -41,7 +42,7 @@ def _integer_or_zero(value):
 
 class ClaudeAdapter(AdapterBase):
     source = "claude"
-    adapter_version = 5
+    adapter_version = 11
 
     def __init__(self, id_salt: bytes, direct_prompt_sources=None, capabilities=None,
                  excluded_session_ids=None):
@@ -78,11 +79,12 @@ class ClaudeAdapter(AdapterBase):
         skills = []
         source_version = ""
         conversation = 0
-        input_tokens = cached_tokens = output_tokens = 0
+        usage_snapshots = ClaudeMessageUsage()
         first_at = last_at = None
         answered = False
         tool_names = {}
         tool_inputs = {}
+        tool_sequence = result_sequence = -1
         active_skill = ""
         active_invocation = ""
         active_skill_id = ""
@@ -146,14 +148,11 @@ class ClaudeAdapter(AdapterBase):
                 skills.append(str(skill))
             if _direct_human(record, message, self.direct_prompt_sources):
                 human_prompts += 1
+                answered = False
                 records.append(self._span(trace_id, sequence, SpanKind.PROMPT,
                                           record, source_version, mode, "human"))
             if record_type == "assistant":
-                usage = message.get("usage")
-                if isinstance(usage, dict):
-                    input_tokens += int(usage.get("input_tokens") or 0)
-                    cached_tokens += int(usage.get("cache_read_input_tokens") or 0)
-                    output_tokens += int(usage.get("output_tokens") or 0)
+                usage_snapshots.add(message)
                 content = message.get("content")
                 answered = answered or bool(prose_of(message).strip())
                 records.append(self._span(trace_id, sequence, SpanKind.LLM,
@@ -168,11 +167,14 @@ class ClaudeAdapter(AdapterBase):
                             tool_names[str(block["id"])] = tool
                             tool_inputs[str(block["id"])] = json.dumps(
                                 block.get("input"), sort_keys=True, default=str)
-                        signature = self.ids.make(
-                            tool, json.dumps(block.get("input"), sort_keys=True, default=str))
+                        signature = (self.ids.make(
+                            tool, json.dumps(block["input"], sort_keys=True, default=str))
+                            if tool.strip() and block.get("input") is not None else "")
+                        tool_sequence = self.indexed_sequence(tool_sequence, sequence, index)
                         records.append(self._span(
-                            trace_id, sequence * 1000 + index, SpanKind.TOOL,
-                            record, source_version, mode, "agent", tool, signature))
+                            trace_id, tool_sequence, SpanKind.TOOL,
+                            record, source_version, mode, "agent", tool, signature,
+                            span_id=self.indexed_span_id(trace_id, sequence, index, SpanKind.TOOL)))
             if record_type == "user":
                 content = message.get("content")
                 if isinstance(content, list):
@@ -191,18 +193,27 @@ class ClaudeAdapter(AdapterBase):
                             attributes.update({
                                 "error_kind": diagnosis.kind,
                                 "error_reason": diagnosis.reason_code,
-                                "failure_taxonomy_version": 3,
+                                "failure_taxonomy_version": 4,
                             })
+                        result_sequence = self.indexed_sequence(result_sequence, sequence, index)
                         records.append(self._span(
-                            trace_id, sequence * 1000 + index, "retro.tool_result",
+                            trace_id, result_sequence, "retro.tool_result",
                             record, source_version, mode, "tool", tool,
                             status="error" if block.get("is_error") else "ok",
                             attributes=attributes,
+                            span_id=self.indexed_span_id(trace_id, sequence, index, "retro.tool_result"),
                         ))
 
         included = bool(conversation and (human_prompts or is_subagent))
         reason = "" if included else "no direct-human prompt"
         if included:
+            usages = usage_snapshots.usages
+            totals, complete = {}, {}
+            for field in ('input_tokens', 'cache_read_input_tokens', 'output_tokens'):
+                valid = [u[field] for u in usages if isinstance(u, dict)
+                         and type(u.get(field)) is int and u[field] >= 0]
+                totals[field] = sum(valid)
+                complete[field] = bool(usages) and len(valid) == len(usages)
             root_id = self.ids.make(trace_id, "root")
             records.insert(0, TraceRecord(
                 schema_version=SCHEMA_VERSION,
@@ -218,12 +229,16 @@ class ClaudeAdapter(AdapterBase):
                 sequence=0,
                 status="complete" if answered else "open",
                 main_or_subagent=mode,
-                input_tokens=input_tokens,
-                cached_input_tokens=cached_tokens,
-                output_tokens=output_tokens,
+                input_tokens=totals['input_tokens'],
+                cached_input_tokens=totals['cache_read_input_tokens'],
+                output_tokens=totals['output_tokens'],
                 duration_ms=(int((last_at - first_at).total_seconds() * 1000)
                              if first_at and last_at else 0),
-                attributes={"skill_count": len(skills)},
+                attributes={"skill_count": len(skills),
+                    "usage_method": "claude.final_message_usage",
+                    "usage_scope": "captured_transcript_message_ids",
+                    "usage_complete": complete,
+                    "usage_anonymous_messages": usage_snapshots.anonymous_count},
             ))
         return AdapterResult(
             source=self.source,
@@ -278,7 +293,7 @@ class ClaudeAdapter(AdapterBase):
             message_context = "\n".join(
                 piece.strip() for piece in content_text(content, ("text",))
                 if piece.strip())
-            shown_context = (redactor(message_context)[-1200:]
+            shown_context = (evidence_excerpt(redactor(message_context), 1200, tail_only=True)
                              if message_context else last_assistant_context)
             for index, block in enumerate(content):
                 if not isinstance(block, dict):
@@ -286,44 +301,42 @@ class ClaudeAdapter(AdapterBase):
                 if (record.get("type") == "assistant"
                         and block.get("type") == "tool_use"):
                     tool_id = str(block.get("id") or "")
-                    details = {
-                        "tool_kind": str(block.get("name") or ""),
-                        "tool_input": redactor(json.dumps(
-                            block.get("input"), sort_keys=True,
-                            default=str))[:800],
-                    }
+                    details = {"tool_kind": str(block.get("name") or "")}
+                    if block.get("input") is not None:
+                        details["tool_input"] = evidence_excerpt(redactor(json.dumps(
+                            block["input"], sort_keys=True, default=str)), 800)
                     if shown_context:
                         details["intent_context"] = shown_context
                     if tool_id:
                         tool_details[tool_id] = details
-                    span_id = self.ids.make(
-                        trace_id, sequence * 1000 + index, SpanKind.TOOL.value)
+                    span_id = self.indexed_span_id(
+                        trace_id, sequence, index, SpanKind.TOOL)
                     evidence[span_id] = details
                 elif (record.get("type") == "user"
                       and block.get("type") == "tool_result"):
                     tool_id = str(block.get("tool_use_id") or "")
                     call_details = tool_details.get(tool_id)
-                    shown_result = redactor(json.dumps(
+                    shown_result = evidence_excerpt(redactor(json.dumps(
                         block.get("content"), sort_keys=True,
-                        default=str))[:1200]
+                        default=str)), 1200)
                     if call_details is not None:
                         call_details["tool_result"] = shown_result
                     details = dict(call_details or {})
                     details["tool_result"] = shown_result
-                    span_id = self.ids.make(
-                        trace_id, sequence * 1000 + index, "retro.tool_result")
+                    span_id = self.indexed_span_id(
+                        trace_id, sequence, index, "retro.tool_result")
                     evidence[span_id] = details
             if record.get("type") == "assistant" and message_context:
-                last_assistant_context = redactor(message_context)[-1200:]
+                last_assistant_context = evidence_excerpt(redactor(message_context), 1200, tail_only=True)
         return evidence
 
     def _span(self, trace_id, sequence, kind, record, source_version, mode,
-              actor, tool="", signature="", status="ok", attributes=None):
+              actor, tool="", signature="", status="ok", attributes=None, span_id=None):
         kind_value = kind.value if isinstance(kind, SpanKind) else str(kind)
         return TraceRecord(
             schema_version=SCHEMA_VERSION,
             trace_id=trace_id,
-            span_id=self.ids.make(trace_id, sequence, kind_value),
+            span_id=span_id or self.ids.make(trace_id, sequence, kind_value),
             parent_span_id=self.ids.make(trace_id, "root"),
             source=self.source,
             adapter_version=self.adapter_version,

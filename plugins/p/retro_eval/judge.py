@@ -40,6 +40,8 @@ class ModelJudge:
     def __init__(self, *, rubric_id, rubric_version, labels, prompt_template,
                  provider, model_config, allow_private_external=False,
                  abstain_label="ambiguous"):
+        if type(allow_private_external) is not bool:
+            raise ValueError("external-data authority must be a boolean")
         self.rubric_id = rubric_id
         self.rubric_version = rubric_version
         self.labels = frozenset(labels)
@@ -52,7 +54,11 @@ class ModelJudge:
             raise ValueError("judge abstention label cannot be empty")
 
     def evaluate(self, case: JudgeCase) -> JudgeExecution:
-        if (case.data_classification == "private" and not self.provider.local
+        # Redaction is not publication authority. Match the workflow evidence
+        # boundary: only explicitly public synthetic evidence bypasses consent.
+        # Missing/unknown classifications and non-boolean locality stay private.
+        if (case.data_classification != "public_synthetic"
+                and self.provider.local is not True
                 and not self.allow_private_external):
             raise PermissionError("private evidence requires explicit external-provider authority")
         prompt = self.prompt_template.format(

@@ -131,7 +131,10 @@ def hash_instruction_source(path: Path) -> str:
             return digest.hexdigest()
         if not path.is_dir() or path.is_symlink():
             raise ValueError("instruction source must be a regular file or directory")
-        digest.update(b"directory\0")
+        # Version the directory encoding: fixed-size per-file digests keep
+        # file contents from being confused with subsequent filename headers.
+        # Existing manifests retain their recorded identities unchanged.
+        digest.update(b"directory-v2\0")
         files = sorted(item for item in path.rglob("*") if item.is_file())
         for item in files:
             if item.is_symlink():
@@ -139,9 +142,11 @@ def hash_instruction_source(path: Path) -> str:
             relative = item.relative_to(path).as_posix().encode("utf-8")
             digest.update(len(relative).to_bytes(8, "big"))
             digest.update(relative)
+            content_digest = hashlib.sha256()
             with item.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
+                    content_digest.update(chunk)
+            digest.update(content_digest.digest())
         return digest.hexdigest()
     except OSError as exc:
         raise ValueError("instruction source is unreadable") from exc
@@ -178,6 +183,14 @@ def write_instruction_manifest(path: Path, sources, *,
 def load_instruction_manifest(path: Path) -> InstructionManifest:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError("invalid instruction manifest") from exc
+    return parse_instruction_manifest(payload)
+
+
+def parse_instruction_manifest(payload) -> InstructionManifest:
+    """Validate an already captured manifest without reopening its path."""
+    try:
         sources = tuple(InstructionSource(
             source_kind=str(item["source_kind"]),
             content_sha256=str(item["content_sha256"]),

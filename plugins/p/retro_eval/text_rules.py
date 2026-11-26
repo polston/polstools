@@ -7,9 +7,117 @@ re-exports every name below; edit the rule here, not there.
 
 from __future__ import annotations
 
+import json
 import re
 from functools import lru_cache
 from pathlib import Path
+
+
+def evidence_excerpt(text: str, limit: int, *, tail_only=False) -> str:
+    """Bound already-redacted evidence and make omitted content visible.
+
+    Boundary excerpts preserve terminal diagnostics, not evidence completeness.
+    Redact the full text before calling; slicing first can split a secret.
+    """
+    marker = "\n[... excerpt truncated ...]\n"
+    if type(limit) is not int or limit < len(marker) + 2:
+        raise ValueError("evidence excerpt limit must accommodate its marker")
+    if len(text) <= limit:
+        return text
+    available = limit - len(marker)
+    if tail_only:
+        return marker + text[-available:]
+    head = (available + 1) // 2
+    return text[:head] + marker + text[-(available - head):]
+
+
+# Recognize the complete transport envelope, not mentions, tag-name prefixes,
+# malformed fragments, or markup followed by a person's explanation. This is
+# a content heuristic; an authoritative human source marker takes precedence
+# in readers that have one. Unknown wrappers remain unclassified.
+_HOOK_ENVELOPE = re.compile(
+    r"\A<hook_prompt(?P<attrs>(?:\s+[A-Za-z_][\w:.-]*\s*=\s*"
+    r"(?:\"[^\"]*\"|'[^']*'))+)\s*>(?P<body>[\s\S]*)</hook_prompt>\Z")
+_HOOK_ATTRIBUTE = re.compile(r"([A-Za-z_][\w:.-]*)\s*=\s*([\"'])(.*?)\2", re.S)
+
+
+def codex_question_reply(body):
+    """Separate answers from a complete observed Codex question-reply envelope.
+
+    This recognizes structure, not authenticated human authorship. Unknown,
+    malformed, quoted and mixed-content envelopes remain unchanged. Raw capture
+    remains authoritative; callers must retain returned questions as context.
+    """
+    opening = "<send_user_message_question_reply>"
+    closing = "</send_user_message_question_reply>"
+    stripped = body.strip()
+    if not (stripped.startswith(opening) and stripped.endswith(closing)):
+        return body, []
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate reply field")
+            value[key] = item
+        return value
+
+    try:
+        entries = json.loads(stripped[len(opening):-len(closing)],
+                             object_pairs_hook=unique_object)
+    except (ValueError, RecursionError):
+        return body, []
+    if not isinstance(entries, list) or not entries:
+        return body, []
+    for entry in entries:
+        if (not isinstance(entry, dict)
+                or set(entry) != {"answer", "question", "questionItemId"}
+                or any(not isinstance(entry[key], str) or not entry[key].strip()
+                       for key in entry)):
+            return body, []
+    return ("\n".join(entry["answer"].strip() for entry in entries),
+            [entry["question"].strip() for entry in entries])
+
+
+def codex_machine_prompt_origin(payload, body, openers):
+    """Exclude a wholly classified context message, otherwise use legacy rules.
+
+    Kinds are positional and optional. Require a complete alignment and only
+    the recognized context kinds; unknown or mixed messages are not evidence
+    that the whole message was injected. In particular, user.text is not proof
+    of human authorship. Do not classify AGENTS quotations by their text.
+    """
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    content = payload.get("content")
+    kinds = metadata.get("content_item_kinds") if isinstance(metadata, dict) else None
+    if (isinstance(content, list) and content and isinstance(kinds, list)
+            and len(kinds) == len(content)
+            and all(isinstance(kind, str) and kind in (
+                "agents_md.instructions", "environments.environment_context")
+                for kind in kinds)):
+        return "codex_context_item_kinds"
+    return machine_prompt_origin(body, openers)
+
+
+def machine_prompt_origin(body, openers):
+    """Return a content-free reason for known machine text, or None.
+
+    Existing opener policy remains supplied by the caller. Hook envelopes need
+    a complete wrapper and a nonempty run attribute; a tag mention is not proof.
+    Never use this to override explicit human provenance.
+    """
+    text = body.strip()
+    if text.startswith(tuple(openers)):
+        return "known_machine_opener"
+    match = _HOOK_ENVELOPE.fullmatch(text)
+    if match and "</hook_prompt>" not in match.group("body"):
+        attributes = _HOOK_ATTRIBUTE.findall(match.group("attrs"))
+        names = [name for name, _, _ in attributes]
+        if len(set(names)) == len(names) and any(
+                name == "hook_run_id" and value.strip()
+                for name, _, value in attributes):
+            return "hook_prompt_envelope"
+    return None
 
 
 # --- Tuning constants ------------------------------------------------------
@@ -119,8 +227,9 @@ def strip_controls(text):
 def redact(text):
     """Strip machine-identifying and credential-shaped values from text.
 
-    Runs before anything is written to a pack. A pack file on disk must already
-    be safe to read aloud — redacting at read time would be too late.
+    Runs before text is written to a pack, but is not complete deidentification.
+    Paths, names and contextual identifiers may remain. Redacted excerpts stay
+    private; this function grants no publication or external-provider authority.
     """
     if not text:
         return ""
@@ -154,11 +263,13 @@ def classify_user_turn(body, prior_assistant_chars,
                        max_chars=None, min_prior=None):
     """The pack's central definition, in one place: what a user turn means.
 
-    Returns "interrupt", "question", "approval", "correction" or "". Precedence
-    is fixed in that order, so a turn that could read as two things is always
-    the earlier one. `measure` counts the result and `moments` quotes it, so
-    both read the same rule, and the threshold sweep calls it too rather than
-    keeping a second copy that drifts.
+    Returns "interrupt", "question", "approval", "correction" or "".
+    Interruption markers take precedence. Within the short-reply/context gate,
+    corrective wording wins, then approval, then a trailing question mark;
+    other gated replies are correction candidates. Outside that gate, bounded
+    corrective replies with enough context can still be candidates. `measure`
+    counts the result and `moments` quotes it; the threshold sweep calls the
+    same rule. These are heuristic candidates, not established user intent.
 
     A correction is deliberately over-flagged. Measured against turns read and
     marked by hand -- 300 originally, of which 144 survived a later correction to

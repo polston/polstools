@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "resource_units": {
+    "actions": "reserved native or helper operations; a batch may include several; admission reserves at least one",
+    "tokens": "observed provider tokens",
+    "bytes": "canonical JSON or captured bytes, declared per action",
+    "cost_microunits": "millionths of the declared accounting currency"
+  },
+  "claim_types": [
+    "factual",
+    "software",
+    "empirical",
+    "formal",
+    "interpretive",
+    "preference"
+  ],
+  "enforcement": [
+    "host_enforced",
+    "helper_enforced",
+    "advisory",
+    "unavailable"
+  ],
+  "policy": {
+    "frame": "Read available context first; infer routine methods. Ask early only when a consequential intent or authority boundary is unresolved. Preserve requester purpose and the original root bound.",
+    "research": "Identify mechanisms, credible alternatives, contrary evidence and appropriate verification. Primary evidence and inspectable artifacts outweigh citation counts. Record why remaining research is unlikely to change the decision; do not claim exhaustive coverage without support.",
+    "choose": "Choose actions that can change a consequential decision. State plausible observations and their implications. Compare cost and harm; do not fabricate probabilities. Preserve promising branches with explicit revisit conditions. Implement when it is the justified experiment, and finish verification rather than retreating into easier analysis.",
+    "questions": "Retrieve accessible facts and investigate credible alternatives before technical escalation. Missing authority needs no failed-attempt quota. Taste questions need concrete alternatives. Continue independent work while waiting; silence grants nothing. Children escalate to their parent, which consolidates necessary human questions.",
+    "evidence": "Distinguish proposal, execution, observation and supported conclusion. A failed tool is not a refuted conjecture. Preserve failed results, exposure and evaluator versions. Use claim-appropriate oracles and counterexamples; populated fields do not certify truth.",
+    "self_application": "Freeze the incumbent and evaluator. Keep authoritative receipts, budget and confirmation evidence outside candidate mutation scope where supported; disclose weaker boundaries. Evaluate changes on subsequent tasks. Regrade both versions if the evaluator changes.",
+    "finish": "Select, revise, reject, retain the incumbent or leave unresolved using evidence and protected quality conditions. Finite tests do not establish global optimality. A bound reached with missing acceptance is incomplete. Report concrete next work without prescribing a universal conversational format."
+  },
+  "events": {
+    "resume": {
+      "source": "text",
+      "reason": "text",
+      "evidence": "evidence"
+    },
+    "frame": {
+      "frame": "frame",
+      "basis": "evidence",
+      "source": "text"
+    },
+    "research": {
+      "question": "text",
+      "sources": "evidence",
+      "alternatives": "texts",
+      "counterevidence": "texts",
+      "finding": "text",
+      "next_action": "text"
+    },
+    "conjecture": {
+      "id": "text",
+      "claim_type": "claim",
+      "claim": "text",
+      "mechanism": "text",
+      "alternatives": "texts",
+      "prediction": "text",
+      "falsifier": "text",
+      "inputs": "evidence"
+    },
+    "decision": {
+      "id": "text",
+      "disposition": "enum:retain,revise,reject,unresolved,no_change,select",
+      "reason": "text",
+      "evidence": "evidence",
+      "limitations": "texts",
+      "next_action": "text",
+      "revisit": "text"
+    },
+    "question": {
+      "id": "text",
+      "topic": "text",
+      "recipient": "text",
+      "category": "enum:fact,technical,intent,taste,authority",
+      "question": "text",
+      "impact": "text",
+      "attempts": "texts",
+      "alternatives": "texts",
+      "exemption": "string",
+      "frame_seq": "uint",
+      "required": "bool"
+    },
+    "answer": {
+      "question_id": "text",
+      "frame_seq": "uint",
+      "response": "text",
+      "respondent": "text",
+      "origin": "enum:requester,parent,simulated",
+      "evidence": "evidence"
+    },
+    "question_close": {
+      "question_id": "text",
+      "state": "enum:superseded,withdrawn",
+      "reason": "text"
+    },
+    "grant": {
+      "id": "text",
+      "parent": "text",
+      "recipient": "text",
+      "limits": "resources",
+      "authority": "texts",
+      "deadline_ms": "uint"
+    },
+    "grant_close": {
+      "id": "text",
+      "reason": "text"
+    },
+    "action": {
+      "id": "text",
+      "grant": "text",
+      "kind": "enum:inspect,research,measure,experiment,implement,review",
+      "method": "text",
+      "purpose": "text",
+      "prediction": "text",
+      "falsifier": "text",
+      "alternatives": "texts",
+      "authority": "texts",
+      "reservation": "resources",
+      "questions": "texts",
+      "inputs": "evidence"
+    },
+    "result": {
+      "action_id": "text",
+      "status": "enum:succeeded,failed,interrupted,uncertain",
+      "usage": "resources",
+      "evidence": "evidence",
+      "producer": "text",
+      "observation": "text",
+      "origin": "enum:helper,harness,agent,imported"
+    },
+    "acceptance": {
+      "criterion": "text",
+      "status": "enum:pass,fail,unknown",
+      "frame_seq": "uint",
+      "evidence": "evidence",
+      "inputs": "evidence",
+      "procedure": "text",
+      "verifier": "text",
+      "claim_type": "claim",
+      "limitations": "texts"
+    },
+    "methods": {
+      "composition": "texts",
+      "reason": "text",
+      "evidence": "evidence"
+    },
+    "finish": {
+      "status": "enum:complete,bound,blocked,stopped",
+      "reason": "text",
+      "next_action": "text"
+    }
+  }
+}
