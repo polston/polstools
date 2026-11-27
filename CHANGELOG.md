@@ -4,6 +4,10 @@ Notable changes to the `p` plugin. Each version heading matches the `version`
 field of the plugin manifests; changes made before this file existed are in the
 git history.
 
+## [1.22.6] - 2026-11-27
+
+- Tighten `writing-plans` prerequisite audit to explicitly check intervening writes against read-only boundaries.
+
 ## [1.22.5]
 
 - fix(skills): tighten writing-plans and writing-goals (#15)
