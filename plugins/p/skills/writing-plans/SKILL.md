@@ -29,8 +29,9 @@ Distinguish observed facts, chosen design decisions and unresolved assumptions.
 Resolve accessible facts yourself. If the approach depends on an unknown, plan
 the smallest informative investigation before the dependent implementation;
 use the investigation skill for substantial uncertainty. Specify what different
-results would change. Ask only for consequential intent, taste or authority that
-available evidence cannot settle, while continuing independent authorized work.
+results would change. Reserve operator decision gates for consequential intent,
+taste or authority evidence cannot settle—not empirical probes—while continuing
+independent work.
 
 Work backward from acceptance to required outputs, then forward from current
 state to check feasibility. Each consequential dependency should identify the
@@ -48,8 +49,8 @@ count is required. Keep enough information for the intended executor:
 - The outcome, protected requirements and authoritative inputs.
 - Tasks with concrete deliverables, dependencies, relevant files or interfaces,
   and checks that distinguish success from a plausible wrong result. When adding
-  a new module, command, or skill alongside existing siblings, state its
-  non-overlap boundary ("when not to use it") and include a compact boundary or
+  a sibling with real scope ambiguity, state its non-overlap boundary ("when not
+  to use it")—skip obvious negatives—and include a compact boundary or
   data-flow map for cross-boundary work.
 - The next ready task and whether it is authorized to run; omit repeated
   per-task owner/status boilerplate for single-executor plans, keeping status
@@ -58,12 +59,12 @@ count is required. Keep enough information for the intended executor:
   any needed rollback or recovery constraint.
 
 Plan near-term known work precisely; leave later uncertain work conditional on
-its decision gate. Verify existing paths, APIs, CLI flags (`--help`), and
-exact-set or count test assertions on touched registries or profiles before
-prescribing them. Mark proposed new interfaces as proposed. Include exact values
-and tricky algorithm details when ambiguity would change correctness; avoid
-duplicating complete implementations in prose. More detail can be necessary for
-an executor with less context. Shorter plans are not inherently better.
+its decision gate. Verify existing paths, APIs, CLI flags (`--help`), runtime
+value sets, and exact-set test assertions before prescribing them,
+cross-checking constraints against observed values. Mark proposed interfaces as
+proposed. Include exact values and tricky details when ambiguity would change
+correctness; avoid duplicating full implementations, boilerplate, or no-op
+steps.
 
 Trace at least the consequential path through intermediate states and its
 verification. Use an existing test, dry run or isolated probe where it can check
