@@ -61,37 +61,36 @@ Include only fields that control the run:
    Verify that a referenced plan exists and read its verification section. When
    that plan is already listed in `Read first`, reference its exact sections
    instead of re-pasting specification prose into the goal.
-2. Never invent wrapper commands or success phrases solely to simplify
-   evaluation; establish validation first for greenfield work. Verify exact CLI
-   syntax and flag-separator order (e.g., engine vs. user args around `--`),
-   map every declared invariant to a static or runtime check, keep setup
-   mutations (`mkdir`, `chmod`, staging) in the execution loop, verify expected
-   counts and stdout with final flags, and run commit-dependent checks after
-   committing.
+2. Never invent wrapper commands or success phrases to simplify evaluation;
+   establish greenfield validation first. Verify exact CLI syntax and
+   flag-separator order (around `--`), syntax-check inline evidence commands
+   (exit-code polarity, no cross-shell vars), map each invariant to a static or
+   runtime check, keep setup mutations (`mkdir`, `chmod`, staging) in the loop,
+   route post-commit tool artifacts to tempdirs, verify expected counts/stdout
+   with final flags, and run commit-dependent checks after committing.
 3. Keep one finish line. If two conditions can complete independently, they are
    separate goals. Necessary supporting work stays inside the selected outcome.
-   When phasing work across an unresolved operator decision, put a short
-   open-decisions block (with concrete options) up front so runnable phases stay
-   unblocked while decision-gated phases park cleanly.
-4. Replace vague outcomes with countable evidence. Every unattended goal has a
-   primary turn or time bound, per-command timeouts for external binaries, and a
-   per-checkpoint failure retry cap. Ask for missing scope-changing thresholds
-   rather than inventing them. Keep pre-launch confirmation notes outside the
-   fenced `/goal` block while copying every concrete operational default inside
-   so the pasted block stays self-contained and free of drafting annotations.
+   When phasing work across an open decision, put a short up-front options block
+   so runnable phases proceed while gated phases park cleanly.
+4. Replace vague outcomes with countable evidence. Pair a primary turn or time
+   bound with per-command timeouts, a per-checkpoint failure retry cap, and
+   clean rollback of uncommitted failed edits. Ask for missing scope-changing
+   thresholds rather than inventing them. Keep pre-launch notes outside the
+   fenced `/goal` block while copying every operational default inside so the
+   pasted block stays self-contained.
 5. Keep terminal states (`Completed`, `Review needed`, `Blocked`, reached bound)
    mutually exclusive; a reached bound pauses an incomplete run rather than
    completing it.
 6. A blocked exit names the exact failure, relevant attempted remedies, missing
    authority or external state, and the check that resumes work.
-7. Preserve completed work across pauses, compaction, and handoffs. Do not expose
-   a harness-internal difference when the operator need not act on it.
-8. Reconcile authority boundaries across both repo and live host state: affirm
-   or override standing repo rules (commit policy, auto-push/release) explicitly,
-   and require pre-mutation verification before destructive cleanup outside git
-   (installed binaries, user configs/skills, hooks, state logs).
+7. Preserve completed work across pauses, compaction, and handoffs. Hide
+   harness-internal details the operator need not act on.
+8. Reconcile authority boundaries across repo and live host state: explicitly
+   affirm or override standing repo rules (commit/push/release), and require
+   pre-mutation verification before destructive cleanup outside git (installed
+   binaries, user configs/skills, hooks, state logs).
 9. Right-size subagent delegation for cost, speed, and reasoning: delegate
-   independent parallel work or context-heavy scans/verifications to fast
-   read-only tiers, reserve deeper reasoning for root-cause debugging or
-   architecture, and skip delegation for single-step lookups. Keep contracts
-   free of harness tool names or model IDs.
+   independent parallel work or context-heavy scans to fast read-only tiers,
+   isolate concurrent mutating probes in tempdirs or worktrees, reserve deeper
+   reasoning for root-cause debugging or architecture, and skip trivial
+   lookups. Keep contracts free of harness tool names or model IDs.
