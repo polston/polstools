@@ -22,7 +22,7 @@ shell_path() {
 usable() {
   # A positive answer is required: a stub that exits 0 for any arguments
   # must not pass.
-  [ "$("$@" -S -E -c 'import sys; print("python-ok" if sys.version_info >= (3, 9) else "")' \
+  [ "$("$@" -S -E -c 'import sys; print("python-ok" if sys.version_info >= (3, 12) else "")' \
     2>/dev/null)" = python-ok ]
 }
 
@@ -42,7 +42,7 @@ python_override=$(shell_path "${POLSTOOLS_PYTHON:-}")
 if [ -n "$python_override" ]; then
   if [ -x "$python_override" ]; then
     launch 1 "$python_override" "$@"
-    echo "python-launcher: POLSTOOLS_PYTHON is not Python 3.9 or newer; searching PATH" >&2
+    echo "python-launcher: POLSTOOLS_PYTHON is not Python 3.12 or newer; searching PATH" >&2
   else
     echo "python-launcher: POLSTOOLS_PYTHON is not an executable file; searching PATH" >&2
   fi

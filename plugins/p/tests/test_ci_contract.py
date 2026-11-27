@@ -1,6 +1,6 @@
-"""Properties of the CI workflow, read with the standard library only.
+"""Properties of the CI and release workflows, read with the standard library only.
 
-The workflow uses a small subset of YAML (block mappings, one flow list per
+The workflows use a small subset of YAML (block mappings, one flow list per
 matrix axis, block scalars for `run`), so a line reader is enough. The tests
 assert properties that stay true as steps are added, not the YAML text.
 """
@@ -12,6 +12,7 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "validate.yml"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-bump.yml"
 README = REPO_ROOT / "README.md"
 FULL_SHA = re.compile(r"^[\w.-]+/[\w.-]+(?:/[\w./-]+)?@[0-9a-f]{40}$")
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -134,16 +135,24 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
         self.assertEqual({"pull_request", "push", "workflow_dispatch"}, names)
         self.assertIn("branches: [main]", self.text)
 
-    def test_the_plugin_job_covers_three_systems_and_the_python_floor(self):
-        job = self.jobs["plugin"]
-        self.assertEqual(
-            {"ubuntu-latest", "macos-latest", "windows-latest"},
-            set(job["matrix"]["os"]),
-        )
-        self.assertIn("3.9", job["matrix"]["python"])
-        self.assertGreater(len(job["matrix"]["python"]), 1)
-        self.assertIn("fail-fast: false", job["raw"])
-        self.assertIn("runs-on: ${{ matrix.os }}", job["raw"])
+    def test_slim_three_job_layout_covers_linux_python_floor_and_windows_smoke(self):
+        self.assertEqual({"validate", "windows-smoke", "optional-analytics"}, set(self.jobs))
+        validate = self.jobs["validate"]
+        self.assertIn("runs-on: ubuntu-latest", validate["raw"])
+        self.assertIn("3.12", validate["matrix"]["python"])
+        self.assertGreater(len(validate["matrix"]["python"]), 1)
+        self.assertIn("fail-fast: false", validate["raw"])
+        self.assertNotIn("macos-latest", self.text)
+        self.assertNotIn('"3.9"', self.text)
+
+        win = self.jobs["windows-smoke"]
+        self.assertIn("runs-on: windows-latest", win["raw"])
+        win_setup = [s for s in win["steps"] if s.get("uses", "").startswith("actions/setup-python@")]
+        self.assertEqual(["3.14"], [s["with"]["python-version"] for s in win_setup])
+        win_runs = "\n".join(self.commands("windows-smoke"))
+        self.assertIn("sh plugins/p/bin/p-validate", win_runs)
+        self.assertIn("test_release_bump", win_runs)
+        self.assertIn("test_sparring_skills", win_runs)
 
     def test_workflow_token_is_read_only(self):
         permissions = top_level_permissions(self.text)
@@ -166,8 +175,8 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
         for step in checkouts:
             self.assertEqual("0", step["with"].get("fetch-depth"))
 
-    def test_the_readme_validation_contract_runs_in_the_plugin_job(self):
-        ran = self.commands("plugin")
+    def test_the_readme_validation_contract_runs_in_the_validate_job(self):
+        ran = self.commands("validate")
         documented = readme_validation_commands(README.read_text(encoding="utf-8"))
         self.assertGreaterEqual(len(documented), 5)
         for command in documented:
@@ -179,17 +188,17 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
         )
 
     def test_diff_check_compares_two_revisions(self):
-        checks = [c.split() for c in self.commands("plugin") if c.startswith("git diff --check")]
+        checks = [c.split() for c in self.commands("validate") if c.startswith("git diff --check")]
         self.assertEqual(1, len(checks))
         self.assertEqual([EMPTY_TREE, "HEAD"], checks[0][3:])
 
     def test_posix_scripts_are_syntax_checked(self):
-        script = "\n".join(self.commands("plugin"))
+        script = "\n".join(self.commands("validate"))
         self.assertIn("sh -n", script)
         self.assertIn("plugins/p/bin/*", script)
 
     def test_shell_steps_that_need_posix_tools_use_bash(self):
-        for step in self.jobs["plugin"]["steps"]:
+        for step in self.jobs["validate"]["steps"]:
             run = step.get("run", "")
             if "git diff" in run or "repo-privacy-audit" in run or "sh -n" in run:
                 with self.subTest(step=step.get("name")):
@@ -207,14 +216,11 @@ class ContinuousIntegrationContractTests(unittest.TestCase):
                     if "pip install" in line:
                         self.assertIn("--only-binary :all:", line)
 
-    def test_version_bump_is_checked_against_the_pull_request_base(self):
-        steps = [s for s in self.jobs["plugin"]["steps"] if "--base" in s.get("run", "")]
-        self.assertEqual(1, len(steps))
-        self.assertIn("pull_request", steps[0].get("if", ""))
-        self.assertEqual(
-            "${{ github.event.pull_request.base.sha }}", steps[0]["env"].get("BASE_SHA")
-        )
-        self.assertEqual('sh plugins/p/bin/p-validate --base "$BASE_SHA"', steps[0]["run"])
+    def test_validate_workflow_no_longer_enforces_manual_per_pr_version_bump(self):
+        for name, job in self.jobs.items():
+            for step in job["steps"]:
+                with self.subTest(job=name, step=step.get("name")):
+                    self.assertNotIn("p-validate --base", step.get("run", ""))
 
 
 class OptionalAnalyticsJobTests(unittest.TestCase):
@@ -222,11 +228,16 @@ class OptionalAnalyticsJobTests(unittest.TestCase):
     def setUpClass(cls):
         cls.jobs = parse_jobs(WORKFLOW.read_text(encoding="utf-8"))
 
-    def test_optional_paths_run_where_they_can_never_skip(self):
+    def test_optional_paths_are_path_filtered_and_require_optional_deps_when_active(self):
         job = self.jobs["optional-analytics"]
         self.assertIn("runs-on: ubuntu-latest", job["raw"])
+        filter_steps = [s for s in job["steps"] if s.get("id") == "filter"]
+        self.assertEqual(1, len(filter_steps))
+        self.assertIn("plugins/p/retro_eval/", filter_steps[0]["run"])
+        self.assertIn("plugins/p/requirements-eval", filter_steps[0]["run"])
         setup = [s for s in job["steps"] if s.get("uses", "").startswith("actions/setup-python@")]
         self.assertEqual(["3.14"], [s["with"]["python-version"] for s in setup])
+        self.assertEqual("steps.filter.outputs.run == 'true'", setup[0].get("if"))
         runs = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertIn(
             "pip install --only-binary :all: -r plugins/p/requirements-eval.txt", runs
@@ -235,6 +246,47 @@ class OptionalAnalyticsJobTests(unittest.TestCase):
         self.assertEqual(1, len(tests))
         self.assertEqual("1", tests[0]["env"].get("RETRO_EVAL_REQUIRE_OPTIONAL"))
         self.assertIn('-p "test_eval_*.py"', tests[0]["run"])
+        self.assertEqual("steps.filter.outputs.run == 'true'", tests[0].get("if"))
+
+
+class ReleaseBumpWorkflowContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        cls.jobs = parse_jobs(cls.text)
+        cls.steps = [step for job in cls.jobs.values() for step in job["steps"]]
+
+    def test_triggers_permissions_and_concurrency(self):
+        triggers = _block(_meaningful(self.text), "on:", 0)
+        names = {_split_pair(line)[0] for line in triggers if _indent(line) == 2}
+        self.assertEqual({"push", "workflow_dispatch"}, names)
+        self.assertIn("branches: [main]", self.text)
+        self.assertIn("plugins/p/**", self.text)
+        self.assertEqual({"contents": "read"}, top_level_permissions(self.text))
+        self.assertIn("group: release-bump-main", self.text)
+        self.assertIn("cancel-in-progress: false", self.text)
+        self.assertEqual({"bump"}, set(self.jobs))
+        self.assertIn("contents: write", self.jobs["bump"]["raw"])
+
+    def test_actions_are_full_sha_pinned_with_full_history(self):
+        used = [step["uses"] for step in self.steps if "uses" in step]
+        self.assertTrue(used)
+        for reference in used:
+            with self.subTest(uses=reference):
+                self.assertRegex(reference, FULL_SHA)
+        checkouts = [s for s in self.steps if s.get("uses", "").startswith("actions/checkout@")]
+        self.assertEqual(1, len(checkouts))
+        self.assertEqual("0", checkouts[0]["with"].get("fetch-depth"))
+
+    def test_three_layer_loop_guard_and_safe_commit_hygiene(self):
+        raw = self.jobs["bump"]["raw"]
+        self.assertIn("github-actions[bot]", raw)
+        self.assertIn("chore(release):", raw)
+        self.assertIn("[skip release]", raw)
+        self.assertIn("[skip ci]", raw)
+        self.assertIn("git commit -F -", raw)
+        self.assertNotIn("git commit -m", raw)
+        self.assertIn(".github/scripts/release_bump.py", raw)
 
 
 class PythonFloorTests(unittest.TestCase):
@@ -242,7 +294,8 @@ class PythonFloorTests(unittest.TestCase):
         readme = README.read_text(encoding="utf-8")
         floor = re.search(r"Python (\d+\.\d+) or newer", readme)
         self.assertIsNotNone(floor)
-        job = parse_jobs(WORKFLOW.read_text(encoding="utf-8"))["plugin"]
+        self.assertEqual("3.12", floor.group(1))
+        job = parse_jobs(WORKFLOW.read_text(encoding="utf-8"))["validate"]
         self.assertIn(floor.group(1), job["matrix"]["python"])
 
 

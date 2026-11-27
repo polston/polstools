@@ -554,7 +554,7 @@ silently selecting the version recorded in the report and dataset manifests.
 
 The pinned optional analytics environment requires Python 3.12 or newer because
 of its [NumPy requirement](https://pypi.org/project/numpy/2.5.2/); its CI job uses
-Python 3.14. The stdlib-only core continues to support Python 3.9.
+Python 3.14. The stdlib-only core continues to support Python 3.12.
 Install optional analytics into an isolated environment from
 `requirements-eval.txt`; do not add them to the plugin's stdlib runtime.
 The Parquet cache captures one temporary input for conversion and metadata,

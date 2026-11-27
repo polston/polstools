@@ -14,25 +14,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  plugin:
-    name: plugin (${{ matrix.os }}, python ${{ matrix.python }})
-    runs-on: ${{ matrix.os }}
+  validate:
+    name: validate (ubuntu-latest, python ${{ matrix.python }})
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.9", "3.14"]
+        python: ["3.12", "3.14"]
 
     steps:
       - name: Check out repository with full history
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
 
@@ -44,13 +43,6 @@ jobs:
 
       - name: Universal source and installed-copy checks
         run: sh plugins/p/bin/p-validate
-
-      - name: Version bump over the pull request base
-        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: sh plugins/p/bin/p-validate --base "$BASE_SHA"
 
       - name: POSIX shell syntax
         shell: bash
@@ -70,6 +62,31 @@ jobs:
         shell: bash
         run: git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
 
+  windows-smoke:
+    name: windows smoke (windows-latest, python 3.14)
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Universal source and installed-copy checks
+        shell: bash
+        run: sh plugins/p/bin/p-validate
+
+      - name: Cross-platform CLI and skill smoke tests
+        shell: bash
+        run: PYTHONPATH=plugins/p/tests sh plugins/p/bin/python-launcher -B -m unittest test_validator test_universal_plugin test_plugin_root_convention test_readme test_ci_contract test_release_bump test_python_launcher test_repo_safety_skills test_skill_activation test_native_activation_scope test_statusline test_statusline_renderer test_antigravity_statusline test_antigravity_install_health test_antigravity_session_ids test_adequacy_review_portability test_sparring_skills test_writing_goals
+
   optional-analytics:
     name: optional analytics (ubuntu-latest, python 3.14)
     runs-on: ubuntu-latest
@@ -77,21 +94,51 @@ jobs:
 
     steps:
       - name: Check out repository with full history
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Check whether evaluation paths changed
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="$PR_BASE_SHA"
+          if [ -z "$base" ]; then
+            base="$PUSH_BEFORE_SHA"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$base" HEAD)
+          if printf '%s\n' "$changed" | grep -Eq '^(plugins/p/retro_eval/|plugins/p/rubrics/|plugins/p/requirements-eval\.txt$|plugins/p/tests/test_eval_|\.github/workflows/validate\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: steps.filter.outputs.run == 'true'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
 
       - name: Install the pinned optional analytics packages (wheels only)
+        if: steps.filter.outputs.run == 'true'
         run: |
           python -m pip install --only-binary :all: -r plugins/p/requirements-eval.txt
 
       - name: Evaluation tests with the optional paths required
+        if: steps.filter.outputs.run == 'true'
         env:
           RETRO_EVAL_REQUIRE_OPTIONAL: "1"
         run: python -B -m unittest discover -s plugins/p/tests -t plugins/p/tests -p "test_eval_*.py"
