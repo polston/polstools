@@ -4,6 +4,10 @@ Notable changes to the `p` plugin. Each version heading matches the `version`
 field of the plugin manifests; changes made before this file existed are in the
 git history.
 
+## [1.22.5]
+
+- fix(skills): tighten writing-plans and writing-goals (#15)
+
 ## [1.22.4]
 
 - chore(writing-goals): tighten CLI syntax, bounds, and self-contained block rules (#14)

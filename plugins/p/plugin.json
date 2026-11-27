@@ -1,6 +1,6 @@
 {
   "name": "p",
-  "version": "1.22.4",
+  "version": "1.22.5",
   "description": "Personal tooling for home/work skill activation, privacy audits, cross-harness diagnostics and goal design, workflow analysis and evaluation, code review, aligned Claude and Codex status lines, and platform-specific fixes.",
   "author": {
     "name": "polston"
