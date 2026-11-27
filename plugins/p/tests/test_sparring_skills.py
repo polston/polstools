@@ -135,8 +135,9 @@ class SparringSkillsTests(unittest.TestCase):
             self.assertEqual(0, stripped.returncode, stripped.stderr)
             anon_out = json.loads(stripped.stdout)
             self.assertTrue(anon_out["blinding_sanitized"])
-            key_mode = stat.S_IMODE((round_dir / "sealed-key.json").stat().st_mode)
-            self.assertEqual(0o600, key_mode)
+            if os.name != "nt":
+                key_mode = stat.S_IMODE((round_dir / "sealed-key.json").stat().st_mode)
+                self.assertEqual(0o600, key_mode)
 
             # Judge packets (default 2 judges)
             jp = _run_helper("judge-packet", "--round-dir", str(round_dir))
@@ -731,6 +732,72 @@ class SparringSkillsTests(unittest.TestCase):
             self.assertEqual(0, r.returncode, r.stderr)
             for tok in expected_tokens:
                 self.assertIn(tok, r.stdout)
+
+    def test_anonymize_without_fchmod_and_unblind_with_utf8_bom(self):
+        import argparse
+        import importlib.util
+        import io
+        import types
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("skill_spar_win_compat", HELPER)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            round_dir = tmp_path / "r_win"
+            round_dir.mkdir()
+            (round_dir / "brief.md").write_text("Compact task brief.\n", encoding="utf-8")
+            ctrl = round_dir / "control.md"
+            treat = round_dir / "treatment.md"
+            ctrl.write_text("# Plan A\nStep 1.\n", encoding="utf-8")
+            treat.write_text("# Plan B\nStep 1 with check.\n", encoding="utf-8")
+
+            # Simulate platforms lacking os.fchmod (e.g. Windows) even when running on POSIX
+            attrs = {k: getattr(os, k) for k in dir(os) if k != "fchmod"}
+            chmod_spy = mock.Mock(wraps=os.chmod)
+            attrs["chmod"] = chmod_spy
+            fake_os = types.SimpleNamespace(**attrs)
+            with mock.patch.object(mod, "os", fake_os), mock.patch("sys.stdout", new=io.StringIO()):
+                rc = mod.cmd_anonymize(
+                    argparse.Namespace(
+                        round_dir=round_dir,
+                        control_file=ctrl,
+                        treatment_file=treat,
+                        seed=11,
+                        strip_leaks=False,
+                    )
+                )
+            self.assertEqual(0, rc)
+            self.assertTrue((round_dir / "sealed-key.json").is_file())
+            chmod_spy.assert_called_once_with(round_dir.resolve() / "sealed-key.json", 0o600)
+
+            jp = _run_helper("judge-packet", "--round-dir", str(round_dir))
+            self.assertEqual(0, jp.returncode, jp.stderr)
+            jp_data = json.loads((round_dir / "judge-packets.json").read_text(encoding="utf-8"))
+
+            bom_resp = round_dir / "responses-bom.json"
+            payload = [
+                {
+                    "request_id": req["request_id"],
+                    "artifacts_sha256": jp_data["artifacts_sha256"],
+                    "axis_a_winner": "X",
+                    "axis_b_winner": "X",
+                    "overall_winner": "X",
+                    "candidate_x_defects": [],
+                    "candidate_y_defects": [],
+                    "concrete_skill_gaps": [],
+                    "unchecked": [],
+                }
+                for req in jp_data["requests"]
+            ]
+            bom_resp.write_text(json.dumps(payload), encoding="utf-8-sig")
+
+            scored = _run_helper("unblind-score", "--round-dir", str(round_dir), "--responses-file", str(bom_resp))
+            self.assertEqual(0, scored.returncode, scored.stderr)
+            verdict = json.loads(scored.stdout)
+            self.assertFalse(verdict["contested"])
 
 
 if __name__ == "__main__":
