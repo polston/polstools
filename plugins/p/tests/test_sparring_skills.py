@@ -528,6 +528,210 @@ class SparringSkillsTests(unittest.TestCase):
             self.assertLess(len(jp_text), 12000)
             self.assertIn("blinded", jp_text)
 
+    def test_context_files_chaining_isolation_dedup_security_and_inline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            brief = tmp_path / "brief.md"
+            brief.write_text("Draft goal contract for promoted plan.\n", encoding="utf-8")
+            promoted = tmp_path / "promoted-plan.md"
+            promoted.write_text("# Promoted Plan\nContains arm terminology like control arm.\n", encoding="utf-8")
+            reserved_src = tmp_path / "treatment.md"
+            reserved_src.write_text("# Shared Spec\nShould get a neutral filename.\n", encoding="utf-8")
+            collide_dir = tmp_path / "other"
+            collide_dir.mkdir()
+            collide_plan = collide_dir / "promoted-plan.md"
+            collide_plan.write_text("# Distinct Second Plan\nDifferent content.\n", encoding="utf-8")
+            work = tmp_path / "spar"
+
+            # 1. init with repeatable --context-file (including duplicate path + reserved name + colliding name)
+            r_init = _run_helper(
+                "init",
+                "--work-dir", str(work),
+                "--stage", "goal",
+                "--skill-dir", str(PLUGIN_ROOT / "skills" / "writing-goals"),
+                "--brief", str(brief),
+                "--harness", "codex",
+                "--round-id", "g1",
+                "--context-file", str(promoted),
+                "--context-file", str(promoted),
+                "--context-file", str(reserved_src),
+                "--context-file", str(collide_plan),
+            )
+            self.assertEqual(0, r_init.returncode, r_init.stderr)
+            init_data = json.loads(r_init.stdout)
+            names = [r["name"] for r in init_data["context_files"]]
+            self.assertEqual(["promoted-plan.md", "context-1.md", "02-promoted-plan.md"], names)
+            self.assertIn("CONTEXT_FILES:", init_data["control_prompt"])
+            self.assertNotIn("treatment.md", "\n".join(names))
+
+            round_dir = work / "g1"
+            ctrl = round_dir / "control.md"
+            treat = round_dir / "treatment.md"
+            ctrl.write_text("# Goal A\nStep 1.\n", encoding="utf-8")
+            treat.write_text("# Goal B\nStep 1 and verify.\n", encoding="utf-8")
+
+            # 2. anonymize auto-inherits context_files, deduplicates repeated --context-file,
+            #    does NOT leak-scan shared context files, clears stale blinded/context/ files,
+            #    and binds context SHA-256s into artifacts_sha256.
+            stale_dir = round_dir / "blinded" / "context"
+            stale_dir.mkdir(parents=True)
+            stale_file = stale_dir / "stale-old.md"
+            stale_file.write_text("stale\n", encoding="utf-8")
+
+            r_anon = _run_helper(
+                "anonymize",
+                "--round-dir", str(round_dir),
+                "--control-file", str(ctrl),
+                "--treatment-file", str(treat),
+                "--seed", "9",
+                "--context-file", str(promoted),
+            )
+            self.assertEqual(0, r_anon.returncode, r_anon.stderr)
+            anon_data = json.loads(r_anon.stdout)
+            self.assertFalse(stale_file.exists())
+            self.assertEqual(3, len(anon_data["context_files"]))
+            self.assertTrue((round_dir / "blinded" / "context" / "promoted-plan.md").is_file())
+            self.assertTrue((round_dir / "blinded" / "context" / "context-1.md").is_file())
+            self.assertTrue((round_dir / "blinded" / "context" / "02-promoted-plan.md").is_file())
+            self.assertFalse((round_dir / "blinded" / "sealed-key.json").exists())
+
+            # 3. judge-packet compact mode lists all blinded files + accepts late --context-file without mutating sealed-key.json
+            late_ctx = tmp_path / "late-notes.md"
+            late_ctx.write_text("# Late Notes\nExtra read-only ref.\n", encoding="utf-8")
+            key_before = (round_dir / "sealed-key.json").read_text(encoding="utf-8")
+            r_jp = _run_helper("judge-packet", "--round-dir", str(round_dir), "--context-file", str(late_ctx))
+            self.assertEqual(0, r_jp.returncode, r_jp.stderr)
+            self.assertEqual(key_before, (round_dir / "sealed-key.json").read_text(encoding="utf-8"))
+            jp_text = (round_dir / "judge-packets.json").read_text(encoding="utf-8")
+            self.assertLess(len(jp_text), 12000)
+            self.assertIn("Read ONLY these listed files", jp_text)
+            self.assertIn("promoted-plan.md", jp_text)
+            self.assertIn("late-notes.md", jp_text)
+            self.assertNotIn("treatment.md", jp_text)
+
+            # 4. --inline embeds === CONTEXT: ... === cleanly
+            r_inline = _run_helper("judge-packet", "--round-dir", str(round_dir), "--inline")
+            self.assertEqual(0, r_inline.returncode, r_inline.stderr)
+            jp_inline = (round_dir / "judge-packets.json").read_text(encoding="utf-8")
+            self.assertIn("=== CONTEXT: promoted-plan.md ===", jp_inline)
+
+            # 5. Tampering with a blinded/context file fails closed with exit 2
+            (round_dir / "blinded" / "context" / "promoted-plan.md").write_text("tampered\n", encoding="utf-8")
+            r_tamper = _run_helper("judge-packet", "--round-dir", str(round_dir))
+            self.assertEqual(2, r_tamper.returncode)
+
+            # 6. Security rejections: sealed-key.json (raw basename, symlink target, round sealed-key), non-UTF-8, missing, directory
+            ext_key = tmp_path / "sealed-key.json"
+            ext_key.write_text("{}\n", encoding="utf-8")
+            symlink_to_key = tmp_path / "innocent-link.md"
+            os.symlink(ext_key, symlink_to_key)
+            bad_utf8 = tmp_path / "binary.md"
+            bad_utf8.write_bytes(b"\xff\xfe\x00\x80")
+            for bad_arg in (ext_key, symlink_to_key, round_dir / "sealed-key.json", bad_utf8, tmp_path / "absent.md", tmp_path):
+                r_bad = _run_helper(
+                    "init",
+                    "--work-dir", str(work),
+                    "--stage", "goal",
+                    "--skill-dir", str(PLUGIN_ROOT / "skills" / "writing-goals"),
+                    "--brief", str(brief),
+                    "--harness", "codex",
+                    "--round-id", "g-bad",
+                    "--context-file", str(bad_arg),
+                )
+                self.assertEqual(2, r_bad.returncode, f"expected exit 2 for {bad_arg}")
+
+    def test_unblind_score_verdict_truth_table_and_axis_divergence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            brief = tmp_path / "brief.md"
+            brief.write_text("Compare artifacts.\n", encoding="utf-8")
+            work = tmp_path / "spar"
+            r_init = _run_helper(
+                "init", "--work-dir", str(work), "--stage", "plan",
+                "--skill-dir", str(PLUGIN_ROOT / "skills" / "writing-plans"),
+                "--brief", str(brief), "--harness", "codex", "--round-id", "r1",
+            )
+            self.assertEqual(0, r_init.returncode, r_init.stderr)
+            round_dir = work / "r1"
+            ctrl = round_dir / "control.md"
+            treat = round_dir / "treatment.md"
+            ctrl.write_text("# C\nControl.\n", encoding="utf-8")
+            treat.write_text("# T\nTreatment.\n", encoding="utf-8")
+            self.assertEqual(
+                0,
+                _run_helper(
+                    "anonymize", "--round-dir", str(round_dir),
+                    "--control-file", str(ctrl), "--treatment-file", str(treat), "--seed", "7",
+                ).returncode,
+            )
+            key = json.loads((round_dir / "sealed-key.json").read_text(encoding="utf-8"))
+            inv = {v: k for k, v in key["mapping"].items()}
+            c_lbl, t_lbl = inv["control"], inv["treatment"]
+
+            def _score(judge_votes):
+                self.assertEqual(
+                    0,
+                    _run_helper("judge-packet", "--round-dir", str(round_dir), "--judges", str(len(judge_votes))).returncode,
+                )
+                jp = json.loads((round_dir / "judge-packets.json").read_text(encoding="utf-8"))
+                payload = [
+                    {
+                        "request_id": req["request_id"],
+                        "artifacts_sha256": jp["artifacts_sha256"],
+                        "axis_a_winner": aa,
+                        "axis_b_winner": ab,
+                        "overall_winner": ov,
+                        "candidate_x_defects": [],
+                        "candidate_y_defects": [],
+                        "concrete_skill_gaps": [],
+                        "unchecked": [],
+                    }
+                    for req, (aa, ab, ov) in zip(jp["requests"], judge_votes)
+                ]
+                rf = round_dir / "resp.json"
+                rf.write_text(json.dumps(payload), encoding="utf-8")
+                res = _run_helper("unblind-score", "--round-dir", str(round_dir), "--responses-file", str(rf))
+                self.assertEqual(0, res.returncode, res.stderr)
+                return json.loads(res.stdout)
+
+            # 1. Unanimous treatment win, agreeing axes
+            v1 = _score([(t_lbl, t_lbl, t_lbl), (t_lbl, t_lbl, t_lbl)])
+            self.assertEqual(("treatment", False, None, False), (v1["consensus_winner"], v1["contested"], v1["contested_reason"], v1["axis_divergence"]))
+
+            # 2. Unanimous treatment win with opposing axis consensus
+            v2 = _score([(t_lbl, c_lbl, t_lbl), (t_lbl, c_lbl, t_lbl)])
+            self.assertEqual(("treatment", False, None, True), (v2["consensus_winner"], v2["contested"], v2["contested_reason"], v2["axis_divergence"]))
+
+            # 3. Unanimous tie with opposing axes -> contested=True, unanimous_tie
+            v3 = _score([(t_lbl, c_lbl, "tie"), (t_lbl, c_lbl, "tie")])
+            self.assertEqual(("tie", True, "unanimous_tie", True), (v3["consensus_winner"], v3["contested"], v3["contested_reason"], v3["axis_divergence"]))
+
+            # 4. Mixed win + tie -> contested=True, mixed_tie_and_arm_votes
+            v4 = _score([(t_lbl, t_lbl, t_lbl), (t_lbl, c_lbl, "tie")])
+            self.assertEqual(("treatment", True, "mixed_tie_and_arm_votes", False), (v4["consensus_winner"], v4["contested"], v4["contested_reason"], v4["axis_divergence"]))
+
+            # 5. 3-way split (control, treatment, tie) -> split_overall_votes takes precedence
+            v5 = _score([(c_lbl, c_lbl, c_lbl), (t_lbl, t_lbl, t_lbl), (t_lbl, c_lbl, "tie")])
+            self.assertEqual(("tie", True, "split_overall_votes", True), (v5["consensus_winner"], v5["contested"], v5["contested_reason"], v5["axis_divergence"]))
+
+    def test_codex_adapter_transport_hygiene_and_cli_help_discoverability(self):
+        codex_md = (SKILL_ROOT / "references" / "codex.md").read_text(encoding="utf-8")
+        self.assertIn("wait_agent", codex_md)
+        self.assertIn("60000", codex_md)
+        self.assertIn("send_message", codex_md)
+        self.assertIn("close_agent", codex_md)
+        self.assertIn("zero lingering", codex_md.lower())
+
+        for sub_args, expected_tokens in (
+            (["--help"], ("resolve-defaults", "judge-packet", "unblind-score", "--context-file")),
+            (["judge-packet", "--help"], ("--context-file", "judge-packets.json", "--inline")),
+            (["unblind-score", "--help"], ("--responses-file", "consensus_winner", "contested_reason")),
+        ):
+            r = _run_helper(*sub_args)
+            self.assertEqual(0, r.returncode, r.stderr)
+            for tok in expected_tokens:
+                self.assertIn(tok, r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

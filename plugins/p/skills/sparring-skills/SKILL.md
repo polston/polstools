@@ -30,11 +30,11 @@ schemas in an adapter.
 
 ## Zero-argument defaults
 
-When invoked bare with no extra arguments, infer context read-only (recent
-conversation, active plan or goal artifact, git branch and tracked diff) and
-run `<python> <skill-root>/scripts/skill_spar.py resolve-defaults` with the
-observed inputs. Do not interrogate the user; ask at most one concise question
-only if `resolve-defaults` exits 1.
+When invoked bare with no extra arguments, infer context read-only
+(conversation, active plan/goal, git branch and tracked diff) and run
+`<python> <skill-root>/scripts/skill_spar.py resolve-defaults` with observed
+inputs. Do not interrogate the user; ask at most one concise question only if
+`resolve-defaults` exits 1.
 
 - Follow the resolved route from `contract-v1.json`: a specific discussed or
   edited skill runs a single-stage comparison; an existing plan starts at
@@ -45,8 +45,8 @@ only if `resolve-defaults` exits 1.
 - Stage candidate skill edits in an external work directory to run `edit-gate`
   without mutating the plugin repository. Pause on contested Stage 1 verdicts
   or before mutating/pushing the plugin repo or executing the winning goal,
-  presenting one consolidated approval summary (verdicts, staged gated edits,
-  and winning goal).
+  presenting one consolidated approval summary (verdicts, staged edits, and
+  winning goal).
 
 ## Procedure
 
@@ -61,6 +61,7 @@ only if `resolve-defaults` exits 1.
    and run `unblind-score`.
 4. For any generalizable skill improvement, tighten existing prose first, add a
    regression test, and run `edit-gate`. Reject any edit that fails the gate.
-5. For chained stages, call `chain-advance` with the promoted artifact so
-   downstream stages inherit verified context without judge commentary. After
+5. For chained stages, call `chain-advance` with the promoted artifact and pass
+   it via `--context-file` to the next stage's `init` so downstream workers and
+   blinded judges inherit verified context without judge commentary. After
    execution, hand off the pilot draft to `reviewing-improvement-effects`.

@@ -96,7 +96,7 @@
     }
   },
   "judge_prompt": {
-    "preamble": "You are a BLINDED comparative judge evaluating two anonymized artifacts (Candidate X and Candidate Y) written for the same grounded brief. Score both on Axis A (Safety / Root-Cause Rigor / Grounding) and Axis B (Proportionality / Anti-Waste / Ergonomics). Cite concrete defects and echo request_id and artifacts_sha256 verbatim. Return JSON only."
+    "preamble": "You are a BLINDED comparative judge evaluating two anonymized artifacts (Candidate X and Candidate Y) written for the same grounded brief (and any listed context files). Score both on Axis A (Safety / Root-Cause Rigor / Grounding) and Axis B (Proportionality / Anti-Waste / Ergonomics). Cite concrete defects and echo request_id and artifacts_sha256 verbatim. Return JSON only."
   },
   "edit_gate": {
     "max_skill_bytes": 8192,

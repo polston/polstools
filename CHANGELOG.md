@@ -4,6 +4,22 @@ Notable changes to the `p` plugin. Each version heading matches the `version`
 field of the plugin manifests; changes made before this file existed are in the
 git history.
 
+## [1.22.2]
+
+- Support repeatable `--context-file` staging in `sparring-skills` (`init`,
+  `anonymize`, and `judge-packet`) so chained promoted artifacts are safely
+  accessible under `<round-dir>/blinded/context/` with deduplication, UTF-8
+  and `sealed-key.json` fail-closed guards, and `artifacts_sha256` integrity
+  binding.
+- Tighten `sparring-skills/references/codex.md` transport hygiene: require long
+  `wait_agent` timeouts (`timeout_ms >= 60000`), forbid mid-flight
+  `send_message` nudges, and require `close_agent` retirement and lingering
+  subagent cleanup.
+- Improve `scripts/skill_spar.py` `--help` discoverability (`epilog` examples
+  and schema cues) and make `unblind-score` flag unanimous ties as
+  `contested: true` with explicit `contested_reason` and `axis_divergence`
+  fields.
+
 ## [1.22.1]
 
 - Add zero-argument context-inferred defaults to `sparring-skills`

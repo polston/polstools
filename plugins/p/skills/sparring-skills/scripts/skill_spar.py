@@ -11,6 +11,7 @@ from pathlib import Path
 import random
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,13 @@ from retro_eval.proposal_report import _inside_repository
 _SKILL_PATH_RE = re.compile(r"(?:^|/)skills/([a-z0-9-]+)/")
 _PLAN_PATH_RE = re.compile(r"(?:^|/)[^/]*plan[^/]*\.md$", re.IGNORECASE)
 _DEFAULT_BRANCHES = {"main", "master", "HEAD"}
+_RESERVED_CONTEXT_NAMES = {
+    "control.md",
+    "treatment.md",
+    "brief.md",
+    "candidate-x.md",
+    "candidate-y.md",
+}
 
 
 def _load_contract() -> dict:
@@ -84,6 +92,111 @@ def _strip_blinding_leaks(text: str, patterns: list[str]) -> str:
     for pat in patterns:
         cleaned = re.sub(pat, "[REDACTED_META]", cleaned, flags=re.IGNORECASE)
     return cleaned
+
+
+def _validate_context_source(raw_path: Path, round_dir: Path) -> tuple[Path, bytes, str]:
+    raw_base = Path(raw_path).name
+    if raw_base.lower() == "sealed-key.json":
+        raise ValueError("refusing to stage sealed-key.json as a context file")
+    resolved = raw_path.resolve()
+    if resolved.name.lower() == "sealed-key.json":
+        raise ValueError("refusing to stage sealed-key.json as a context file")
+    if resolved == (round_dir / "sealed-key.json").resolve():
+        raise ValueError("refusing to stage round sealed-key.json as a context file")
+    if not resolved.is_file():
+        raise FileNotFoundError(f"context file not found or not a regular file: {raw_path}")
+    data = resolved.read_bytes()
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"context file is not valid UTF-8 text: {raw_path}") from exc
+    return resolved, data, _sha256_bytes(data)
+
+
+def _safe_context_name(raw_name: str, used_lower: set[str], neutral_counter: list[int]) -> str:
+    base = Path(raw_name).name
+    if not base or base in (".", ".."):
+        base = "context.md"
+    if base.lower() in _RESERVED_CONTEXT_NAMES:
+        suffix = Path(base).suffix or ".md"
+        while True:
+            neutral_counter[0] += 1
+            candidate = f"context-{neutral_counter[0]}{suffix}"
+            if candidate.lower() not in used_lower:
+                used_lower.add(candidate.lower())
+                return candidate
+    if base.lower() not in used_lower:
+        used_lower.add(base.lower())
+        return base
+    idx = 2
+    while True:
+        candidate = f"{idx:02d}-{base}"
+        if candidate.lower() not in used_lower:
+            used_lower.add(candidate.lower())
+            return candidate
+        idx += 1
+
+
+def _stage_context_files(
+    sources: list[Path],
+    dest_dir: Path,
+    round_dir: Path,
+    *,
+    clear_dest: bool = False,
+    existing_records: list[dict] | None = None,
+) -> list[dict]:
+    records: list[dict] = []
+    seen_paths: set[Path] = set()
+    seen_shas: set[str] = set()
+    used_lower: set[str] = set()
+    neutral_counter = [0]
+
+    if clear_dest and dest_dir.is_dir():
+        shutil.rmtree(dest_dir)
+
+    for rec in existing_records or []:
+        rec_name = rec["name"]
+        rec_path = Path(rec["path"]).resolve()
+        rec_sha = rec["sha256"]
+        records.append({"name": rec_name, "path": rec_path.as_posix(), "sha256": rec_sha})
+        seen_paths.add(rec_path)
+        seen_shas.add(rec_sha)
+        used_lower.add(rec_name.lower())
+
+    pending: list[tuple[str, bytes, str]] = []
+    for raw in sources:
+        resolved, data, sha = _validate_context_source(raw, round_dir)
+        if resolved in seen_paths or sha in seen_shas:
+            continue
+        safe_name = _safe_context_name(raw.name, used_lower, neutral_counter)
+        seen_paths.add(resolved)
+        seen_shas.add(sha)
+        pending.append((safe_name, data, sha))
+
+    if pending:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for safe_name, data, sha in pending:
+            target = (dest_dir / safe_name).resolve()
+            target.write_bytes(data)
+            records.append({"name": safe_name, "path": target.as_posix(), "sha256": sha})
+    return records
+
+
+def _verify_blinded_context_files(key_data: dict, blinded_dir: Path) -> list[dict]:
+    verified: list[dict] = []
+    for rec in key_data.get("context_files") or []:
+        name = rec["name"]
+        expected_sha = rec["sha256"]
+        target = (blinded_dir / "context" / name).resolve()
+        if not target.is_file():
+            raise FileNotFoundError(f"blinded context file missing: {target}")
+        actual_sha = _sha256_bytes(target.read_bytes())
+        if actual_sha != expected_sha:
+            raise ValueError(
+                f"blinded context file tampered ({name}): expected {expected_sha}, got {actual_sha}"
+            )
+        verified.append({"name": name, "path": target.as_posix(), "sha256": actual_sha})
+    return verified
 
 
 def _validate_judge_payload(payload: dict, expected_request_id: str, expected_sha: str) -> None:
@@ -326,15 +439,29 @@ def cmd_init(args) -> int:
     brief_copy = round_dir / "brief.md"
     brief_copy.write_text(brief_text, encoding="utf-8")
 
+    context_sources = list(getattr(args, "context_file", None) or [])
+    context_records = _stage_context_files(
+        context_sources,
+        round_dir / "context",
+        round_dir,
+        clear_dest=True,
+    )
+    context_block = ""
+    if context_records:
+        lines = "\n".join(f"- {rec['name']}: {rec['path']}" for rec in context_records)
+        context_block = f"CONTEXT_FILES:\n{lines}\n\n"
+
     iso = contract["worker_isolation"]
     control_prompt = (
         f"{iso['control_preamble']}\n{iso['leak_ban']}\n\n"
         f"OUTPUT_PATH: {round_dir / 'control.md'}\n\n"
+        f"{context_block}"
         f"SHARED_BRIEF:\n{brief_text}"
     )
     treatment_prompt = (
         f"{iso['treatment_preamble'].format(skill_path=skill_md)}\n{iso['leak_ban']}\n\n"
         f"OUTPUT_PATH: {round_dir / 'treatment.md'}\n\n"
+        f"{context_block}"
         f"SHARED_BRIEF:\n{brief_text}"
     )
     meta = {
@@ -349,6 +476,8 @@ def cmd_init(args) -> int:
         "control_output": str(round_dir / "control.md"),
         "treatment_output": str(round_dir / "treatment.md"),
     }
+    if context_records:
+        meta["context_files"] = context_records
     (round_dir / "round.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     packet = {
         **meta,
@@ -410,9 +539,31 @@ def cmd_anonymize(args) -> int:
     x_path.write_text(x_txt, encoding="utf-8")
     y_path.write_text(y_txt, encoding="utf-8")
 
+    # Auto-inherit round.json context files plus any CLI --context-file inputs
+    inherited_sources: list[Path] = []
+    round_meta_path = round_dir / "round.json"
+    if round_meta_path.is_file():
+        round_meta = json.loads(round_meta_path.read_text(encoding="utf-8"))
+        for rec in round_meta.get("context_files") or []:
+            inherited_sources.append(Path(rec["path"]))
+    cli_sources = list(getattr(args, "context_file", None) or [])
+    context_records = _stage_context_files(
+        inherited_sources + cli_sources,
+        blinded_dir / "context",
+        round_dir,
+        clear_dest=True,
+    )
+
     x_sha = _sha256_bytes(x_txt.encode("utf-8"))
     y_sha = _sha256_bytes(y_txt.encode("utf-8"))
-    artifacts_sha = _sha256_bytes(f"X:{x_sha}\nY:{y_sha}".encode("utf-8"))
+    preimage = f"X:{x_sha}\nY:{y_sha}"
+    if context_records:
+        ctx_lines = "\n".join(
+            f"C:{rec['name']}:{rec['sha256']}"
+            for rec in sorted(context_records, key=lambda r: r["name"])
+        )
+        preimage = f"{preimage}\n{ctx_lines}"
+    artifacts_sha = _sha256_bytes(preimage.encode("utf-8"))
 
     key_data = {
         "mapping": mapping,
@@ -422,6 +573,8 @@ def cmd_anonymize(args) -> int:
         "blinding_sanitized": sanitized,
         "leak_warnings": {"control": control_leaks, "treatment": treatment_leaks},
     }
+    if context_records:
+        key_data["context_files"] = context_records
     key_path = round_dir / "sealed-key.json"
     fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -440,6 +593,8 @@ def cmd_anonymize(args) -> int:
         "artifacts_sha256": artifacts_sha,
         "blinding_sanitized": sanitized,
     }
+    if context_records:
+        out["context_files"] = context_records
     print(json.dumps(out, indent=2))
     return 0
 
@@ -459,6 +614,16 @@ def cmd_judge_packet(args) -> int:
     if not brief_path.is_file() or not x_path.is_file() or not y_path.is_file():
         raise FileNotFoundError("anonymized brief and candidate files not found")
 
+    verified_context = _verify_blinded_context_files(key_data, blinded_dir)
+    late_sources = list(getattr(args, "context_file", None) or [])
+    all_context = _stage_context_files(
+        late_sources,
+        blinded_dir / "context",
+        round_dir,
+        clear_dest=False,
+        existing_records=verified_context,
+    )
+
     judges = args.judges if args.judges is not None else int(contract["defaults"]["judges"])
     if judges < 1 or judges > 5:
         raise ValueError("--judges must be between 1 and 5")
@@ -472,18 +637,31 @@ def cmd_judge_packet(args) -> int:
             brief_txt = brief_path.read_text(encoding="utf-8")
             x_txt = x_path.read_text(encoding="utf-8")
             y_txt = y_path.read_text(encoding="utf-8")
+            ctx_chunks = []
+            for rec in all_context:
+                c_txt = Path(rec["path"]).read_text(encoding="utf-8")
+                ctx_chunks.append(f"=== CONTEXT: {rec['name']} ===\n{c_txt}\n\n")
+            ctx_inline = "".join(ctx_chunks)
             body = (
                 f"SHARED_BRIEF:\n{brief_txt}\n\n"
+                f"{ctx_inline}"
                 f"=== CANDIDATE X ===\n{x_txt}\n\n"
                 f"=== CANDIDATE Y ===\n{y_txt}\n\n"
             )
         else:
-            body = (
-                "Read ONLY these three files (do NOT list or read parent directories):\n"
-                f"- Brief: {brief_path}\n"
-                f"- Candidate X: {x_path}\n"
-                f"- Candidate Y: {y_path}\n\n"
+            file_lines = [
+                f"- Brief: {brief_path}",
+                f"- Candidate X: {x_path}",
+                f"- Candidate Y: {y_path}",
+            ]
+            for rec in all_context:
+                file_lines.append(f"- Context ({rec['name']}): {rec['path']}")
+            header = (
+                "Read ONLY these listed files (do NOT list or read parent directories):"
+                if all_context
+                else "Read ONLY these three files (do NOT list or read parent directories):"
             )
+            body = f"{header}\n" + "\n".join(file_lines) + "\n\n"
         prompt = (
             f"{contract['judge_prompt']['preamble']}\n\n"
             f"REQUEST_ID: {req_id}\n"
@@ -499,6 +677,8 @@ def cmd_judge_packet(args) -> int:
         "judges": judges,
         "requests": requests,
     }
+    if all_context:
+        packet["context_files"] = all_context
     out_path = round_dir / "judge-packets.json"
     out_path.write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"judge_packets_file": str(out_path), "request_ids": [r["request_id"] for r in requests]}, indent=2))
@@ -509,6 +689,14 @@ def _map_winner(label: str, mapping: dict) -> str:
     if label == "tie":
         return "tie"
     return mapping[label]
+
+
+def _majority_consensus(votes: dict) -> str:
+    if votes["treatment"] > votes["control"]:
+        return "treatment"
+    if votes["control"] > votes["treatment"]:
+        return "control"
+    return "tie"
 
 
 def cmd_unblind_score(args) -> int:
@@ -548,20 +736,31 @@ def cmd_unblind_score(args) -> int:
             "overall_winner": ov,
         })
 
-    non_zero_arms = [k for k in ("control", "treatment") if overall_votes[k] > 0]
-    contested = len(non_zero_arms) > 1 or (overall_votes["tie"] > 0 and len(non_zero_arms) >= 1)
-    if overall_votes["treatment"] > overall_votes["control"]:
-        consensus = "treatment"
-    elif overall_votes["control"] > overall_votes["treatment"]:
-        consensus = "control"
+    consensus = _majority_consensus(overall_votes)
+    axis_a_consensus = _majority_consensus(axis_a_votes)
+    axis_b_consensus = _majority_consensus(axis_b_votes)
+    axis_divergence = {axis_a_consensus, axis_b_consensus} == {"control", "treatment"}
+
+    if overall_votes["control"] > 0 and overall_votes["treatment"] > 0:
+        contested = True
+        contested_reason = "split_overall_votes"
+    elif (overall_votes["control"] > 0 or overall_votes["treatment"] > 0) and overall_votes["tie"] > 0:
+        contested = True
+        contested_reason = "mixed_tie_and_arm_votes"
+    elif consensus == "tie":
+        contested = True
+        contested_reason = "unanimous_tie"
     else:
-        consensus = "tie"
+        contested = False
+        contested_reason = None
 
     verdict = {
         "artifacts_sha256": expected_sha,
         "judges": len(unblinded),
         "consensus_winner": consensus,
         "contested": contested,
+        "contested_reason": contested_reason,
+        "axis_divergence": axis_divergence,
         "overall_votes": overall_votes,
         "axis_a_votes": axis_a_votes,
         "axis_b_votes": axis_b_votes,
@@ -747,20 +946,44 @@ def cmd_self_check(_args) -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        round_dir = tmp_path / "round1"
-        round_dir.mkdir()
-        (round_dir / "brief.md").write_text("Synthetic brief for self-check.\n", encoding="utf-8")
+        work_dir = tmp_path / "work"
+        brief = tmp_path / "brief.md"
+        brief.write_text("Synthetic brief for self-check.\n", encoding="utf-8")
+        promoted = tmp_path / "promoted-plan.md"
+        promoted.write_text("# Promoted Plan\nVerify context handoff.\n", encoding="utf-8")
+
+        rc = cmd_init(
+            argparse.Namespace(
+                work_dir=work_dir,
+                stage="goal",
+                skill_dir=PLUGIN_ROOT / "skills" / "writing-goals",
+                brief=brief,
+                harness="codex",
+                round_id="round1",
+                context_file=[promoted],
+            )
+        )
+        if rc != 0:
+            raise ValueError("self-check init failed")
+        round_dir = work_dir / "round1"
         ctrl = round_dir / "control.md"
         treat = round_dir / "treatment.md"
-        ctrl.write_text("# Plan One\nRun unit tests.\n", encoding="utf-8")
-        treat.write_text("# Plan Two\nRun unit tests and check rollback.\n", encoding="utf-8")
+        ctrl.write_text("# Goal One\nRun unit tests.\n", encoding="utf-8")
+        treat.write_text("# Goal Two\nRun unit tests and check rollback.\n", encoding="utf-8")
 
         rc = cmd_anonymize(
-            argparse.Namespace(round_dir=round_dir, control_file=ctrl, treatment_file=treat, seed=42, strip_leaks=False)
+            argparse.Namespace(
+                round_dir=round_dir,
+                control_file=ctrl,
+                treatment_file=treat,
+                seed=42,
+                strip_leaks=False,
+                context_file=[],
+            )
         )
-        if rc != 0 or not (round_dir / "blinded" / "candidate-X.md").is_file():
+        if rc != 0 or not (round_dir / "blinded" / "context" / "promoted-plan.md").is_file():
             raise ValueError("self-check anonymize failed")
-        rc = cmd_judge_packet(argparse.Namespace(round_dir=round_dir, judges=2, inline=False))
+        rc = cmd_judge_packet(argparse.Namespace(round_dir=round_dir, judges=2, inline=False, context_file=[]))
         if rc != 0:
             raise ValueError("self-check judge-packet failed")
         packets = json.loads((round_dir / "judge-packets.json").read_text(encoding="utf-8"))
@@ -769,8 +992,8 @@ def cmd_self_check(_args) -> int:
                 "request_id": req["request_id"],
                 "artifacts_sha256": packets["artifacts_sha256"],
                 "axis_a_winner": "X",
-                "axis_b_winner": "X",
-                "overall_winner": "X",
+                "axis_b_winner": "Y",
+                "overall_winner": "tie",
                 "candidate_x_defects": [],
                 "candidate_y_defects": [{"axis": "rigor", "severity": "minor", "locator": "L2", "issue": "missing rollback"}],
                 "concrete_skill_gaps": [],
@@ -783,6 +1006,9 @@ def cmd_self_check(_args) -> int:
         rc = cmd_unblind_score(argparse.Namespace(round_dir=round_dir, responses_file=resp_file))
         if rc != 0:
             raise ValueError("self-check unblind-score failed")
+        verdict = json.loads((round_dir / "verdict.json").read_text(encoding="utf-8"))
+        if not verdict.get("contested") or verdict.get("contested_reason") != "unanimous_tie" or not verdict.get("axis_divergence"):
+            raise ValueError(f"self-check unexpected tie verdict: {verdict}")
 
         # Verify resolve-defaults across all 4 routes
         rc_chain = cmd_resolve_defaults(
@@ -875,60 +1101,123 @@ def cmd_self_check(_args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="skill_spar.py", description="Blinded A/B skill sparring helper.")
+    fmt = argparse.RawDescriptionHelpFormatter
+    parser = argparse.ArgumentParser(
+        prog="skill_spar.py",
+        description="Blinded A/B skill sparring helper (contract-v1.json).",
+        formatter_class=fmt,
+        epilog=(
+            "Typical chained workflow:\n"
+            "  1. resolve-defaults --workspace-dir <repo> --task-summary '...'\n"
+            "  2. init --work-dir <tmp> --stage plan --skill-dir <dir> --brief <brief> --harness <h> [--context-file <path>]\n"
+            "  3. anonymize --round-dir <tmp>/<round> --control-file <c> --treatment-file <t> [--context-file <path>]\n"
+            "  4. judge-packet --round-dir <tmp>/<round> [--judges 2] [--inline] [--context-file <path>]\n"
+            "  5. unblind-score --round-dir <tmp>/<round> --responses-file <responses.json>\n"
+            "  6. chain-advance --work-dir <tmp> --stage plan --next-stage goal --selected-arm <arm> --promoted-artifact <path>\n"
+        ),
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_def = sub.add_parser("resolve-defaults")
-    p_def.add_argument("--plugin-root", type=Path)
-    p_def.add_argument("--workspace-dir", type=Path)
-    p_def.add_argument("--task-summary")
-    p_def.add_argument("--has-plan", action="store_true")
-    p_def.add_argument("--plan-file", type=Path)
-    p_def.add_argument("--target-skill")
-    p_def.add_argument("--slug")
+    p_def = sub.add_parser(
+        "resolve-defaults",
+        help="Infer zero-argument sparring route from conversation and read-only git context.",
+        formatter_class=fmt,
+    )
+    p_def.add_argument("--plugin-root", type=Path, help="Plugin root containing skills/ (default: auto-detected).")
+    p_def.add_argument("--workspace-dir", type=Path, help="Workspace path to inspect read-only via git.")
+    p_def.add_argument("--task-summary", help="Concise task summary inferred from conversation.")
+    p_def.add_argument("--has-plan", action="store_true", help="Indicate an active plan exists in conversation.")
+    p_def.add_argument("--plan-file", type=Path, help="Path to an existing plan file on disk.")
+    p_def.add_argument("--target-skill", help="Specific skill name discussed or edited.")
+    p_def.add_argument("--slug", help="Optional work-directory slug override.")
 
-    p_init = sub.add_parser("init")
-    p_init.add_argument("--work-dir", type=Path, required=True)
-    p_init.add_argument("--stage", required=True)
-    p_init.add_argument("--skill-dir", type=Path, required=True)
-    p_init.add_argument("--brief", type=Path, required=True)
-    p_init.add_argument("--harness", required=True)
-    p_init.add_argument("--round-id")
+    p_init = sub.add_parser(
+        "init",
+        help="Initialize a sparring round and emit worker-packets.json.",
+        formatter_class=fmt,
+        epilog=(
+            "Outputs: <round-dir>/round.json and <round-dir>/worker-packets.json.\n"
+            "Pass --context-file (repeatable) to stage promoted upstream artifacts for workers and blinded judges."
+        ),
+    )
+    p_init.add_argument("--work-dir", type=Path, required=True, help="External work directory outside every Git repo.")
+    p_init.add_argument("--stage", required=True, help="Stage name from contract-v1.json (e.g., plan, goal, review, skill).")
+    p_init.add_argument("--skill-dir", type=Path, required=True, help="Candidate skill directory containing SKILL.md.")
+    p_init.add_argument("--brief", type=Path, required=True, help="Shared task brief markdown file.")
+    p_init.add_argument("--harness", required=True, help="Active harness name (claude-code, codex, antigravity).")
+    p_init.add_argument("--round-id", help="Optional explicit round directory name.")
+    p_init.add_argument("--context-file", action="append", type=Path, default=[], help="Repeatable shared reference/promoted artifact to stage for workers and blinded judges.")
 
-    p_anon = sub.add_parser("anonymize")
-    p_anon.add_argument("--round-dir", type=Path, required=True)
-    p_anon.add_argument("--control-file", type=Path, required=True)
-    p_anon.add_argument("--treatment-file", type=Path, required=True)
-    p_anon.add_argument("--seed", type=int)
-    p_anon.add_argument("--strip-leaks", action="store_true")
+    p_anon = sub.add_parser(
+        "anonymize",
+        help="Scan for blinding leaks, randomize X/Y into blinded/, and seal key.",
+        formatter_class=fmt,
+        epilog=(
+            "Outputs: <round-dir>/blinded/{brief.md,candidate-X.md,candidate-Y.md,context/*} and 0o600 sealed-key.json.\n"
+            "Auto-inherits context_files from round.json; pass --context-file here for full artifacts_sha256 binding."
+        ),
+    )
+    p_anon.add_argument("--round-dir", type=Path, required=True, help="Round directory created by init.")
+    p_anon.add_argument("--control-file", type=Path, required=True, help="Control arm output markdown file.")
+    p_anon.add_argument("--treatment-file", type=Path, required=True, help="Treatment arm output markdown file.")
+    p_anon.add_argument("--seed", type=int, help="Optional deterministic RNG seed (testing only).")
+    p_anon.add_argument("--strip-leaks", action="store_true", help="Redact blinding leak patterns instead of failing with exit 1.")
+    p_anon.add_argument("--context-file", action="append", type=Path, default=[], help="Repeatable shared context artifact to copy into blinded/context/ and bind in artifacts_sha256.")
 
-    p_jp = sub.add_parser("judge-packet")
-    p_jp.add_argument("--round-dir", type=Path, required=True)
-    p_jp.add_argument("--judges", type=int)
-    p_jp.add_argument("--inline", action="store_true")
+    p_jp = sub.add_parser(
+        "judge-packet",
+        help="Generate compact blinded judge prompts in judge-packets.json.",
+        formatter_class=fmt,
+        epilog=(
+            "Outputs: <round-dir>/judge-packets.json with requests[{judge_index, request_id, prompt}].\n"
+            "Verifies sealed blinded/context/ hashes; prefer passing --context-file at init or anonymize for full hash binding."
+        ),
+    )
+    p_jp.add_argument("--round-dir", type=Path, required=True, help="Round directory containing sealed-key.json and blinded/.")
+    p_jp.add_argument("--judges", type=int, help="Number of cold comparative judges (1-5; default from contract).")
+    p_jp.add_argument("--inline", action="store_true", help="Embed brief, context files, and X/Y inline instead of blinded paths.")
+    p_jp.add_argument("--context-file", action="append", type=Path, default=[], help="Optional late shared context file to stage into blinded/context/ without mutating sealed-key.json.")
 
-    p_un = sub.add_parser("unblind-score")
-    p_un.add_argument("--round-dir", type=Path, required=True)
-    p_un.add_argument("--responses-file", type=Path, required=True)
+    p_un = sub.add_parser(
+        "unblind-score",
+        help="Validate judge JSON array, unblind X/Y, and write verdict.json.",
+        formatter_class=fmt,
+        epilog=(
+            "Input: --responses-file is a JSON array of judge response objects in judge-packets.json request order.\n"
+            "Outputs: verdict.json with consensus_winner, contested, contested_reason, axis_divergence, votes, and defects_by_arm."
+        ),
+    )
+    p_un.add_argument("--round-dir", type=Path, required=True, help="Round directory containing sealed-key.json and judge-packets.json.")
+    p_un.add_argument("--responses-file", type=Path, required=True, help="JSON array of judge responses matching canonical request order.")
 
-    p_eg = sub.add_parser("edit-gate")
-    p_eg.add_argument("--before-skill-dir", type=Path, required=True)
-    p_eg.add_argument("--after-skill-dir", type=Path, required=True)
-    p_eg.add_argument("--diff-file", type=Path)
-    p_eg.add_argument("--regression-test", default="")
-    p_eg.add_argument("--tightened-clause", default="")
-    p_eg.add_argument("--rationale", default="")
-    p_eg.add_argument("--max-bytes", type=int)
+    p_eg = sub.add_parser(
+        "edit-gate",
+        help="Enforce per-Markdown 8 KB cap, tighten-first growth gate, and privacy checks.",
+        formatter_class=fmt,
+        epilog="Exit 0 when passed=true; exit 1 with violations[] when rejected.",
+    )
+    p_eg.add_argument("--before-skill-dir", type=Path, required=True, help="Baseline skill directory snapshot before edits.")
+    p_eg.add_argument("--after-skill-dir", type=Path, required=True, help="Edited skill directory to validate.")
+    p_eg.add_argument("--diff-file", type=Path, help="Unified git diff covering skill edits and regression test.")
+    p_eg.add_argument("--regression-test", default="", help="Test file path verified as touched in --diff-file on net growth.")
+    p_eg.add_argument("--tightened-clause", default="", help="Description of prose compressed or evicted first on net growth.")
+    p_eg.add_argument("--rationale", default="", help="General failure class addressed by the edit.")
+    p_eg.add_argument("--max-bytes", type=int, help="Optional per-Markdown byte ceiling override.")
 
-    p_ch = sub.add_parser("chain-advance")
-    p_ch.add_argument("--work-dir", type=Path, required=True)
-    p_ch.add_argument("--stage", required=True)
-    p_ch.add_argument("--next-stage", required=True)
-    p_ch.add_argument("--selected-arm", required=True, choices=("control", "treatment", "synthesized"))
-    p_ch.add_argument("--promoted-artifact", type=Path, required=True)
-    p_ch.add_argument("--proposal-id")
+    p_ch = sub.add_parser(
+        "chain-advance",
+        help="Record promoted winning artifact SHA-256 in chain-state.json (and pilot draft).",
+        formatter_class=fmt,
+        epilog="Outputs: <work-dir>/chain-state.json (and pilot-handoff-draft.json when --next-stage pilot-handoff).",
+    )
+    p_ch.add_argument("--work-dir", type=Path, required=True, help="External work directory outside every Git repo.")
+    p_ch.add_argument("--stage", required=True, help="Completed stage name.")
+    p_ch.add_argument("--next-stage", required=True, help="Next stage name from contract-v1.json.")
+    p_ch.add_argument("--selected-arm", required=True, choices=("control", "treatment", "synthesized"), help="Selected winning arm.")
+    p_ch.add_argument("--promoted-artifact", type=Path, required=True, help="Path to promoted artifact file.")
+    p_ch.add_argument("--proposal-id", help="Optional custom proposal identity for pilot-handoff.")
 
-    sub.add_parser("self-check")
+    sub.add_parser("self-check", help="Run deterministic offline self-test of all sparring helper operations.", formatter_class=fmt)
 
     args = parser.parse_args(argv)
     dispatch = {
