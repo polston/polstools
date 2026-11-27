@@ -62,21 +62,23 @@ Include only fields that control the run:
    that plan is already listed in `Read first`, reference its exact sections
    instead of re-pasting specification prose into the goal.
 2. Never invent wrapper commands or success phrases solely to simplify
-   evaluation; establish validation first for greenfield work. Keep setup
-   mutations (`chmod`, staging) in the execution loop, verify expected counts
-   and stdout with exact final flags, and run commit-dependent checks after the
-   local commit.
+   evaluation; establish validation first for greenfield work. Verify exact CLI
+   syntax and flag-separator order (e.g., engine vs. user args around `--`),
+   map every declared invariant to a static or runtime check, keep setup
+   mutations (`mkdir`, `chmod`, staging) in the execution loop, verify expected
+   counts and stdout with final flags, and run commit-dependent checks after
+   committing.
 3. Keep one finish line. If two conditions can complete independently, they are
    separate goals. Necessary supporting work stays inside the selected outcome.
-   When phasing work into sequential goals separated by an unresolved operator
-   decision, include a short up-front open-decisions block (with concrete
-   options) so immediately runnable phases stay unblocked while decision-gated
-   phases park cleanly.
+   When phasing work across an unresolved operator decision, put a short
+   open-decisions block (with concrete options) up front so runnable phases stay
+   unblocked while decision-gated phases park cleanly.
 4. Replace vague outcomes with countable evidence. Every unattended goal has a
-   primary turn or time bound. Ask for a missing threshold that would materially
-   change scope; do not silently invent one. When drafting a contract for
-   operator review before launch, label proposed turn or time bounds explicitly
-   as proposed defaults awaiting confirmation.
+   primary turn or time bound, per-command timeouts for external binaries, and a
+   per-checkpoint failure retry cap. Ask for missing scope-changing thresholds
+   rather than inventing them. Keep pre-launch confirmation notes outside the
+   fenced `/goal` block while copying every concrete operational default inside
+   so the pasted block stays self-contained and free of drafting annotations.
 5. Keep terminal states (`Completed`, `Review needed`, `Blocked`, reached bound)
    mutually exclusive; a reached bound pauses an incomplete run rather than
    completing it.
@@ -84,16 +86,12 @@ Include only fields that control the run:
    authority or external state, and the check that resumes work.
 7. Preserve completed work across pauses, compaction, and handoffs. Do not expose
    a harness-internal difference when the operator need not act on it.
-8. Reconcile authority boundaries explicitly across both repository and live
-   host state. Affirm or temporarily override standing repository rules (such as
-   automatic push or release rules during intermediate phases), and guard
-   mutations outside git (installed binaries, user-scope skills or configs,
-   hooks, state logs) with pre-mutation verification before destructive cleanup.
-9. Delegate where appropriate and right-size workers to the task. When the
-   active harness supports subagents, delegate independent parallel work or
-   context-heavy subtasks (broad codebase or log surveys, isolated verification
-   runs), and skip delegation for trivial single-step lookups. Balance cost,
-   speed, and reasoning depth: use lightweight, fast worker tiers for
-   mechanical, high-volume, or read-only scans, and reserve deeper-reasoning
-   tiers for complex architecture, subtle root-cause debugging, or high-stakes
-   synthesis. Keep contracts free of harness-specific tool names or model IDs.
+8. Reconcile authority boundaries across both repo and live host state: affirm
+   or override standing repo rules (commit policy, auto-push/release) explicitly,
+   and require pre-mutation verification before destructive cleanup outside git
+   (installed binaries, user configs/skills, hooks, state logs).
+9. Right-size subagent delegation for cost, speed, and reasoning: delegate
+   independent parallel work or context-heavy scans/verifications to fast
+   read-only tiers, reserve deeper reasoning for root-cause debugging or
+   architecture, and skip delegation for single-step lookups. Keep contracts
+   free of harness tool names or model IDs.

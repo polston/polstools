@@ -123,6 +123,10 @@ class CrossHarnessGoalGuidanceTests(unittest.TestCase):
         self.assertIn("reasoning", rules.lower())
         self.assertIn("subagent", rules.lower())
         self.assertIn("host state", rules.lower())
+        self.assertIn("flag-separator", rules.lower())
+        self.assertIn("per-command timeouts", rules.lower())
+        self.assertIn("per-checkpoint failure retry cap", rules.lower())
+        self.assertIn("self-contained", rules.lower())
 
 
 if __name__ == "__main__":
