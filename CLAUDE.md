@@ -90,11 +90,13 @@ The default supplies a time bound, not additional task scope or permissions.
 - `plugins/p/tests/` — stdlib `unittest`, no runner or dependency. Run with
   `sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests`.
 - `docs/plans/` — design documents, filename dated.
-- A change under `plugins/p` ships with a version bump, equal across the three
-  manifests and the marketplace entry, and a `CHANGELOG.md` entry under that
-  version; `p-validate --base <revision>` fails a pull request without the
-  bump. The author tags a release (`vX.Y.Z`) and publishes it; do neither
-  unasked.
+- Changes under `plugins/p` are versioned automatically on merge to `main` by
+  `.github/workflows/release-bump.yml`, which reads Conventional Commits PR
+  titles, updates all four version manifests in lockstep, and prepends a
+  `CHANGELOG.md` entry. Do not manually bump manifest versions or
+  `CHANGELOG.md` in feature PRs (`p-validate --base <revision>` remains
+  available for manual checks). The author tags a release (`vX.Y.Z`) and
+  publishes it; do neither unasked.
 
 Scripts in any `bin/` share one exit-code convention: `0` ran clean and flagged
 nothing, `1` ran clean and flagged something, `2` could not run.

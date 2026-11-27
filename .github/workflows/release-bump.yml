@@ -1,0 +1,109 @@
+name: release-bump
+
+on:
+  push:
+    branches: [main]
+    paths: ['plugins/p/**']
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump level
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-bump-main
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: bump p version on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    if: github.event_name == 'workflow_dispatch' || (github.actor != 'github-actions[bot]' && !startsWith(github.event.head_commit.message, 'chore(release):') && !contains(github.event.head_commit.message, '[skip release]'))
+
+    steps:
+      - name: Check out repository with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Compute, validate, commit, and push version bump
+        id: bump
+        shell: bash
+        env:
+          BUMP_MODE: ${{ inputs.bump || 'auto' }}
+        run: |
+          set -euo pipefail
+          bot_domain="users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@${bot_domain}"
+
+          attempt=1
+          max_attempts=3
+          while [ "$attempt" -le "$max_attempts" ]; do
+            out_file=$(mktemp)
+            sh plugins/p/bin/python-launcher -B .github/scripts/release_bump.py \
+              --base auto \
+              --head HEAD \
+              --bump "$BUMP_MODE" \
+              --apply \
+              --github-output "$out_file"
+
+            bumped=$(awk -F= '$1 == "bumped" {print $2}' "$out_file" | tail -n 1)
+            new_version=$(awk -F= '$1 == "new_version" {print $2}' "$out_file" | tail -n 1)
+            cat "$out_file" >> "$GITHUB_OUTPUT"
+            rm -f "$out_file"
+
+            if [ "$bumped" != "true" ]; then
+              echo "No release bump needed."
+              exit 0
+            fi
+
+            sh plugins/p/bin/p-validate
+            PYTHONPATH=plugins/p/tests sh plugins/p/bin/python-launcher -B -m unittest \
+              test_readme test_universal_plugin test_validator
+            git diff --check
+
+            git add \
+              .claude-plugin/marketplace.json \
+              plugins/p/.claude-plugin/plugin.json \
+              plugins/p/.codex-plugin/plugin.json \
+              plugins/p/plugin.json \
+              CHANGELOG.md
+
+            git commit -F - <<EOF
+          chore(release): bump p to ${new_version} [skip ci]
+          EOF
+
+            if git push origin HEAD:main; then
+              echo "Pushed automated release bump p ${new_version}."
+              exit 0
+            fi
+
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "Failed to push release bump after ${max_attempts} attempts." >&2
+              exit 1
+            fi
+
+            echo "origin/main advanced; rebasing and recomputing bump (attempt $((attempt + 1))/${max_attempts})..."
+            git fetch origin main
+            git reset --hard origin/main
+            attempt=$((attempt + 1))
+          done

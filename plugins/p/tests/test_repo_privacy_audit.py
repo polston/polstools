@@ -328,8 +328,9 @@ class PlacesTests(AuditCase):
         result = self.audit()
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        # 1 distinct blob in trees; 2 patch-hunk lines (added + removed).
         self.assertEqual(self.rows(result.stdout)["unix_home_path"],
-                         [0, 1, 1, 0, 0, 0, 0])
+                         [0, 1, 2, 0, 0, 0, 0])
 
     def test_tag_message_is_scanned(self):
         self.commit("base")
@@ -380,6 +381,41 @@ class PlacesTests(AuditCase):
         self.assertNotIn("secretish_assignment", self.audit().stdout)
         flagged = self.audit("-k")
         self.assertEqual(self.rows(flagged.stdout)["secretish_assignment"][1], 1)
+
+    def test_patch_hunk_diff_prefix_does_not_fuse_with_column_zero_decorator(self):
+        self.write(
+            "dec.py",
+            "\n".join((
+                "@unittest.skipUnless(True, 'ok')",
+                "@decorator.attr",
+                "def f():",
+                "    return 1",
+            )),
+        )
+        self.commit("add column-zero decorators")
+        self.write(
+            "dec.py",
+            "\n".join((
+                "@unittest.skipUnless(True, 'ok')",
+                "@other.attr",
+                "def f():",
+                "    return 2",
+            )),
+        )
+        self.commit("edit column-zero decorator")
+
+        clean = self.audit("-v")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        self.assertIn("RESULT: every category read zero", clean.stdout)
+
+        self.write("contact.txt", "reach " + self.email("hunk"))
+        self.commit("add real email")
+        self.write("contact.txt", "cleared")
+        self.commit("remove real email")
+
+        flagged = self.audit()
+        self.assertEqual(flagged.returncode, 1, flagged.stdout + flagged.stderr)
+        self.assertGreaterEqual(self.rows(flagged.stdout)["email"][2], 1)
 
 
 class SensitiveNameTests(AuditCase):

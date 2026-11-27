@@ -430,6 +430,8 @@ def patch_hunks(git):
             continue
         if line.startswith(b"@@ ") or line == b"\\ No newline at end of file":
             continue
+        if line[:1] in (b"+", b"-", b" "):
+            line = line[1:]
         body.append(line)
         size += len(line) + 1
     return b"\n".join(body), marks

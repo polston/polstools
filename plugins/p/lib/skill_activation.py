@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import errno
 import hashlib
 import json
 import os
@@ -291,6 +292,18 @@ def _private_dir(directory, create):
     try:
         info = os.lstat(directory)
     except FileNotFoundError:
+        # Windows reports WinError 3 (FileNotFoundError) instead of ENOTDIR
+        # when an ancestor path component is a regular file.
+        for parent in directory.parents:
+            try:
+                parent_info = os.stat(parent)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISDIR(parent_info.st_mode):
+                raise NotADirectoryError(
+                    errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(directory)
+                )
+            break
         return
     if not stat.S_ISDIR(info.st_mode) or (
         hasattr(os, "getuid") and info.st_uid != os.getuid()

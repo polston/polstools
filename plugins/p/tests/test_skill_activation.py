@@ -768,9 +768,25 @@ class ReadOnlyActivationTests(unittest.TestCase):
                     self.activation.resolve(self.manifest, env=env)
                 # Explicit roots retain configuration-error behavior even
                 # when their ancestor is a file rather than a directory.
+                nested_under_file = first / policy.parent.name / "nested"
                 with self.assertRaises(self.activation.StateLocationError):
                     self.activation.resolve(self.manifest, env=dict(
-                        env, P_SKILL_STATE_DIR=str(first / policy.parent.name / "nested")))
+                        env, P_SKILL_STATE_DIR=str(nested_under_file)))
+                # Simulate Windows WinError 3 (FileNotFoundError from os.lstat
+                # when an ancestor component is a regular file).
+                real_lstat = os.lstat
+
+                def win_like_lstat(path):
+                    if Path(path) == nested_under_file:
+                        raise FileNotFoundError(2, "The system cannot find the path specified", str(path))
+                    return real_lstat(path)
+
+                with mock.patch.object(os, "lstat", side_effect=win_like_lstat):
+                    with self.assertRaises(NotADirectoryError):
+                        self.activation._private_dir(nested_under_file, create=False)
+                    with self.assertRaises(self.activation.StateLocationError):
+                        self.activation.resolve(self.manifest, env=dict(
+                            env, P_SKILL_STATE_DIR=str(nested_under_file)))
 
     def test_symlinked_temp_root_alias_is_one_location(self):
         with tempfile.TemporaryDirectory() as tmp:

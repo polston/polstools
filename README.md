@@ -8,7 +8,7 @@ library.
 
 ## Requirements
 
-Python 3.9 or newer and a POSIX `sh`. The scripts are started through `sh`; on
+Python 3.12 or newer and a POSIX `sh`. The scripts are started through `sh`; on
 Windows that is the one Git Bash provides. They find a suitable Python
 themselves through `plugins/p/bin/python-launcher`.
 
@@ -165,9 +165,9 @@ the one `agy plugin list` shows.
 
 ## Validate a checkout
 
-The CI workflow runs these commands on Linux, macOS, and Windows under Python
-3.9 and 3.14, plus a shell syntax check of the POSIX scripts and the
-stopped-promises self-test. Run the same contract locally before integration:
+The CI workflow runs these commands on Linux under Python 3.12 and 3.14, plus
+a shell syntax check of the POSIX scripts, the stopped-promises self-test, and
+a Windows Python 3.14 smoke suite. Run the same contract locally before integration:
 
 ```sh
 sh plugins/p/bin/python-launcher -B -m unittest discover -s plugins/p/tests -t plugins/p/tests
@@ -185,8 +185,9 @@ it also runs Antigravity's own validator on a temporary copy under a scratch
 home; without `agy` that check is skipped. It does not register, install,
 publish, or otherwise change any harness. `p-validate --base <revision>` also
 fails when `plugins/p` differs from that revision without a version increase;
-a revision the clone does not have exits 2. The CI workflow runs that check on
-pull requests against the pull request's base revision.
+a revision the clone does not have exits 2. On `main`,
+`.github/workflows/release-bump.yml` bumps the plugin manifests and
+`CHANGELOG.md` automatically after a PR touching `plugins/p/` merges.
 
 Use `/p:work` (Claude Code, Antigravity) or `$p:work` (Codex) to keep
 repository-publication audits and local session-history workflows out of the
