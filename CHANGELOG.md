@@ -4,6 +4,10 @@ Notable changes to the `p` plugin. Each version heading matches the `version`
 field of the plugin manifests; changes made before this file existed are in the
 git history.
 
+## [1.22.3]
+
+- fix(sparring-skills): handle missing os.fchmod and UTF-8 BOM on Windows (#13)
+
 ## [1.22.2]
 
 - Support repeatable `--context-file` staging in `sparring-skills` (`init`,
