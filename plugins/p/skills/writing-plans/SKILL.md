@@ -36,9 +36,9 @@ independent work.
 Work backward from acceptance to required outputs, then forward from current
 state to check feasibility. Each consequential dependency should identify the
 condition or artifact the next task consumes and how it will be established.
-Task order alone does not establish that a prerequisite will hold. Check for
-intervening actions that could invalidate it, especially shared writes, schema
-changes and removal of an input still used by a consumer.
+Task order alone does not guarantee prerequisites hold. Audit intervening
+writes against read-only boundaries, shared state, schema changes, and
+still-used inputs.
 
 ## Make the next work executable
 
