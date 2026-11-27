@@ -262,6 +262,7 @@ def _validate_sparring_skills(plugin_root, errors):
             "references/codex.md",
             "references/antigravity.md",
             "Read exactly one adapter",
+            "resolve-defaults",
         ):
             if expected not in skill:
                 errors.append("sparring-skills canonical skill does not route through " + expected)
@@ -282,6 +283,11 @@ def _validate_sparring_skills(plugin_root, errors):
                 "require_tightened_clause_on_growth",
                 "blinding_leak_patterns",
                 "artifacts_sha256",
+                "zero_arg_defaults",
+                "max_clarifying_questions",
+                "pause_before",
+                "default_chain",
+                "stage_edits_outside_repo",
             )
             if token in adapter
         ]

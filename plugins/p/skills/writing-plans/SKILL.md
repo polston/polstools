@@ -51,9 +51,9 @@ count is required. Keep enough information for the intended executor:
   a new module, command, or skill alongside existing siblings, state its
   non-overlap boundary ("when not to use it") and include a compact boundary or
   data-flow map for cross-boundary work.
-- The next task, its owner, and whether it is currently authorized and ready to
-  run. Keep that status consistent in the plan and any handoff; dependency order
-  alone does not make a task runnable.
+- The next ready task and whether it is authorized to run; omit repeated
+  per-task owner/status boilerplate for single-executor plans, keeping status
+  consistent with any handoff.
 - Consequential assumptions, the observation that would invalidate them, and
   any needed rollback or recovery constraint.
 

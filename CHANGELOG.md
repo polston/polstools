@@ -4,6 +4,23 @@ Notable changes to the `p` plugin. Each version heading matches the `version`
 field of the plugin manifests; changes made before this file existed are in the
 git history.
 
+## [1.22.1]
+
+- Add zero-argument context-inferred defaults to `sparring-skills`
+  (`zero_arg_defaults` in `contract-v1.json`, deterministic `resolve-defaults`
+  subcommand in `scripts/skill_spar.py`, concise `SKILL.md` routing with
+  single consolidated approval pause and `recursive_guard`, 1-line transport
+  hooks in all three adapters, `p_validate.py` checks, and regression tests).
+- Isolate blinded candidate artifacts under `<round-dir>/blinded/` away from
+  `sealed-key.json` and emit compact path-referenced judge packets by default
+  (with `--inline` preserved as an opt-in).
+- Repair `skill_spar.py edit-gate` to enforce the 8 KB ceiling per Markdown
+  file (excluding `scripts/` helpers and `__pycache__`) and scan all auxiliary
+  Markdown files when `--diff-file` is omitted.
+- Tighten `writing-plans` (omit repeated per-task owner/status boilerplate on
+  single-executor plans) and `writing-goals` (verify expected output with
+  exact final flags and keep terminal exit states mutually exclusive).
+
 ## [1.22.0]
 
 - Add dual-axis behavioral skill evaluation (`skill_behavioral_dual_axis`

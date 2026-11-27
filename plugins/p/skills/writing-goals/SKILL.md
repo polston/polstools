@@ -61,12 +61,11 @@ Include only fields that control the run:
    Verify that a referenced plan exists and read its verification section. When
    that plan is already listed in `Read first`, reference its exact sections
    instead of re-pasting specification prose into the goal.
-2. Never invent a wrapper command or success phrase solely to simplify goal
-   evaluation. For greenfield work without validation, establish the validation
-   contract first. Keep setup mutations (such as `chmod` or staging) in the
-   execution loop, not in `Evidence`, and run commit-dependent checks (privacy
-   audits, base-diff validators, index-mode checks) after creating the local
-   commit so final metadata is verified.
+2. Never invent wrapper commands or success phrases solely to simplify
+   evaluation; establish validation first for greenfield work. Keep setup
+   mutations (`chmod`, staging) in the execution loop, verify expected counts
+   and stdout with exact final flags, and run commit-dependent checks after the
+   local commit.
 3. Keep one finish line. If two conditions can complete independently, they are
    separate goals. Necessary supporting work stays inside the selected outcome.
    When phasing work into sequential goals separated by an unresolved operator
@@ -78,8 +77,9 @@ Include only fields that control the run:
    change scope; do not silently invent one. When drafting a contract for
    operator review before launch, label proposed turn or time bounds explicitly
    as proposed defaults awaiting confirmation.
-5. Distinguish completion from `Review needed`, a genuine blocker, and a reached
-   bound. A bound stops an incomplete run; it does not make the outcome complete.
+5. Keep terminal states (`Completed`, `Review needed`, `Blocked`, reached bound)
+   mutually exclusive; a reached bound pauses an incomplete run rather than
+   completing it.
 6. A blocked exit names the exact failure, relevant attempted remedies, missing
    authority or external state, and the check that resumes work.
 7. Preserve completed work across pauses, compaction, and handoffs. Do not expose

@@ -1,6 +1,6 @@
 ---
 name: sparring-skills
-description: Run blinded parallel A/B skill comparisons (harness default vs. candidate skill) with blinded comparative judging, anti-bloat edit gating, and multi-stage chaining.
+description: Run blinded parallel A/B skill comparisons (harness default vs. candidate skill) with context-inferred zero-argument defaults, blinded judging, anti-bloat edit gating, and multi-stage chaining.
 ---
 
 # Sparring skills
@@ -23,28 +23,44 @@ schemas in an adapter.
 
 ## When NOT to use this skill
 
-- Single-target code or design review with no default-vs-skill comparison: use `adequacy-review`.
-- Open-ended diagnosis or testing competing technical hypotheses outside skill calibration: use `investigating-and-improving`.
-- Post-ship live-session outcome tracking and Keep/Revise/Revert verdicts: hand off to `reviewing-improvement-effects`.
-- Trivial mechanical edits where running parallel A/B workers is disproportionate overhead.
+- Single-target code or design review: use `adequacy-review`.
+- Technical diagnosis outside skill calibration: use `investigating-and-improving`.
+- Post-ship live-session tracking (`keep`/`revise`/`revert`): hand off to `reviewing-improvement-effects`.
+- Trivial edits where parallel A/B workers are disproportionate overhead.
+
+## Zero-argument defaults
+
+When invoked bare with no extra arguments, infer context read-only (recent
+conversation, active plan or goal artifact, git branch and tracked diff) and
+run `<python> <skill-root>/scripts/skill_spar.py resolve-defaults` with the
+observed inputs. Do not interrogate the user; ask at most one concise question
+only if `resolve-defaults` exits 1.
+
+- Follow the resolved route from `contract-v1.json`: a specific discussed or
+  edited skill runs a single-stage comparison; an existing plan starts at
+  `writing-goals`; a task with no plan runs the default chain (`writing-plans`
+  -> `chain-advance` -> `writing-goals`).
+- If `recursive_guard` is true, produce the requested artifact directly without
+  spawning nested sparring workers.
+- Stage candidate skill edits in an external work directory to run `edit-gate`
+  without mutating the plugin repository. Pause on contested Stage 1 verdicts
+  or before mutating/pushing the plugin repo or executing the winning goal,
+  presenting one consolidated approval summary (verdicts, staged gated edits,
+  and winning goal).
 
 ## Procedure
 
-1. Ground the shared task brief once (read-only) and choose an external work
-   directory outside every Git repository (such as `/tmp/skill-spar-<slug>`).
+1. Ground the shared task brief once read-only and pick an external work
+   directory outside every Git repository.
 2. Identify the active harness from session context. Read exactly one adapter:
    - Claude Code: `references/claude-code.md`
    - Codex: `references/codex.md`
    - Antigravity: `references/antigravity.md`
-3. Follow that adapter to run `init`, spawn fresh isolated parallel control and
-   treatment workers (never reuse or recycle worker threads), run `anonymize`
-   and `judge-packet`, dispatch fresh cold comparative judges, and run
-   `unblind-score`.
-4. If the unblinded comparison identifies a generalizable skill improvement,
-   apply the minimal edit (compressing or evicting prose before adding) with a
-   regression test and run `edit-gate` before committing. Reject any edit that
-   fails the gate.
-5. For chained stages (such as Plan A/B -> Goal A/B -> Execute -> Pilot), call
-   `chain-advance` with the selected winning artifact so downstream stages
-   inherit verified context without leaking earlier judge commentary. After
-   execution, hand off the emitted pilot draft to `reviewing-improvement-effects`.
+3. Follow that adapter to run `init`, spawn fresh isolated parallel workers,
+   run `anonymize` and `judge-packet`, dispatch fresh cold comparative judges,
+   and run `unblind-score`.
+4. For any generalizable skill improvement, tighten existing prose first, add a
+   regression test, and run `edit-gate`. Reject any edit that fails the gate.
+5. For chained stages, call `chain-advance` with the promoted artifact so
+   downstream stages inherit verified context without judge commentary. After
+   execution, hand off the pilot draft to `reviewing-improvement-effects`.

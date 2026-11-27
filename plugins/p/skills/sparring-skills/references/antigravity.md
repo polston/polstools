@@ -3,8 +3,10 @@
 Use only native Antigravity subagent transport. Policy and schemas come
 exclusively from `../contract-v1.json` through `../scripts/skill_spar.py`.
 
-1. Run `init` with `--harness antigravity` and an external `--work-dir` outside
-   every Git repository to generate `worker-packets.json`.
+1. For a bare invocation, run `resolve-defaults` first to obtain the stage(s),
+   skill directory, and external `--work-dir`. Run `init` with
+   `--harness antigravity` and an external `--work-dir` outside every Git
+   repository to generate `worker-packets.json`.
 2. In parallel using fresh isolated `invoke_subagent` calls (inheriting the
    parent model), pass `control_prompt` and `treatment_prompt` unchanged. Wait
    for both outputs and retire both workers immediately after completion.

@@ -4,7 +4,33 @@
     "judges": 2,
     "max_skill_bytes": 8192
   },
-  "stages": ["plan", "goal", "review", "execute", "pilot-handoff"],
+  "stages": ["plan", "goal", "review", "skill", "execute", "pilot-handoff"],
+  "zero_arg_defaults": {
+    "max_clarifying_questions": 1,
+    "clarification_prompt": "What task, plan, or skill should I evaluate?",
+    "skill_stage_map": {
+      "writing-plans": "plan",
+      "writing-goals": "goal",
+      "adequacy-review": "review"
+    },
+    "fallback_skill_stage": "skill",
+    "default_chain": [
+      {"stage": "plan", "skill": "writing-plans"},
+      {"stage": "goal", "skill": "writing-goals"}
+    ],
+    "existing_plan_stage": {"stage": "goal", "skill": "writing-goals"},
+    "contested_chain_policy": "pause_for_selection",
+    "approval_boundary": {
+      "stage_edits_outside_repo": true,
+      "single_consolidated_prompt": true,
+      "pause_before": ["mutate_p_repo", "git_push", "execute_winning_goal"],
+      "present_on_pause": [
+        "unblinded_stage_verdicts",
+        "staged_gated_skill_edits",
+        "winning_goal_artifact"
+      ]
+    }
+  },
   "worker_isolation": {
     "control_preamble": "You are producing an artifact using ONLY default harness engineering instincts and read-only inspection of the target codebase. Do NOT read or follow the candidate skill under evaluation. Produce a clean standalone artifact with zero meta-commentary about comparative testing.",
     "treatment_preamble": "Read and follow the candidate skill at {skill_path} (including any required preflight check) using the identical grounded brief below. Produce a clean standalone artifact with zero meta-commentary identifying the skill methodology or comparative testing.",
@@ -74,6 +100,7 @@
   },
   "edit_gate": {
     "max_skill_bytes": 8192,
+    "enforce_cap_per_markdown_file": true,
     "require_tightened_clause_on_growth": true,
     "require_diff_verified_regression_on_growth": true,
     "forbidden_added_line_patterns": [

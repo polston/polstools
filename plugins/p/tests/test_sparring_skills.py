@@ -305,6 +305,229 @@ class SparringSkillsTests(unittest.TestCase):
             self.assertEqual("sparring-demo-v1", draft["proposal_identity"])
             self.assertEqual("insufficient_evidence", draft["initial_disposition"])
 
+    def _init_temp_git_repo(self, repo_dir: Path, *, commit: bool = True, branch: str = "main") -> dict:
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        env = {
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": str(repo_dir.parent),
+        }
+        email = "tester" + chr(64) + "example.invalid"
+        subprocess.run(["git", "-C", str(repo_dir), "init", "-q", "-b", branch], env=env, check=True)
+        if commit:
+            (repo_dir / "README.md").write_text("# Demo\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo_dir), "add", "README.md"], env=env, check=True)
+            subprocess.run(
+                ["git", "-C", str(repo_dir), "-c", "user.name=tester", "-c", f"user.email={email}",
+                 "commit", "-q", "-m", "initial"],
+                env=env,
+                check=True,
+            )
+        return env
+
+    def test_resolve_defaults_routes_precedence_and_git_edge_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            env = self._init_temp_git_repo(repo)
+            email = "tester" + chr(64) + "example.invalid"
+
+            # 1. Clean main + untracked docs/plans note -> zero context -> exit 1 (needs_clarification)
+            (repo / "docs" / "plans").mkdir(parents=True)
+            (repo / "docs" / "plans" / "old-plan.md").write_text("# Old untracked plan\n", encoding="utf-8")
+            r_none = _run_helper("resolve-defaults", "--workspace-dir", str(repo))
+            self.assertEqual(1, r_none.returncode, r_none.stderr)
+            d_none = json.loads(r_none.stdout)
+            self.assertEqual("needs_clarification", d_none["status"])
+            self.assertEqual(1, d_none["max_clarifying_questions"])
+
+            # 2. Clean main + --task-summary -> default chain (writing-plans -> writing-goals)
+            r_chain = _run_helper(
+                "resolve-defaults", "--workspace-dir", str(repo), "--task-summary", "Refactor parser"
+            )
+            self.assertEqual(0, r_chain.returncode, r_chain.stderr)
+            d_chain = json.loads(r_chain.stdout)
+            self.assertEqual("no_plan_yet_default_chain", d_chain["route"])
+            self.assertEqual("chain", d_chain["mode"])
+            self.assertEqual(["writing-plans", "writing-goals"], [s["skill"] for s in d_chain["steps"]])
+            self.assertTrue(d_chain["approval_boundary"]["single_consolidated_prompt"])
+            self.assertEqual("pause_for_selection", d_chain["contested_chain_policy"])
+
+            # 3. Inline conversation plan (--has-plan) -> writing-goals
+            r_has_plan = _run_helper("resolve-defaults", "--workspace-dir", str(repo), "--has-plan")
+            self.assertEqual(0, r_has_plan.returncode, r_has_plan.stderr)
+            d_has_plan = json.loads(r_has_plan.stdout)
+            self.assertEqual("existing_plan_in_context", d_has_plan["route"])
+            self.assertEqual(["writing-goals"], [s["skill"] for s in d_has_plan["steps"]])
+
+            # 4. --plan-file on disk -> writing-goals; missing --plan-file -> exit 2
+            pf = tmp_path / "active-plan.md"
+            pf.write_text("# Active Plan\n", encoding="utf-8")
+            r_pf = _run_helper("resolve-defaults", "--plan-file", str(pf))
+            self.assertEqual(0, r_pf.returncode, r_pf.stderr)
+            self.assertEqual("existing_plan_in_context", json.loads(r_pf.stdout)["route"])
+            r_pf_bad = _run_helper("resolve-defaults", "--plan-file", str(tmp_path / "missing.md"))
+            self.assertEqual(2, r_pf_bad.returncode)
+
+            # 5. Tracked modified plan file -> existing_plan_in_context
+            tracked_plan = repo / "docs" / "active-plan.md"
+            tracked_plan.write_text("# Plan v1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "docs/active-plan.md"], env=env, check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "-c", "user.name=tester", "-c", f"user.email={email}",
+                 "commit", "-q", "-m", "add plan"],
+                env=env,
+                check=True,
+            )
+            tracked_plan.write_text("# Plan v2\n", encoding="utf-8")
+            r_tp = _run_helper("resolve-defaults", "--workspace-dir", str(repo))
+            self.assertEqual(0, r_tp.returncode, r_tp.stderr)
+            self.assertEqual("existing_plan_in_context", json.loads(r_tp.stdout)["route"])
+
+            # 6. Deleted tracked plan file is excluded by --diff-filter=ACMR (no false match)
+            tracked_plan.unlink()
+            r_del = _run_helper("resolve-defaults", "--workspace-dir", str(repo))
+            self.assertEqual(1, r_del.returncode, r_del.stderr)
+            subprocess.run(["git", "-C", str(repo), "checkout", "--", "docs/active-plan.md"], env=env, check=True)
+
+            # 7. Target skill & recursive_guard & missing skill (exit 2)
+            r_self = _run_helper("resolve-defaults", "--target-skill", "sparring-skills")
+            self.assertEqual(0, r_self.returncode, r_self.stderr)
+            d_self = json.loads(r_self.stdout)
+            self.assertEqual("target_skill_in_context", d_self["route"])
+            self.assertTrue(d_self["recursive_guard"])
+            self.assertEqual("skill", d_self["steps"][0]["stage"])
+
+            r_rev = _run_helper("resolve-defaults", "--target-skill", "adequacy-review")
+            self.assertEqual(0, r_rev.returncode, r_rev.stderr)
+            self.assertEqual("review", json.loads(r_rev.stdout)["steps"][0]["stage"])
+
+            r_missing = _run_helper("resolve-defaults", "--target-skill", "no-such-skill")
+            self.assertEqual(2, r_missing.returncode)
+
+            # 8. Single vs multiple tracked modified skills in workspace
+            s1 = repo / "plugins" / "p" / "skills" / "robust-over-simple" / "SKILL.md"
+            s2 = repo / "plugins" / "p" / "skills" / "adequacy-review" / "SKILL.md"
+            s1.parent.mkdir(parents=True)
+            s2.parent.mkdir(parents=True)
+            s1.write_text("v1\n", encoding="utf-8")
+            s2.write_text("v1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], env=env, check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "-c", "user.name=tester", "-c", f"user.email={email}",
+                 "commit", "-q", "-m", "add skills"],
+                env=env,
+                check=True,
+            )
+            s1.write_text("v2\n", encoding="utf-8")
+            r_one_sk = _run_helper("resolve-defaults", "--workspace-dir", str(repo))
+            self.assertEqual(0, r_one_sk.returncode, r_one_sk.stderr)
+            d_one_sk = json.loads(r_one_sk.stdout)
+            self.assertEqual("target_skill_in_context", d_one_sk["route"])
+            self.assertEqual("robust-over-simple", d_one_sk["steps"][0]["skill"])
+
+            s2.write_text("v2\n", encoding="utf-8")
+            r_two_sk = _run_helper("resolve-defaults", "--workspace-dir", str(repo))
+            self.assertEqual(1, r_two_sk.returncode, r_two_sk.stderr)
+            self.assertEqual("ambiguous_target_skills", json.loads(r_two_sk.stdout)["route"])
+
+            # 9. Unborn HEAD repo with staged file degrades gracefully without exit 128 crash
+            unborn = tmp_path / "unborn"
+            u_env = self._init_temp_git_repo(unborn, commit=False, branch="feat-new")
+            (unborn / "app.py").write_text("print(1)\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(unborn), "add", "app.py"], env=u_env, check=True)
+            r_unborn = _run_helper("resolve-defaults", "--workspace-dir", str(unborn))
+            self.assertEqual(0, r_unborn.returncode, r_unborn.stderr)
+            self.assertEqual("no_plan_yet_default_chain", json.loads(r_unborn.stdout)["route"])
+
+    def test_edit_gate_per_markdown_cap_scripts_exclusion_and_aux_privacy_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            before = tmp_path / "before"
+            after = tmp_path / "after"
+            (before / "scripts").mkdir(parents=True)
+            (after / "scripts" / "__pycache__").mkdir(parents=True)
+            (after / "references").mkdir(parents=True)
+            base_text = "---\nname: demo-skill\ndescription: Demo.\n---\n# Demo\nOld verbose line.\n"
+            (before / "SKILL.md").write_text(base_text, encoding="utf-8")
+            (after / "SKILL.md").write_text("---\nname: demo-skill\ndescription: Demo.\n---\n# Demo\nShort.\n", encoding="utf-8")
+            (after / "scripts" / "tool.py").write_text("# " + ("a" * 20000) + "\n", encoding="utf-8")
+            (after / "scripts" / "__pycache__" / "tool.pyc").write_bytes(b"\x00" * 20000)
+
+            r_ok = _run_helper(
+                "edit-gate",
+                "--before-skill-dir", str(before),
+                "--after-skill-dir", str(after),
+                "--rationale", "General tightening.",
+            )
+            self.assertEqual(0, r_ok.returncode, r_ok.stdout + r_ok.stderr)
+            receipt = json.loads(r_ok.stdout)
+            self.assertLessEqual(receipt["max_markdown_file_bytes"], 8192)
+
+            # Auxiliary markdown privacy leak caught even when --diff-file is omitted
+            sample_home = "/" + "Users" + "/example/work"
+            (after / "references" / "adapter.md").write_text(f"# Adapter\nPath: {sample_home}\n", encoding="utf-8")
+            r_priv = _run_helper(
+                "edit-gate",
+                "--before-skill-dir", str(before),
+                "--after-skill-dir", str(after),
+                "--rationale", "General rule.",
+            )
+            self.assertEqual(1, r_priv.returncode)
+            self.assertTrue(any("private pattern" in v for v in json.loads(r_priv.stdout)["violations"]))
+
+            # Oversized auxiliary markdown (>8192 B) rejected
+            (after / "references" / "adapter.md").write_text("x" * 9000 + "\n", encoding="utf-8")
+            r_big = _run_helper(
+                "edit-gate",
+                "--before-skill-dir", str(before),
+                "--after-skill-dir", str(after),
+                "--rationale", "General rule.",
+            )
+            self.assertEqual(1, r_big.returncode)
+            self.assertTrue(any("auxiliary markdown" in v for v in json.loads(r_big.stdout)["violations"]))
+
+    def test_blinded_subdir_isolation_compact_judge_packets_and_skill_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            brief = tmp_path / "brief.md"
+            brief.write_text("Evaluate skill clarity.\n", encoding="utf-8")
+            work = tmp_path / "spar"
+            r_init = _run_helper(
+                "init",
+                "--work-dir", str(work),
+                "--stage", "skill",
+                "--skill-dir", str(PLUGIN_ROOT / "skills" / "robust-over-simple"),
+                "--brief", str(brief),
+                "--harness", "antigravity",
+                "--round-id", "skill-r1",
+            )
+            self.assertEqual(0, r_init.returncode, r_init.stderr)
+            round_dir = work / "skill-r1"
+            ctrl = round_dir / "control.md"
+            treat = round_dir / "treatment.md"
+            ctrl.write_text("# Control\n" + ("word " * 4000) + "\n", encoding="utf-8")
+            treat.write_text("# Treatment\n" + ("word " * 4000) + "\n", encoding="utf-8")
+
+            r_anon = _run_helper(
+                "anonymize",
+                "--round-dir", str(round_dir),
+                "--control-file", str(ctrl),
+                "--treatment-file", str(treat),
+                "--seed", "3",
+            )
+            self.assertEqual(0, r_anon.returncode, r_anon.stderr)
+            self.assertTrue((round_dir / "blinded" / "candidate-X.md").is_file())
+            self.assertTrue((round_dir / "blinded" / "candidate-Y.md").is_file())
+            self.assertFalse((round_dir / "blinded" / "sealed-key.json").exists())
+
+            r_jp = _run_helper("judge-packet", "--round-dir", str(round_dir))
+            self.assertEqual(0, r_jp.returncode, r_jp.stderr)
+            jp_text = (round_dir / "judge-packets.json").read_text(encoding="utf-8")
+            # Compact path-referenced packets stay small even for 20 KB+ candidate artifacts
+            self.assertLess(len(jp_text), 12000)
+            self.assertIn("blinded", jp_text)
+
 
 if __name__ == "__main__":
     unittest.main()

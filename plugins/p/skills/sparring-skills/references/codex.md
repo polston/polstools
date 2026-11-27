@@ -3,8 +3,10 @@
 Use only native Codex subagent transport. Policy and schemas come exclusively
 from `../contract-v1.json` through `../scripts/skill_spar.py`.
 
-1. Run `init` with `--harness codex` and an external `--work-dir` outside every
-   Git repository to generate `worker-packets.json`.
+1. For a bare invocation, run `resolve-defaults` first to obtain the stage(s),
+   skill directory, and external `--work-dir`. Run `init` with
+   `--harness codex` and an external `--work-dir` outside every Git repository
+   to generate `worker-packets.json`.
 2. Call `spawn_agent` twice in parallel with `fork_turns` set to `none` for
    `control_prompt` and `treatment_prompt` unchanged. Retain the parent model
    and wait for both outputs.

@@ -117,6 +117,16 @@ class MutatedPackageTests(unittest.TestCase):
         self.assertEqual(1, len(errors), errors)
         self.assertIn("keywords", errors[0])
 
+    def test_sparring_adapter_duplicating_zero_arg_policy_is_flagged(self):
+        adapter = self.plugin / "skills" / "sparring-skills" / "references" / "codex.md"
+        adapter.write_text(
+            adapter.read_text(encoding="utf-8") + "\nPolicy key: zero_arg_defaults.\n",
+            encoding="utf-8",
+        )
+        errors = self._errors()
+        self.assertEqual(1, len(errors), errors)
+        self.assertIn("duplicates sparring policy", errors[0])
+
 
 class GitHygieneTests(unittest.TestCase):
     @classmethod
