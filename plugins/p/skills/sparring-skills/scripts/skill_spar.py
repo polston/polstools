@@ -578,12 +578,19 @@ def cmd_anonymize(args) -> int:
     key_path = round_dir / "sealed-key.json"
     fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(key_data, indent=2) + "\n")
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        fh = os.fdopen(fd, "w", encoding="utf-8")
     except Exception:
         os.close(fd)
         raise
+    with fh:
+        fh.write(json.dumps(key_data, indent=2) + "\n")
+    if not hasattr(os, "fchmod"):
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
 
     out = {
         "status": "anonymized",
@@ -703,7 +710,7 @@ def cmd_unblind_score(args) -> int:
     round_dir = _require_external_dir(args.round_dir)
     key_data = json.loads((round_dir / "sealed-key.json").read_text(encoding="utf-8"))
     packets = json.loads((round_dir / "judge-packets.json").read_text(encoding="utf-8"))
-    responses = json.loads(args.responses_file.resolve().read_text(encoding="utf-8"))
+    responses = json.loads(args.responses_file.resolve().read_text(encoding="utf-8-sig"))
     if not isinstance(responses, list) or len(responses) != len(packets["requests"]):
         raise ValueError("judge responses must be a JSON array matching the canonical judge request count")
 
