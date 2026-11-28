@@ -127,6 +127,9 @@ class CrossHarnessGoalGuidanceTests(unittest.TestCase):
         self.assertIn("per-command timeouts", rules.lower())
         self.assertIn("per-checkpoint failure retry cap", rules.lower())
         self.assertIn("self-contained", rules.lower())
+        self.assertIn("ephemeral", rules.lower())
+        self.assertIn("exit code", rules.lower())
+        self.assertIn("compile/lint", rules.lower())
 
 
 if __name__ == "__main__":
