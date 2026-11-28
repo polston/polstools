@@ -58,13 +58,12 @@ count is required. Keep enough information for the intended executor:
 - Consequential assumptions, the observation that would invalidate them, and
   any needed rollback or recovery constraint.
 
-Plan near-term known work precisely; leave later uncertain work conditional on
-its decision gate. Verify existing paths, APIs, CLI flags (`--help`), runtime
-value sets, and exact-set test assertions before prescribing them,
-cross-checking constraints against observed values. Mark proposed interfaces as
-proposed. Include exact values and tricky details when ambiguity would change
-correctness; avoid duplicating full implementations, boilerplate, or no-op
-steps.
+Plan known work precisely; leave uncertain work behind its decision gate. Verify
+paths, APIs, CLI flags (`--help`), library defaults, runtime value sets, and
+exact-set tests before prescribing them. Mark proposed interfaces as proposed;
+keep additive derived schemas flat and reference existing raw payloads by ID
+instead of cloning blobs. Include exact values where ambiguity affects
+correctness; skip full implementations and boilerplate.
 
 Trace at least the consequential path through intermediate states and its
 verification. Use an existing test, dry run or isolated probe where it can check

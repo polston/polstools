@@ -22,9 +22,8 @@ with `P_SKILL_HARNESS` set to this session's harness (`claude`, `codex`, or
 
 ## Overview
 
-Use this skill to draft a bounded autonomous `/goal` contract or tighten an
-existing one that churns, stalls, or stops prematurely. Route to the active
-harness adapter first, then apply the shared contract and rules below.
+Draft a bounded `/goal` contract or tighten one that churns, stalls, or stops
+early. Route to the active harness adapter first, then apply the contract below.
 
 ## Route before drafting
 
@@ -57,17 +56,18 @@ Include only fields that control the run:
 
 ## Shared rules
 
-1. Derive evidence and artifacts from the repository or an authoritative plan.
-   Verify that a referenced plan exists and read its verification section. When
-   that plan is already listed in `Read first`, reference its exact sections
-   instead of re-pasting specification prose into the goal.
-2. Never invent wrapper commands or success phrases to simplify evaluation;
-   establish greenfield validation first. Verify exact CLI syntax and
-   flag-separator order (around `--`), syntax-check inline evidence commands
-   (exit-code polarity, no cross-shell vars), map each invariant to a static or
-   runtime check, keep setup mutations (`mkdir`, `chmod`, staging) in the loop,
-   route post-commit tool artifacts to tempdirs, verify expected counts/stdout
-   with final flags, and run commit-dependent checks after committing.
+1. Derive evidence and artifacts from the repo or a durable authoritative plan.
+   Verify the plan exists and read its checks. Never cite ephemeral temp/scratch
+   paths in `Read first`; if the plan is not durable, inline its non-inferable
+   contracts (schemas, allowlists, build order) inside the goal instead. When a
+   durable plan is in `Read first`, cite its sections rather than re-pasting.
+2. Never invent wrapper commands or success phrases; establish greenfield checks
+   first. Verify CLI syntax and flag-separator (`--`) order, syntax-check inline commands
+   (no cross-shell vars; check exit code `1` on negated greps so error `2`
+   cannot false-pass), map each invariant to a check, keep compile/lint checks
+   running when live services are skipped, keep setup mutations in the loop,
+   route post-commit artifacts to tempdirs, verify final counts/stdout, and run
+   commit-dependent checks post-commit.
 3. Keep one finish line. If two conditions can complete independently, they are
    separate goals. Necessary supporting work stays inside the selected outcome.
    When phasing work across an open decision, put a short up-front options block
